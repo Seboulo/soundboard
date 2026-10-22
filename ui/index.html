@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Soundboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Soundboard</h1>
+    <button id="cable-status" class="pill" type="button" title="État du câble virtuel"></button>
+    <div class="spacer"></div>
+    <input id="search" type="search" placeholder="Rechercher…" autocomplete="off">
+    <button id="btn-add" type="button" class="primary">+ Ajouter des sons</button>
+    <button id="btn-stop" type="button" class="danger" title="Tout arrêter">■ Stop</button>
+    <button id="btn-settings" type="button" class="icon" title="Réglages">⚙</button>
+  </header>
+
+  <div id="warnings" class="warnings" hidden></div>
+
+  <main>
+    <div id="grid" class="grid"></div>
+    <div id="empty" class="empty" hidden>
+      <p class="big">Aucun son pour l'instant</p>
+      <p>Glisse des fichiers audio (MP3, WAV, OGG, FLAC…) dans la fenêtre, ou clique sur « Ajouter des sons ».</p>
+    </div>
+  </main>
+
+  <div id="drop-overlay" class="drop-overlay" hidden><p>Lâche tes fichiers pour les ajouter</p></div>
+  <div id="toast" class="toast" hidden></div>
+
+  <!-- Édition d'un son -->
+  <dialog id="dlg-sound">
+    <form method="dialog" class="form">
+      <h2>Modifier le son</h2>
+      <label>Nom <input name="sound_name" required maxlength="60"></label>
+      <label>Raccourci global
+        <input name="hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche">
+      </label>
+      <p class="hint">Astuce : le pavé numérique (Num 1, Num 2…) ou F13–F24 évitent les conflits avec les jeux. Retour arrière pour effacer.</p>
+      <label>Volume <span class="value" data-for="volume"></span>
+        <input name="volume" type="range" min="0" max="2" step="0.05">
+      </label>
+      <label>Couleur <input name="color" type="color"></label>
+      <div class="actions">
+        <button type="button" class="danger" data-action="delete">Supprimer</button>
+        <div class="spacer"></div>
+        <button value="cancel" formnovalidate>Annuler</button>
+        <button value="save" class="primary">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Réglages audio -->
+  <dialog id="dlg-settings">
+    <form method="dialog" class="form">
+      <h2>Réglages</h2>
+      <label>Ton casque (là où tu entends les sons)
+        <select name="monitor_device"></select>
+      </label>
+      <label>Sortie vers Discord (câble virtuel)
+        <select name="virtual_device"></select>
+      </label>
+      <label>Ton micro
+        <select name="mic_device"></select>
+      </label>
+      <label class="check"><input name="mic_enabled" type="checkbox"> Envoyer ma voix dans Discord avec les sons</label>
+      <label>Volume de ta voix <span class="value" data-for="mic_volume"></span>
+        <input name="mic_volume" type="range" min="0" max="2" step="0.05">
+      </label>
+      <label>Volume des sons dans Discord <span class="value" data-for="master_volume"></span>
+        <input name="master_volume" type="range" min="0" max="1.5" step="0.05">
+      </label>
+      <label>Volume des sons dans ton casque <span class="value" data-for="monitor_volume"></span>
+        <input name="monitor_volume" type="range" min="0" max="1.5" step="0.05">
+      </label>
+      <label class="check"><input name="stop_previous" type="checkbox"> Un nouveau son coupe ceux en cours</label>
+      <label>Raccourci « Tout arrêter »
+        <input name="stop_hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche">
+      </label>
+      <div class="actions">
+        <button type="button" data-action="wizard">Revoir l'assistant</button>
+        <div class="spacer"></div>
+        <button value="cancel" formnovalidate>Annuler</button>
+        <button value="save" class="primary">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Assistant de premier lancement -->
+  <dialog id="dlg-wizard">
+    <div class="form wizard">
+      <section data-step="1">
+        <h2>1. Installer le micro virtuel</h2>
+        <p>Pour que Discord entende les sons, l'app les joue dans un « micro virtuel » gratuit : <b>VB-Audio Virtual Cable</b>.</p>
+        <div class="status" data-cable></div>
+        <ol>
+          <li>Télécharge le pack Windows sur le site de VB-Audio.</li>
+          <li>Décompresse-le, puis clic droit sur <code>VBCABLE_Setup_x64.exe</code> → « Exécuter en tant qu'administrateur » → <i>Install Driver</i>.</li>
+          <li>Redémarre ton PC si l'installeur le demande, puis reviens ici.</li>
+        </ol>
+        <div class="actions">
+          <button type="button" data-action="open-vb">Ouvrir le site de VB-Cable</button>
+          <button type="button" data-action="recheck">Vérifier à nouveau</button>
+          <div class="spacer"></div>
+          <button type="button" class="primary" data-next>Suivant</button>
+        </div>
+      </section>
+      <section data-step="2" hidden>
+        <h2>2. Choisir ton casque et ton micro</h2>
+        <label>Ton casque
+          <select name="monitor_device"></select>
+        </label>
+        <label>Ton micro
+          <select name="mic_device"></select>
+        </label>
+        <p class="hint">Ta voix passera par l'app, puis dans Discord avec les sons.</p>
+        <div class="actions">
+          <button type="button" data-prev>Retour</button>
+          <div class="spacer"></div>
+          <button type="button" class="primary" data-next>Suivant</button>
+        </div>
+      </section>
+      <section data-step="3" hidden>
+        <h2>3. Régler Discord</h2>
+        <ol>
+          <li>Discord → <b>Paramètres utilisateur</b> → <b>Voix et vidéo</b>.</li>
+          <li><b>Périphérique d'entrée</b> : choisis <code>CABLE Output (VB-Audio Virtual Cable)</code>.</li>
+          <li>Désactive la <b>suppression du bruit (Krisp)</b> : sinon Discord filtre une partie des sons.</li>
+          <li>En mode <b>Détection de la voix</b>, baisse un peu la sensibilité pour que les sons passent même quand tu ne parles pas.</li>
+        </ol>
+        <p class="hint">Tu peux revenir à cet assistant à tout moment depuis les réglages.</p>
+        <div class="actions">
+          <button type="button" data-prev>Retour</button>
+          <div class="spacer"></div>
+          <button type="button" class="primary" data-action="finish">C'est parti</button>
+        </div>
+      </section>
+    </div>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>

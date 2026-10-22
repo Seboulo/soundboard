@@ -1,0 +1,368 @@
+mod audio;
+mod config;
+
+use audio::{AudioHandle, DeviceList};
+use config::{Config, Settings, Sound};
+use serde::Serialize;
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use std::sync::Mutex;
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+use tauri_plugin_opener::OpenerExt;
+
+const AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "ogg", "flac", "m4a", "aac"];
+const COLORS: &[&str] = &[
+    "#5865f2", "#57f287", "#fee75c", "#eb459e", "#ed4245", "#3ba55c", "#faa61a", "#9b59b6",
+];
+pub const VB_CABLE_URL: &str = "https://vb-audio.com/Cable/";
+
+#[derive(Clone)]
+enum HotkeyAction {
+    Play(String),
+    StopAll,
+}
+
+struct AppState {
+    config: Mutex<Config>,
+    config_path: PathBuf,
+    sounds_dir: PathBuf,
+    audio: AudioHandle,
+    hotkeys: Mutex<HashMap<u32, HotkeyAction>>,
+    /// Problèmes à montrer dans l'interface (raccourci déjà pris, sortie absente…).
+    warnings: Mutex<Vec<String>>,
+}
+
+#[derive(Serialize)]
+struct Snapshot {
+    config: Config,
+    devices: DeviceList,
+    warnings: Vec<String>,
+    vb_cable_url: &'static str,
+}
+
+impl AppState {
+    fn save(&self, config: &Config) -> Result<(), String> {
+        config.save(&self.config_path)
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            config: self.config.lock().unwrap().clone(),
+            devices: audio::list_devices(),
+            warnings: self.warnings.lock().unwrap().clone(),
+            vb_cable_url: VB_CABLE_URL,
+        }
+    }
+
+    fn set_warnings(&self, kind: &str, items: Vec<String>) {
+        let mut w = self.warnings.lock().unwrap();
+        w.retain(|m| !m.starts_with(kind));
+        w.extend(items.into_iter().map(|m| format!("{kind}{m}")));
+    }
+}
+
+const WARN_AUDIO: &str = "Audio : ";
+const WARN_HOTKEY: &str = "Raccourci : ";
+
+fn apply_audio(state: &AppState, settings: Settings) {
+    let warnings = match state.audio.configure(settings) {
+        Ok(()) => vec![],
+        Err(e) => vec![e],
+    };
+    state.set_warnings(WARN_AUDIO, warnings);
+}
+
+fn register_hotkeys(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let config = state.config.lock().unwrap().clone();
+    let gs = app.global_shortcut();
+    let _ = gs.unregister_all();
+
+    let mut entries: Vec<(String, HotkeyAction, String)> = config
+        .sounds
+        .iter()
+        .filter_map(|s| {
+            s.hotkey
+                .clone()
+                .map(|h| (h, HotkeyAction::Play(s.id.clone()), s.name.clone()))
+        })
+        .collect();
+    if let Some(h) = config.settings.stop_hotkey.clone() {
+        entries.push((h, HotkeyAction::StopAll, "Tout arrêter".into()));
+    }
+
+    let mut map = HashMap::new();
+    let mut errors = Vec::new();
+    for (hotkey, action, label) in entries {
+        let shortcut = match Shortcut::from_str(&hotkey) {
+            Ok(s) => s,
+            Err(_) => {
+                errors.push(format!("« {hotkey} » ({label}) n'est pas reconnu"));
+                continue;
+            }
+        };
+        if map.contains_key(&shortcut.id()) {
+            errors.push(format!("« {hotkey} » ({label}) est utilisé deux fois"));
+            continue;
+        }
+        match gs.register(shortcut) {
+            Ok(()) => {
+                map.insert(shortcut.id(), action);
+            }
+            Err(e) => errors.push(format!("« {hotkey} » ({label}) indisponible : {e}")),
+        }
+    }
+    *state.hotkeys.lock().unwrap() = map;
+    state.set_warnings(WARN_HOTKEY, errors);
+}
+
+fn on_hotkey(app: &AppHandle, shortcut: &Shortcut) {
+    let state = app.state::<AppState>();
+    let action = state.hotkeys.lock().unwrap().get(&shortcut.id()).cloned();
+    match action {
+        Some(HotkeyAction::Play(id)) => {
+            let sound = state
+                .config
+                .lock()
+                .unwrap()
+                .sounds
+                .iter()
+                .find(|s| s.id == id)
+                .cloned();
+            if let Some(sound) = sound {
+                state.audio.play_detached(sound.path, sound.volume);
+                let _ = app.emit("sound-triggered", &sound.id);
+            }
+        }
+        Some(HotkeyAction::StopAll) => {
+            state.audio.stop_all();
+            let _ = app.emit("stopped", ());
+        }
+        None => {}
+    }
+}
+
+fn import_file(src: &Path, sounds_dir: &Path, color_index: usize) -> Result<Sound, String> {
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+    if !AUDIO_EXTENSIONS.contains(&ext.as_str()) {
+        return Err(format!("{} : format non pris en charge", src.display()));
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    fs::create_dir_all(sounds_dir).map_err(|e| e.to_string())?;
+    let dest = sounds_dir.join(format!("{id}.{ext}"));
+    fs::copy(src, &dest).map_err(|e| format!("{} : {e}", src.display()))?;
+    let name = src
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Son")
+        .replace(['_', '-'], " ");
+    Ok(Sound {
+        id,
+        name,
+        path: dest,
+        hotkey: None,
+        volume: 1.0,
+        color: COLORS[color_index % COLORS.len()].into(),
+    })
+}
+
+#[tauri::command]
+fn get_state(state: State<AppState>) -> Snapshot {
+    state.snapshot()
+}
+
+#[tauri::command]
+fn add_sounds(app: AppHandle, state: State<AppState>, paths: Vec<String>) -> Result<Snapshot, String> {
+    let mut errors = Vec::new();
+    {
+        let mut config = state.config.lock().unwrap();
+        for p in paths {
+            let index = config.sounds.len();
+            match import_file(Path::new(&p), &state.sounds_dir, index) {
+                Ok(sound) => config.sounds.push(sound),
+                Err(e) => errors.push(e),
+            }
+        }
+        state.save(&config)?;
+    }
+    register_hotkeys(&app);
+    if errors.is_empty() {
+        Ok(state.snapshot())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
+#[tauri::command]
+async fn pick_sounds(app: AppHandle) -> Result<Snapshot, String> {
+    let files = app
+        .dialog()
+        .file()
+        .set_title("Ajouter des sons")
+        .add_filter("Audio", AUDIO_EXTENSIONS)
+        .blocking_pick_files();
+    let paths: Vec<String> = files
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|f| f.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let state = app.state::<AppState>();
+    add_sounds(app.clone(), state, paths)
+}
+
+#[tauri::command]
+fn update_sound(app: AppHandle, state: State<AppState>, sound: Sound) -> Result<Snapshot, String> {
+    {
+        let mut config = state.config.lock().unwrap();
+        let existing = config
+            .sounds
+            .iter_mut()
+            .find(|s| s.id == sound.id)
+            .ok_or("son introuvable")?;
+        // Le chemin n'est jamais modifié depuis l'interface.
+        existing.name = sound.name;
+        existing.hotkey = sound.hotkey.filter(|h| !h.is_empty());
+        existing.volume = sound.volume.clamp(0.0, 2.0);
+        existing.color = sound.color;
+        state.save(&config)?;
+    }
+    register_hotkeys(&app);
+    Ok(state.snapshot())
+}
+
+#[tauri::command]
+fn remove_sound(app: AppHandle, state: State<AppState>, id: String) -> Result<Snapshot, String> {
+    {
+        let mut config = state.config.lock().unwrap();
+        if let Some(pos) = config.sounds.iter().position(|s| s.id == id) {
+            let sound = config.sounds.remove(pos);
+            if sound.path.starts_with(&state.sounds_dir) {
+                let _ = fs::remove_file(&sound.path);
+            }
+        }
+        state.save(&config)?;
+    }
+    register_hotkeys(&app);
+    Ok(state.snapshot())
+}
+
+#[tauri::command]
+fn move_sound(state: State<AppState>, id: String, to: usize) -> Result<Snapshot, String> {
+    {
+        let mut config = state.config.lock().unwrap();
+        if let Some(from) = config.sounds.iter().position(|s| s.id == id) {
+            let sound = config.sounds.remove(from);
+            let to = to.min(config.sounds.len());
+            config.sounds.insert(to, sound);
+        }
+        state.save(&config)?;
+    }
+    Ok(state.snapshot())
+}
+
+#[tauri::command]
+fn update_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> Result<Snapshot, String> {
+    {
+        let mut config = state.config.lock().unwrap();
+        config.settings = settings.clone();
+        state.save(&config)?;
+    }
+    apply_audio(&state, settings);
+    register_hotkeys(&app);
+    Ok(state.snapshot())
+}
+
+#[tauri::command]
+fn play_sound(state: State<AppState>, id: String) -> Result<(), String> {
+    let sound = state
+        .config
+        .lock()
+        .unwrap()
+        .sounds
+        .iter()
+        .find(|s| s.id == id)
+        .cloned()
+        .ok_or("son introuvable")?;
+    state.audio.play(sound.path, sound.volume)
+}
+
+#[tauri::command]
+fn stop_all(state: State<AppState>) {
+    state.audio.stop_all();
+}
+
+#[tauri::command]
+fn open_vb_cable_page(app: AppHandle) -> Result<(), String> {
+    app.opener()
+        .open_url(VB_CABLE_URL, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // Une seule instance, sinon les raccourcis globaux se marchent dessus.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        on_hotkey(app, shortcut);
+                    }
+                })
+                .build(),
+        )
+        .setup(|app| {
+            let config_path = app.path().app_config_dir()?.join("config.json");
+            let sounds_dir = app.path().app_data_dir()?.join("sounds");
+            let mut config = Config::load(&config_path);
+
+            // Premier lancement : si VB-Cable est déjà installé, on le choisit d'office.
+            if config.settings.virtual_device.is_none() {
+                config.settings.virtual_device = audio::list_devices().vb_cable;
+            }
+
+            let state = AppState {
+                config: Mutex::new(config.clone()),
+                config_path,
+                sounds_dir,
+                audio: AudioHandle::spawn(),
+                hotkeys: Mutex::new(HashMap::new()),
+                warnings: Mutex::new(Vec::new()),
+            };
+            apply_audio(&state, config.settings);
+            app.manage(state);
+            register_hotkeys(app.handle());
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            get_state,
+            add_sounds,
+            pick_sounds,
+            update_sound,
+            remove_sound,
+            move_sound,
+            update_settings,
+            play_sound,
+            stop_all,
+            open_vb_cable_page,
+        ])
+        .run(tauri::generate_context!())
+        .expect("erreur au lancement de l'application");
+}
