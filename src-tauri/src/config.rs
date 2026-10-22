@@ -74,6 +74,12 @@ pub struct Settings {
     pub launch_at_startup: bool,
     /// Fermer la fenêtre garde l'app près de l'horloge (les raccourcis restent actifs).
     pub close_to_tray: bool,
+    /// Enlève clavier, souris et bruits de fond du micro (pas des sons).
+    pub noise_suppression: bool,
+    /// Coupe le micro quand tu ne parles pas.
+    pub voice_gate: bool,
+    /// Probabilité de voix (0–1) en dessous de laquelle le micro est coupé.
+    pub gate_threshold: f32,
 }
 
 impl Default for Settings {
@@ -92,6 +98,9 @@ impl Default for Settings {
             normalize: true,
             launch_at_startup: false,
             close_to_tray: true,
+            noise_suppression: true,
+            voice_gate: true,
+            gate_threshold: 0.6,
         }
     }
 }

@@ -1,6 +1,7 @@
 mod analysis;
 mod audio;
 mod config;
+mod denoise;
 mod online;
 
 use audio::{AudioHandle, DeviceList, PlayOutcome, PlayRequest, PlayingStatus};

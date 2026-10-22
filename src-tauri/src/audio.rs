@@ -9,6 +9,7 @@
 //! vit dans un thread dédié piloté par des messages.
 
 use crate::config::Settings;
+use crate::denoise::{self, MicFilters, MicProcessor};
 use rodio::cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rodio::cpal::{self, SampleFormat};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
@@ -283,29 +284,48 @@ impl Engine {
         let sample_rate = supported.sample_rate().0;
         let format = supported.sample_format();
         let config: cpal::StreamConfig = supported.into();
+        let filters = MicFilters {
+            denoise: self.settings.noise_suppression,
+            gate: self.settings.voice_gate,
+            gate_threshold: self.settings.gate_threshold.clamp(0.0, 1.0),
+        };
 
-        // ~100 ms de marge : au-delà on jette le plus ancien pour garder une
-        // latence basse si les horloges du micro et du câble dérivent.
-        let max_len = (sample_rate as usize * channels as usize) / 10;
+        // Le micro sort du filtre en mono 48 kHz. ~100 ms de marge : au-delà on
+        // jette le plus ancien pour garder une latence basse si les horloges du
+        // micro et du câble dérivent.
+        let max_len = denoise::RATE as usize / 10;
         let buffer = Arc::new(Mutex::new(VecDeque::<f32>::with_capacity(max_len * 2)));
+        let new_filter = || {
+            let mut processor = MicProcessor::new(channels, sample_rate, filters);
+            move |samples: &mut dyn Iterator<Item = f32>| -> Vec<f32> {
+                let mut out = Vec::new();
+                processor.process(samples, &mut out);
+                out
+            }
+        };
 
         let err_fn = |e| eprintln!("erreur micro : {e}");
         let stream = match format {
             SampleFormat::F32 => {
                 let buf = buffer.clone();
+                let mut filter = new_filter();
                 device.build_input_stream(
                     &config,
-                    move |data: &[f32], _: &_| push(&buf, data.iter().copied(), max_len),
+                    move |data: &[f32], _: &_| {
+                        push(&buf, filter(&mut data.iter().copied()), max_len)
+                    },
                     err_fn,
                     None,
                 )
             }
             SampleFormat::I16 => {
                 let buf = buffer.clone();
+                let mut filter = new_filter();
                 device.build_input_stream(
                     &config,
                     move |data: &[i16], _: &_| {
-                        push(&buf, data.iter().map(|s| *s as f32 / 32768.0), max_len)
+                        let mut it = data.iter().map(|s| *s as f32 / 32768.0);
+                        push(&buf, filter(&mut it), max_len)
                     },
                     err_fn,
                     None,
@@ -313,14 +333,12 @@ impl Engine {
             }
             SampleFormat::U16 => {
                 let buf = buffer.clone();
+                let mut filter = new_filter();
                 device.build_input_stream(
                     &config,
                     move |data: &[u16], _: &_| {
-                        push(
-                            &buf,
-                            data.iter().map(|s| (*s as f32 - 32768.0) / 32768.0),
-                            max_len,
-                        )
+                        let mut it = data.iter().map(|s| (*s as f32 - 32768.0) / 32768.0);
+                        push(&buf, filter(&mut it), max_len)
                     },
                     err_fn,
                     None,
@@ -336,8 +354,8 @@ impl Engine {
         sink.append(MicSource {
             buffer,
             local: VecDeque::new(),
-            channels,
-            sample_rate,
+            channels: 1,
+            sample_rate: denoise::RATE,
         });
 
         self.mic_stream = Some(stream);
@@ -454,7 +472,7 @@ fn open_source(req: &PlayRequest) -> Result<impl Source<Item = i16> + Send, Stri
         .amplify(req.gain))
 }
 
-fn push(buf: &Mutex<VecDeque<f32>>, samples: impl Iterator<Item = f32>, max_len: usize) {
+fn push(buf: &Mutex<VecDeque<f32>>, samples: Vec<f32>, max_len: usize) {
     let Ok(mut buf) = buf.lock() else { return };
     buf.extend(samples);
     if buf.len() > max_len {

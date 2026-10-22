@@ -412,7 +412,9 @@ function openSettings() {
   fillSelect(formSettings.virtual_device, d.outputs, s.virtual_device, "Aucun (sons uniquement dans le casque)");
   fillSelect(formSettings.mic_device, d.inputs, s.mic_device, `Par défaut (${d.default_input ?? "aucun"})`);
   formSettings.mic_enabled.checked = s.mic_enabled;
-  for (const k of ["mic_volume", "master_volume", "monitor_volume"]) {
+  formSettings.noise_suppression.checked = s.noise_suppression;
+  formSettings.voice_gate.checked = s.voice_gate;
+  for (const k of ["mic_volume", "master_volume", "monitor_volume", "gate_threshold"]) {
     formSettings[k].value = s[k];
     formSettings[k].update();
   }
@@ -434,6 +436,9 @@ dlgSettings.addEventListener("close", () => {
     mic_device: f.mic_device.value || null,
     mic_enabled: f.mic_enabled.checked,
     mic_volume: Number(f.mic_volume.value),
+    noise_suppression: f.noise_suppression.checked,
+    voice_gate: f.voice_gate.checked,
+    gate_threshold: Number(f.gate_threshold.value),
     master_volume: Number(f.master_volume.value),
     monitor_volume: Number(f.monitor_volume.value),
     stop_previous: f.stop_previous.checked,

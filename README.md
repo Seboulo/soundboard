@@ -18,8 +18,10 @@ L'app joue chaque son à deux endroits en même temps : dans ton casque, pour qu
 Dans **Paramètres utilisateur → Voix et vidéo** :
 
 - **Périphérique d'entrée** : `CABLE Output (VB-Audio Virtual Cable)`
-- **Suppression du bruit (Krisp)** : désactivée, sinon une partie des sons est filtrée
-- En **Détection de la voix**, baisse un peu la sensibilité pour que les sons passent même si tu ne parles pas
+- **Suppression du bruit (Krisp)** et **annulation de l'écho** : désactivées, sinon une partie des sons est filtrée
+- En **Détection de la voix** : décoche « Déterminer automatiquement la sensibilité » et mets le curseur presque à gauche
+
+Les bruits de clavier, de souris et de fond sont filtrés par l'app elle-même, sur ton micro uniquement (réglages « Réduire les bruits de ton micro » et « Couper ton micro quand tu ne parles pas »).
 
 ## Utilisation
 
