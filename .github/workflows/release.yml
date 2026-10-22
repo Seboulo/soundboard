@@ -10,6 +10,9 @@ on:
 permissions:
   contents: write
 
+env:
+  RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release]')) }}
+
 jobs:
   build:
     runs-on: windows-latest
@@ -28,15 +31,16 @@ jobs:
 
       - run: npm ci
 
-      # Sur un tag vX.Y.Z : crée une release GitHub avec l'installeur.
+      # Sur un tag vX.Y.Z, ou un commit de main dont le message contient
+      # [release] : crée la release GitHub vX.Y.Z (version de tauri.conf.json).
       - name: Build et release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.RELEASE == 'true'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Soundboard ${{ github.ref_name }}
+          tagName: v__VERSION__
+          releaseName: Soundboard v__VERSION__
           releaseBody: |
             Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le.
             Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
@@ -44,11 +48,11 @@ jobs:
 
       # Sinon : simple build, installeur disponible dans les artefacts du run.
       - name: Build
-        if: "!startsWith(github.ref, 'refs/tags/v')"
+        if: env.RELEASE != 'true'
         run: npm run build
 
       - name: Installeur en artefact
-        if: "!startsWith(github.ref, 'refs/tags/v')"
+        if: env.RELEASE != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: soundboard-windows

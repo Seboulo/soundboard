@@ -66,6 +66,8 @@ Structure :
 Le workflow `.github/workflows/release.yml` compile l'installeur Windows à chaque push. Pour publier une release téléchargeable, monte la version dans `tauri.conf.json`, `Cargo.toml` et `package.json`, puis :
 
 ```sh
-git tag v0.2.1
-git push origin v0.2.1
+git commit -m "Version x.y.z [release]"
+git push origin main
 ```
+
+(Pousser un tag `vX.Y.Z` marche aussi.)
