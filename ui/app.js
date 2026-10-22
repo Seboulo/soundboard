@@ -155,9 +155,30 @@ function categories() {
   return [...set].sort((a, b) => a.localeCompare(b, "fr"));
 }
 
+// Onglet spécial des derniers sons joués (aucun nom d'onglet ne commence par \u0000).
+const RECENT_TAB = "\u0000recent";
+const RECENT_KEY = "soundboard.recent";
+let recent = [];
+try {
+  recent = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+} catch {}
+
+function remember(id) {
+  recent = [id, ...recent.filter((r) => r !== id)].slice(0, 12);
+  try {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
+  } catch {}
+  if (currentTab === RECENT_TAB) renderGrid();
+}
+
+/** Onglet à passer aux commandes (au hasard, export) : « Récents » vaut « Tous ». */
+function tabCategory() {
+  return currentTab === RECENT_TAB ? null : currentTab;
+}
+
 function renderTabs() {
   const cats = categories();
-  if (currentTab && !cats.includes(currentTab)) currentTab = null;
+  if (currentTab && currentTab !== RECENT_TAB && !cats.includes(currentTab)) currentTab = null;
   const tab = (label, value) => {
     const b = document.createElement("button");
     b.type = "button";
@@ -174,9 +195,9 @@ function renderTabs() {
     });
     return b;
   };
-  $("#tabs").replaceChildren(tab("Tous", null), ...cats.map((c) => tab(c, c)));
+  $("#tabs").replaceChildren(tab("Tous", null), tab("🕘 Récents", RECENT_TAB), ...cats.map((c) => tab(c, c)));
   $("#categories").replaceChildren(...cats.map((c) => new Option(c)));
-  $("#btn-export").textContent = currentTab ? `📦 Exporter « ${currentTab} »` : "📦 Exporter";
+  $("#btn-export").textContent = tabCategory() ? `📦 Exporter « ${tabCategory()} »` : "📦 Exporter";
 }
 
 function renderStatus() {
@@ -196,11 +217,19 @@ function renderWarnings() {
 function renderGrid() {
   const grid = $("#grid");
   const q = $("#search").value.trim().toLowerCase();
-  const sounds = state.config.sounds.filter(
-    (s) => (!currentTab || s.category === currentTab) && (!q || s.name.toLowerCase().includes(q))
-  );
+  const matches = (s) => !q || s.name.toLowerCase().includes(q);
+  let sounds;
+  if (currentTab === RECENT_TAB) {
+    const byId = new Map(state.config.sounds.map((s) => [s.id, s]));
+    sounds = recent.map((id) => byId.get(id)).filter((s) => s && matches(s));
+  } else {
+    sounds = state.config.sounds.filter((s) => (!currentTab || s.category === currentTab) && matches(s));
+    // Favoris en premier, sans changer l'ordre entre eux.
+    sounds = [...sounds.filter((s) => s.favorite), ...sounds.filter((s) => !s.favorite)];
+  }
   grid.replaceChildren(...sounds.map(padElement));
   $("#empty").hidden = state.config.sounds.length > 0;
+  $("#recent-empty").hidden = !(currentTab === RECENT_TAB && sounds.length === 0 && state.config.sounds.length > 0);
   renderPlaying();
 }
 
@@ -253,13 +282,18 @@ function padElement(sound) {
   edit.className = "edit";
   edit.textContent = "✎";
   edit.title = "Modifier";
+  const fav = document.createElement("span");
+  fav.className = "fav" + (sound.favorite ? " on" : "");
+  fav.textContent = sound.favorite ? "★" : "☆";
+  fav.title = sound.favorite ? "Retirer des favoris" : "Épingler en haut (favori)";
   const progress = document.createElement("span");
   progress.className = "progress";
-  pad.append(icon, eq, name, key, edit, progress);
+  pad.append(icon, eq, name, key, fav, edit, progress);
 
   pad.addEventListener("click", (e) => {
     if (reorder.justDropped) return;
     if (e.target === edit) return openSoundDialog(sound);
+    if (e.target === fav) return call("toggle_favorite", { id: sound.id });
     flash(sound.id);
     call("play_sound", { id: sound.id }); // joue, ou arrête s'il est déjà en cours
   });
@@ -335,6 +369,7 @@ function openSoundDialog(sound) {
   formSound.color.value = sound.color;
   formSound.category.value = sound.category ?? "";
   formSound.looping.checked = !!sound.looping;
+  formSound.keep_playing.checked = !!sound.keep_playing;
   formSound.emoji.value = sound.emoji ?? "";
   renderEmojiPicks();
   dlgSound.returnValue = "";
@@ -484,6 +519,7 @@ dlgSound.addEventListener("close", () => {
       color: formSound.color.value,
       category: formSound.category.value.trim() || null,
       looping: formSound.looping.checked,
+      keep_playing: formSound.keep_playing.checked,
       emoji: formSound.emoji.value.trim() || null,
       ...trimValues(),
     },
@@ -709,15 +745,15 @@ listen("mic-muted", ({ payload }) => {
 });
 
 $("#btn-random").addEventListener("click", async () => {
-  if (!state.config.sounds.some((s) => !currentTab || s.category === currentTab)) {
+  if (!state.config.sounds.some((s) => !tabCategory() || s.category === tabCategory())) {
     return toast("Aucun son dans cet onglet", true);
   }
-  const id = await call("play_random", { category: currentTab });
+  const id = await call("play_random", { category: tabCategory() });
   if (id) flash(id);
 });
 
 $("#btn-export").addEventListener("click", async () => {
-  const n = await call("export_pack", { category: currentTab });
+  const n = await call("export_pack", { category: tabCategory() });
   if (n) toast(n > 1 ? `Pack enregistré (${n} sons)` : "Pack enregistré (1 son)");
 });
 
@@ -727,6 +763,52 @@ $("#btn-import").addEventListener("click", async () => {
   render(res.snapshot);
   if (res.errors.length) toast(`${res.added} son(s) ajouté(s). Problèmes :\n${res.errors.join("\n")}`, true);
   else toast(res.added > 1 ? `${res.added} sons ajoutés` : `${res.added} son ajouté`);
+});
+
+// ---------- Taille des pads ----------
+
+const sizeInput = $("#pad-size");
+function applyPadSize() {
+  $("#grid").style.setProperty("--pad-size", sizeInput.value + "px");
+}
+try {
+  sizeInput.value = localStorage.getItem("soundboard.padSize") || 140;
+} catch {}
+applyPadSize();
+sizeInput.addEventListener("input", () => {
+  applyPadSize();
+  try {
+    localStorage.setItem("soundboard.padSize", sizeInput.value);
+  } catch {}
+});
+
+// ---------- Ajout par lien ----------
+
+const LINK_RE = /^https?:\/\/\S+$/i;
+
+async function addFromLink(url) {
+  toast("Téléchargement du son…");
+  const res = await call("add_from_url", { url });
+  if (res) toast("Son ajouté depuis le lien");
+  return !!res;
+}
+
+// Ctrl+V d'un lien n'importe où dans la fenêtre (hors champ de texte).
+document.addEventListener("paste", (e) => {
+  if (e.target.closest?.("input, textarea") || document.querySelector("dialog[open]")) return;
+  const text = e.clipboardData?.getData("text")?.trim() ?? "";
+  if (LINK_RE.test(text)) {
+    e.preventDefault();
+    addFromLink(text);
+  }
+});
+
+$("#link-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = $("#link-form").link;
+  const url = input.value.trim();
+  if (!LINK_RE.test(url)) return toast("Colle un lien qui commence par http:// ou https://", true);
+  if (await addFromLink(url)) input.value = "";
 });
 
 // ---------- Nouvelle version ----------
@@ -763,7 +845,9 @@ listen("tauri://drag-drop", async (event) => {
 
 listen("sound-triggered", (event) => flash(event.payload));
 listen("playing", (event) => {
+  const before = new Set(playing.map((p) => p.id));
   playing = event.payload ?? [];
+  playing.filter((p) => !before.has(p.id)).forEach((p) => remember(p.id));
   renderPlaying();
 });
 // Analyse des anciens sons terminée en arrière-plan.

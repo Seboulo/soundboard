@@ -31,6 +31,7 @@
   <nav class="tabbar">
     <div id="tabs" class="tabs"></div>
     <div class="spacer"></div>
+    <label class="size" title="Taille des pads">Taille <input id="pad-size" type="range" min="100" max="220" step="10"></label>
     <button id="btn-random" type="button" title="Jouer un son au hasard de cet onglet">🎲 Au hasard</button>
     <button id="btn-export" type="button" title="Enregistrer les sons de cet onglet dans un .zip à partager">📦 Exporter</button>
     <button id="btn-import" type="button" title="Ajouter les sons d'un pack .zip">📥 Importer un pack</button>
@@ -38,6 +39,10 @@
 
   <main>
     <div id="grid" class="grid"></div>
+    <div id="recent-empty" class="empty" hidden>
+      <p class="big">Aucun son joué pour l'instant</p>
+      <p>Les 12 derniers sons que tu joues apparaîtront ici.</p>
+    </div>
     <div id="empty" class="empty" hidden>
       <div class="empty-icon">🎧</div>
       <p class="big">Aucun son pour l'instant</p>
@@ -84,7 +89,8 @@
         <label>Couleur <input name="color" type="color"></label>
       </div>
       <datalist id="categories"></datalist>
-      <label class="check"><input name="looping" type="checkbox"> Jouer en boucle (clique à nouveau sur le son pour l'arrêter)</label>
+      <label class="check"><input name="looping" type="checkbox"> Jouer en boucle, avec un fondu au début et à la fin (clique à nouveau sur le son pour l'arrêter)</label>
+      <label class="check"><input name="keep_playing" type="checkbox"> Ne jamais être coupé par les autres sons (pratique pour une musique de fond)</label>
       <div class="actions">
         <button type="button" class="danger" data-action="delete">Supprimer</button>
         <div class="spacer"></div>
@@ -180,6 +186,11 @@
         <span class="value" id="online-volume-value"></span>
       </label>
       <div id="online-results" class="results"></div>
+      <form id="link-form" class="search-row link-row">
+        <input name="link" type="url" placeholder="🔗 Ou colle un lien direct vers un son (.mp3, .wav…)" autocomplete="off">
+        <button>Ajouter</button>
+      </form>
+      <p class="hint">Astuce : tu peux aussi copier un lien de son et faire Ctrl+V directement dans la fenêtre principale.</p>
       <div class="actions">
         <span class="hint" id="online-credit">Sons proposés par myinstants.com</span>
         <div class="spacer"></div>

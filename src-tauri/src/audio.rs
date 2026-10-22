@@ -19,7 +19,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -42,7 +42,12 @@ pub struct PlayRequest {
     /// Durée jouée, pour la barre de progression.
     pub duration_ms: Option<u64>,
     pub looping: bool,
+    /// Pas coupé quand un autre son démarre (option « un nouveau son coupe les autres »).
+    pub keep_playing: bool,
 }
+
+/// Durée des fondus des sons en boucle.
+const FADE: Duration = Duration::from_millis(400);
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -222,6 +227,17 @@ struct Playing {
     started: Instant,
     duration_ms: Option<u64>,
     looping: bool,
+    keep_playing: bool,
+    /// Volume visé par les fondus (bits d'un f32), partagé avec les sources.
+    fade_target: Option<Arc<AtomicU32>>,
+    /// Arrêt en fondu en cours depuis cet instant.
+    stopping: Option<Instant>,
+}
+
+impl Playing {
+    fn is_finished(&self) -> bool {
+        self.sinks.iter().all(Sink::empty) || self.stopping.is_some_and(|t| t.elapsed() > FADE + Duration::from_millis(50))
+    }
 }
 
 #[derive(Default)]
@@ -245,7 +261,13 @@ fn run(rx: Receiver<Command>, meter_on: Arc<AtomicBool>, on_event: impl Fn(Audio
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
-        engine.playing.retain(|p| p.sinks.iter().any(|s| !s.empty()));
+        engine.playing.retain(|p| {
+            let done = p.is_finished();
+            if done {
+                p.sinks.iter().for_each(Sink::stop);
+            }
+            !done
+        });
         let status = engine.status();
         if !(status.is_empty() && last_status.is_empty()) {
             on_event(AudioEvent::Playing(status.clone()));
@@ -435,7 +457,7 @@ impl Engine {
     fn status(&self) -> Vec<PlayingStatus> {
         self.playing
             .iter()
-            .filter(|p| p.id != PREVIEW_ID)
+            .filter(|p| p.id != PREVIEW_ID && p.stopping.is_none())
             .map(|p| PlayingStatus {
                 id: p.id.clone(),
                 elapsed_ms: p.started.elapsed().as_millis() as u64,
@@ -450,7 +472,15 @@ impl Engine {
             return Ok(PlayOutcome::Stopped);
         }
         if self.settings.stop_previous {
-            self.stop_all();
+            let others: Vec<String> = self
+                .playing
+                .iter()
+                .filter(|p| !p.keep_playing && p.stopping.is_none())
+                .map(|p| p.id.clone())
+                .collect();
+            for id in others {
+                self.stop(&id);
+            }
         }
         self.start(req, false)?;
         Ok(PlayOutcome::Started)
@@ -461,12 +491,20 @@ impl Engine {
         if !monitor_only {
             targets.push((&self.virt, self.settings.master_volume));
         }
+        // Les sons en boucle démarrent et s'arrêtent en douceur.
+        let fade_target = req
+            .looping
+            .then(|| Arc::new(AtomicU32::new(1.0f32.to_bits())));
         let mut sinks = Vec::new();
         for (output, out_volume) in targets {
             let Some(output) = output else { continue };
             let sink = Sink::try_new(&output.handle).map_err(|e| e.to_string())?;
             sink.set_volume(out_volume);
-            sink.append(open_source(&req)?);
+            let source = open_source(&req)?;
+            match &fade_target {
+                Some(target) => sink.append(Fader::new(source, target.clone())),
+                None => sink.append(source),
+            }
             sinks.push(sink);
         }
         if sinks.is_empty() {
@@ -478,20 +516,35 @@ impl Engine {
             started: Instant::now(),
             duration_ms: req.duration_ms,
             looping: req.looping,
+            keep_playing: req.keep_playing,
+            fade_target,
+            stopping: None,
         });
         Ok(())
     }
 
     /// Arrête un son ; renvoie vrai s'il était en cours.
     fn stop(&mut self, id: &str) -> bool {
-        let before = self.playing.len();
-        self.playing.retain(|p| {
-            if p.id == id {
-                p.sinks.iter().for_each(Sink::stop);
+        let mut found = false;
+        self.playing.retain_mut(|p| {
+            if p.id != id || p.stopping.is_some() {
+                return true;
             }
-            p.id != id
+            found = true;
+            match &p.fade_target {
+                // Fondu de sortie : le son est retiré une fois silencieux.
+                Some(target) => {
+                    target.store(0.0f32.to_bits(), Ordering::Relaxed);
+                    p.stopping = Some(Instant::now());
+                    true
+                }
+                None => {
+                    p.sinks.iter().for_each(Sink::stop);
+                    false
+                }
+            }
         });
-        self.playing.len() != before
+        found
     }
 
     fn stop_all(&mut self) {
@@ -518,6 +571,56 @@ fn open_source(req: &PlayRequest) -> Result<Box<dyn Source<Item = i16> + Send>, 
         Ok(Box::new(source.buffered().repeat_infinite()))
     } else {
         Ok(Box::new(source))
+    }
+}
+
+/// Applique un fondu qui suit `target` (0 à 1), échantillon par échantillon.
+struct Fader<S> {
+    inner: S,
+    gain: f32,
+    step: f32,
+    target: Arc<AtomicU32>,
+}
+
+impl<S: Source<Item = i16>> Fader<S> {
+    fn new(inner: S, target: Arc<AtomicU32>) -> Self {
+        let per_second = inner.sample_rate() as f32 * inner.channels() as f32;
+        Self {
+            step: 1.0 / (per_second * FADE.as_secs_f32()).max(1.0),
+            inner,
+            gain: 0.0,
+            target,
+        }
+    }
+}
+
+impl<S: Source<Item = i16>> Iterator for Fader<S> {
+    type Item = i16;
+
+    fn next(&mut self) -> Option<i16> {
+        let sample = self.inner.next()?;
+        let target = f32::from_bits(self.target.load(Ordering::Relaxed));
+        if self.gain < target {
+            self.gain = (self.gain + self.step).min(target);
+        } else if self.gain > target {
+            self.gain = (self.gain - self.step).max(target);
+        }
+        Some((sample as f32 * self.gain) as i16)
+    }
+}
+
+impl<S: Source<Item = i16>> Source for Fader<S> {
+    fn current_frame_len(&self) -> Option<usize> {
+        self.inner.current_frame_len()
+    }
+    fn channels(&self) -> u16 {
+        self.inner.channels()
+    }
+    fn sample_rate(&self) -> u32 {
+        self.inner.sample_rate()
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
     }
 }
 

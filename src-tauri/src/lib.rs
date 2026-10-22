@@ -113,6 +113,7 @@ fn play_request(state: &AppState, sound: &Sound) -> PlayRequest {
         end_ms: sound.end_ms,
         duration_ms: sound.play_duration_ms(),
         looping: sound.looping,
+        keep_playing: sound.keep_playing,
     }
 }
 
@@ -344,6 +345,8 @@ fn store_sound(
         category: None,
         looping: false,
         emoji: None,
+        favorite: false,
+        keep_playing: false,
     })
 }
 
@@ -422,6 +425,8 @@ fn update_sound(app: AppHandle, state: State<AppState>, sound: Sound) -> Result<
         existing.category = clean_category(sound.category);
         existing.looping = sound.looping;
         existing.emoji = clean_emoji(sound.emoji);
+        existing.favorite = sound.favorite;
+        existing.keep_playing = sound.keep_playing;
         let total = existing.analysis.map(|a| a.duration_ms).unwrap_or(u64::MAX);
         existing.start_ms = sound.start_ms.min(total);
         // Une fin au bout du fichier revient à « pas de découpe ».
@@ -558,6 +563,36 @@ async fn add_online(app: AppHandle, name: String, url: String) -> Result<Snapsho
 }
 
 #[tauri::command]
+fn toggle_favorite(state: State<AppState>, id: String) -> Result<Snapshot, String> {
+    {
+        let mut config = state.config.lock().unwrap();
+        let sound = config.sounds.iter_mut().find(|s| s.id == id).ok_or("son introuvable")?;
+        sound.favorite = !sound.favorite;
+        state.save(&config)?;
+    }
+    Ok(state.snapshot())
+}
+
+/// Ajoute un son à partir d'un lien direct vers un fichier audio.
+#[tauri::command]
+async fn add_from_url(app: AppHandle, url: String) -> Result<Snapshot, String> {
+    let (data, ext, name) = online::download_link(url.trim()).await?;
+    let state = app.state::<AppState>();
+    let index = state.config.lock().unwrap().sounds.len();
+    let sounds_dir = state.sounds_dir.clone();
+    let sound = tauri::async_runtime::spawn_blocking(move || store_sound(&data, &ext, name, &sounds_dir, index))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|_| "ce lien ne mène pas à un fichier audio (il faut un lien direct vers un .mp3, .wav…)".to_string())?;
+    {
+        let mut config = state.config.lock().unwrap();
+        config.sounds.push(sound);
+        state.save(&config)?;
+    }
+    Ok(state.snapshot())
+}
+
+#[tauri::command]
 fn stop_all(state: State<AppState>) {
     state.audio.stop_all();
 }
@@ -628,6 +663,10 @@ struct PackSound {
     looping: bool,
     #[serde(default)]
     emoji: Option<String>,
+    #[serde(default)]
+    favorite: bool,
+    #[serde(default)]
+    keep_playing: bool,
 }
 
 fn one() -> f32 {
@@ -665,6 +704,8 @@ fn write_pack(dest: &Path, sounds: &[Sound]) -> Result<usize, String> {
             category: s.category.clone(),
             looping: s.looping,
             emoji: s.emoji.clone(),
+            favorite: s.favorite,
+            keep_playing: s.keep_playing,
         });
     }
     zip.start_file("pack.json", options).map_err(|e| e.to_string())?;
@@ -748,6 +789,8 @@ fn read_pack(src: &Path, config: &Config, sounds_dir: &Path) -> Result<(Vec<Soun
                 sound.category = clean_category(p.category);
                 sound.looping = p.looping;
                 sound.emoji = clean_emoji(p.emoji);
+                sound.favorite = p.favorite;
+                sound.keep_playing = p.keep_playing;
                 added.push(sound);
             }
             Err(e) => errors.push(format!("{} : {e}", p.name)),
@@ -965,6 +1008,8 @@ pub fn run() {
             open_vb_cable_page,
             open_freesound_key_page,
             set_mic_muted,
+            toggle_favorite,
+            add_from_url,
             play_random,
             set_meter,
             check_update,

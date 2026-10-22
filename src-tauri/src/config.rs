@@ -30,6 +30,12 @@ pub struct Sound {
     /// Emoji affiché sur le pad.
     #[serde(default)]
     pub emoji: Option<String>,
+    /// Épinglé en haut de la grille.
+    #[serde(default)]
+    pub favorite: bool,
+    /// Pas coupé quand un autre son démarre.
+    #[serde(default)]
+    pub keep_playing: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

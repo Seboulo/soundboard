@@ -171,6 +171,85 @@ fn strip_extension(name: &str) -> String {
     name.trim().to_string()
 }
 
+/// Télécharge un lien direct collé ou glissé par l'utilisateur. Renvoie les
+/// données, l'extension à utiliser et un nom tiré de l'adresse.
+pub async fn download_link(url: &str) -> Result<(Vec<u8>, String, String), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| "ce n'est pas un lien valide".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("seuls les liens http(s) sont acceptés".into());
+    }
+    let file_name = parsed
+        .path_segments()
+        .and_then(|mut s| s.next_back())
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    let mut res = client()?
+        .get(parsed.clone())
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| format!("téléchargement impossible : {e}"))?;
+    let content_type = res
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
+    if content_type.starts_with("text/html") {
+        return Err("ce lien mène à une page web, pas à un fichier audio (clic droit sur le son → « Copier l'adresse du fichier audio »)".into());
+    }
+    let mut data = Vec::new();
+    while let Some(chunk) = res.chunk().await.map_err(|e| e.to_string())? {
+        data.extend_from_slice(&chunk);
+        if data.len() > MAX_DOWNLOAD {
+            return Err("fichier trop gros (plus de 20 Mo)".into());
+        }
+    }
+    let (ext, name) = link_name(&file_name, &content_type);
+    Ok((data, ext, name))
+}
+
+/// Extension et nom d'un son à partir du nom de fichier de l'adresse.
+pub fn link_name(file_name: &str, content_type: &str) -> (String, String) {
+    const EXTS: &[&str] = &["mp3", "wav", "ogg", "flac", "m4a", "aac"];
+    let decoded = percent_decode(file_name);
+    let (stem, ext) = match decoded.rsplit_once('.') {
+        Some((stem, ext)) if EXTS.contains(&ext.to_lowercase().as_str()) => (stem.to_string(), ext.to_lowercase()),
+        _ => {
+            let ext = match content_type {
+                t if t.contains("wav") => "wav",
+                t if t.contains("ogg") => "ogg",
+                t if t.contains("flac") => "flac",
+                t if t.contains("mp4") || t.contains("aac") || t.contains("m4a") => "m4a",
+                _ => "mp3",
+            };
+            (decoded.clone(), ext.to_string())
+        }
+    };
+    let name: String = stem.replace(['_', '-', '+'], " ").trim().chars().take(60).collect();
+    let name = if name.is_empty() { "Son".to_string() } else { name };
+    (ext, name)
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(v) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct UpdateInfo {
     pub version: String,
@@ -283,6 +362,14 @@ mod tests {
                 url: "https://cdn.freesound.org/previews/0/1_2-hq.mp3".into()
             }]
         );
+    }
+
+    #[test]
+    fn names_links() {
+        assert_eq!(link_name("Vine%20Boom_sound.MP3", ""), ("mp3".into(), "Vine Boom sound".into()));
+        assert_eq!(link_name("download", "audio/wav"), ("wav".into(), "download".into()));
+        assert_eq!(link_name("", "audio/mpeg"), ("mp3".into(), "Son".into()));
+        assert_eq!(link_name("a%2", ""), ("mp3".into(), "a%2".into()));
     }
 
     #[test]
