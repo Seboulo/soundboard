@@ -13,6 +13,41 @@ pub struct Sound {
     /// Volume propre au son, 0.0 – 2.0.
     pub volume: f32,
     pub color: String,
+    /// Début et fin du son après découpe, en millisecondes.
+    #[serde(default)]
+    pub start_ms: u64,
+    #[serde(default)]
+    pub end_ms: Option<u64>,
+    /// Durée et niveau, calculés à l'import (sert à égaliser les volumes).
+    #[serde(default)]
+    pub analysis: Option<Analysis>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Analysis {
+    pub duration_ms: u64,
+    pub peak: f32,
+    pub rms: f32,
+}
+
+impl Sound {
+    /// Durée jouée, découpe comprise.
+    pub fn play_duration_ms(&self) -> Option<u64> {
+        let total = self.analysis?.duration_ms;
+        let end = self.end_ms.unwrap_or(total).min(total);
+        Some(end.saturating_sub(self.start_ms))
+    }
+
+    /// Gain qui amène le son à un niveau moyen commun sans saturer.
+    pub fn normalize_gain(&self) -> f32 {
+        const TARGET_RMS: f32 = 0.12;
+        match self.analysis {
+            Some(a) if a.rms > 0.0001 && a.peak > 0.0001 => {
+                (TARGET_RMS / a.rms).min(0.98 / a.peak).clamp(0.1, 4.0)
+            }
+            _ => 1.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +69,11 @@ pub struct Settings {
     pub stop_previous: bool,
     pub stop_hotkey: Option<String>,
     pub setup_done: bool,
+    /// Égalise le volume des sons entre eux.
+    pub normalize: bool,
+    pub launch_at_startup: bool,
+    /// Fermer la fenêtre garde l'app près de l'horloge (les raccourcis restent actifs).
+    pub close_to_tray: bool,
 }
 
 impl Default for Settings {
@@ -49,6 +89,9 @@ impl Default for Settings {
             stop_previous: false,
             stop_hotkey: Some("Pause".into()),
             setup_done: false,
+            normalize: true,
+            launch_at_startup: false,
+            close_to_tray: true,
         }
     }
 }

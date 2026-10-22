@@ -20,20 +20,49 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Morceau du nom du périphérique de sortie de VB-Audio Virtual Cable.
 pub const VB_CABLE_OUTPUT: &str = "CABLE Input";
 
+
 type Reply = Sender<Result<(), String>>;
+type PlayReply = Sender<Result<PlayOutcome, String>>;
+
+/// Ce qu'il faut pour jouer un son (découpe et gain déjà calculés).
+pub struct PlayRequest {
+    pub id: String,
+    pub path: PathBuf,
+    /// Volume du son × égalisation.
+    pub gain: f32,
+    pub start_ms: u64,
+    pub end_ms: Option<u64>,
+    /// Durée jouée, pour la barre de progression.
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlayOutcome {
+    Started,
+    Stopped,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct PlayingStatus {
+    pub id: String,
+    pub elapsed_ms: u64,
+    pub duration_ms: Option<u64>,
+}
+
+/// Identifiant réservé à la pré-écoute dans l'éditeur (casque uniquement).
+pub const PREVIEW_ID: &str = "__preview";
 
 enum Command {
     Configure(Settings, Reply),
-    Play {
-        path: PathBuf,
-        volume: f32,
-        reply: Option<Reply>,
-    },
+    /// Joue le son, ou l'arrête s'il est déjà en cours.
+    Toggle(PlayRequest, Option<PlayReply>),
+    Preview(PlayRequest, Reply),
     StopAll,
 }
 
@@ -43,11 +72,13 @@ pub struct AudioHandle {
 }
 
 impl AudioHandle {
-    pub fn spawn() -> Self {
+    /// `on_status` reçoit la liste des sons en cours ~10 fois par seconde
+    /// pendant la lecture, puis une liste vide quand tout est fini.
+    pub fn spawn(on_status: impl Fn(Vec<PlayingStatus>) + Send + 'static) -> Self {
         let (tx, rx) = mpsc::channel();
         thread::Builder::new()
             .name("audio".into())
-            .spawn(move || run(rx))
+            .spawn(move || run(rx, on_status))
             .expect("impossible de démarrer le thread audio");
         Self { tx }
     }
@@ -58,23 +89,21 @@ impl AudioHandle {
         wait(rx)
     }
 
-    pub fn play(&self, path: PathBuf, volume: f32) -> Result<(), String> {
+    pub fn toggle(&self, req: PlayRequest) -> Result<PlayOutcome, String> {
         let (reply, rx) = mpsc::channel();
-        self.send(Command::Play {
-            path,
-            volume,
-            reply: Some(reply),
-        })?;
+        self.send(Command::Toggle(req, Some(reply)))?;
         wait(rx)
     }
 
     /// Variante sans attente, utilisée par les raccourcis globaux.
-    pub fn play_detached(&self, path: PathBuf, volume: f32) {
-        let _ = self.send(Command::Play {
-            path,
-            volume,
-            reply: None,
-        });
+    pub fn toggle_detached(&self, req: PlayRequest) {
+        let _ = self.send(Command::Toggle(req, None));
+    }
+
+    pub fn preview(&self, req: PlayRequest) -> Result<(), String> {
+        let (reply, rx) = mpsc::channel();
+        self.send(Command::Preview(req, reply))?;
+        wait(rx)
     }
 
     pub fn stop_all(&self) {
@@ -88,7 +117,7 @@ impl AudioHandle {
     }
 }
 
-fn wait(rx: Receiver<Result<(), String>>) -> Result<(), String> {
+fn wait<T>(rx: Receiver<Result<T, String>>) -> Result<T, String> {
     rx.recv_timeout(Duration::from_secs(10))
         .unwrap_or_else(|_| Err("le moteur audio ne répond pas".into()))
 }
@@ -163,6 +192,13 @@ impl Output {
     }
 }
 
+struct Playing {
+    id: String,
+    sinks: Vec<Sink>,
+    started: Instant,
+    duration_ms: Option<u64>,
+}
+
 #[derive(Default)]
 struct Engine {
     settings: Settings,
@@ -170,31 +206,24 @@ struct Engine {
     virt: Option<Output>,
     mic_stream: Option<cpal::Stream>,
     mic_sink: Option<Sink>,
-    playing: Vec<Sink>,
+    playing: Vec<Playing>,
 }
 
-fn run(rx: Receiver<Command>) {
+fn run(rx: Receiver<Command>, on_status: impl Fn(Vec<PlayingStatus>)) {
     let mut engine = Engine::default();
-    while let Ok(cmd) = rx.recv() {
-        engine.playing.retain(|s| !s.empty());
-        match cmd {
-            Command::Configure(settings, reply) => {
-                let _ = reply.send(engine.configure(settings));
-            }
-            Command::Play {
-                path,
-                volume,
-                reply,
-            } => {
-                let res = engine.play(&path, volume);
-                if let Some(reply) = reply {
-                    let _ = reply.send(res);
-                } else if let Err(e) = res {
-                    eprintln!("lecture impossible ({}): {e}", path.display());
-                }
-            }
-            Command::StopAll => engine.stop_all(),
+    let mut last_status: Vec<PlayingStatus> = Vec::new();
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(cmd) => engine.handle(cmd),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
+        engine.playing.retain(|p| p.sinks.iter().any(|s| !s.empty()));
+        let status = engine.status();
+        if !(status.is_empty() && last_status.is_empty()) {
+            on_status(status.clone());
+        }
+        last_status = status;
     }
 }
 
@@ -316,38 +345,113 @@ impl Engine {
         Ok(())
     }
 
-    fn play(&mut self, path: &PathBuf, volume: f32) -> Result<(), String> {
-        if self.settings.stop_previous {
-            self.stop_all();
-        }
-        let targets = [
-            (&self.monitor, self.settings.monitor_volume),
-            (&self.virt, self.settings.master_volume),
-        ];
-        let mut played = false;
-        for (output, out_volume) in targets {
-            let Some(output) = output else { continue };
-            let file = File::open(path).map_err(|e| format!("fichier illisible : {e}"))?;
-            let source = Decoder::new(BufReader::new(file))
-                .map_err(|e| format!("format audio non reconnu : {e}"))?;
-            let sink = Sink::try_new(&output.handle).map_err(|e| e.to_string())?;
-            sink.set_volume(volume * out_volume);
-            sink.append(source);
-            self.playing.push(sink);
-            played = true;
-        }
-        if played {
-            Ok(())
-        } else {
-            Err("aucune sortie audio configurée".into())
+
+    fn handle(&mut self, cmd: Command) {
+        match cmd {
+            Command::Configure(settings, reply) => {
+                let _ = reply.send(self.configure(settings));
+            }
+            Command::Toggle(req, reply) => {
+                let res = self.toggle(req);
+                match reply {
+                    Some(reply) => {
+                        let _ = reply.send(res);
+                    }
+                    None => {
+                        if let Err(e) = res {
+                            eprintln!("lecture impossible : {e}");
+                        }
+                    }
+                }
+            }
+            Command::Preview(req, reply) => {
+                self.stop(PREVIEW_ID);
+                let res = self.start(req, true);
+                let _ = reply.send(res);
+            }
+            Command::StopAll => self.stop_all(),
         }
     }
 
+    fn status(&self) -> Vec<PlayingStatus> {
+        self.playing
+            .iter()
+            .filter(|p| p.id != PREVIEW_ID)
+            .map(|p| PlayingStatus {
+                id: p.id.clone(),
+                elapsed_ms: p.started.elapsed().as_millis() as u64,
+                duration_ms: p.duration_ms,
+            })
+            .collect()
+    }
+
+    fn toggle(&mut self, req: PlayRequest) -> Result<PlayOutcome, String> {
+        if self.stop(&req.id) {
+            return Ok(PlayOutcome::Stopped);
+        }
+        if self.settings.stop_previous {
+            self.stop_all();
+        }
+        self.start(req, false)?;
+        Ok(PlayOutcome::Started)
+    }
+
+    fn start(&mut self, req: PlayRequest, monitor_only: bool) -> Result<(), String> {
+        let mut targets = vec![(&self.monitor, self.settings.monitor_volume)];
+        if !monitor_only {
+            targets.push((&self.virt, self.settings.master_volume));
+        }
+        let mut sinks = Vec::new();
+        for (output, out_volume) in targets {
+            let Some(output) = output else { continue };
+            let sink = Sink::try_new(&output.handle).map_err(|e| e.to_string())?;
+            sink.set_volume(out_volume);
+            sink.append(open_source(&req)?);
+            sinks.push(sink);
+        }
+        if sinks.is_empty() {
+            return Err("aucune sortie audio configurée".into());
+        }
+        self.playing.push(Playing {
+            id: req.id,
+            sinks,
+            started: Instant::now(),
+            duration_ms: req.duration_ms,
+        });
+        Ok(())
+    }
+
+    /// Arrête un son ; renvoie vrai s'il était en cours.
+    fn stop(&mut self, id: &str) -> bool {
+        let before = self.playing.len();
+        self.playing.retain(|p| {
+            if p.id == id {
+                p.sinks.iter().for_each(Sink::stop);
+            }
+            p.id != id
+        });
+        self.playing.len() != before
+    }
+
     fn stop_all(&mut self) {
-        for sink in self.playing.drain(..) {
-            sink.stop();
+        for p in self.playing.drain(..) {
+            p.sinks.iter().for_each(Sink::stop);
         }
     }
+}
+
+fn open_source(req: &PlayRequest) -> Result<impl Source<Item = i16> + Send, String> {
+    let file = File::open(&req.path).map_err(|e| format!("fichier illisible : {e}"))?;
+    let decoder =
+        Decoder::new(BufReader::new(file)).map_err(|e| format!("format audio non reconnu : {e}"))?;
+    let length = match req.end_ms {
+        Some(end) => Duration::from_millis(end.saturating_sub(req.start_ms)),
+        None => Duration::from_secs(24 * 3600),
+    };
+    Ok(decoder
+        .skip_duration(Duration::from_millis(req.start_ms))
+        .take_duration(length)
+        .amplify(req.gain))
 }
 
 fn push(buf: &Mutex<VecDeque<f32>>, samples: impl Iterator<Item = f32>, max_len: usize) {

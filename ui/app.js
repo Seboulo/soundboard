@@ -149,6 +149,20 @@ function renderGrid() {
   const sounds = state.config.sounds.filter((s) => !q || s.name.toLowerCase().includes(q));
   grid.replaceChildren(...sounds.map(padElement));
   $("#empty").hidden = state.config.sounds.length > 0;
+  renderPlaying();
+}
+
+// Sons en cours, envoyés par le moteur audio ~10 fois par seconde.
+let playing = [];
+
+function renderPlaying() {
+  const byId = new Map(playing.map((p) => [p.id, p]));
+  document.querySelectorAll(".pad").forEach((pad) => {
+    const p = byId.get(pad.dataset.id);
+    pad.classList.toggle("playing", !!p);
+    const ratio = p && p.duration_ms ? Math.min(1, p.elapsed_ms / p.duration_ms) : 0;
+    pad.style.setProperty("--progress", ratio);
+  });
 }
 
 function padElement(sound) {
@@ -168,13 +182,15 @@ function padElement(sound) {
   edit.className = "edit";
   edit.textContent = "✎";
   edit.title = "Modifier";
-  pad.append(name, key, edit);
+  const progress = document.createElement("span");
+  progress.className = "progress";
+  pad.append(name, key, edit, progress);
 
   pad.addEventListener("click", (e) => {
     if (reorder.justDropped) return;
     if (e.target === edit) return openSoundDialog(sound);
     flash(sound.id);
-    call("play_sound", { id: sound.id });
+    call("play_sound", { id: sound.id }); // joue, ou arrête s'il est déjà en cours
   });
   pad.addEventListener("contextmenu", (e) => {
     e.preventDefault();
@@ -248,6 +264,117 @@ function openSoundDialog(sound) {
   formSound.color.value = sound.color;
   dlgSound.returnValue = "";
   dlgSound.showModal();
+  openTrim(sound);
+}
+
+// ---------- Découpe (forme d'onde) ----------
+
+const canvas = $("#wave");
+const trim = { duration: 0, start: 0, end: 0, peaks: [], drag: null };
+
+function fmtTime(ms) {
+  const s = ms / 1000;
+  return s < 60 ? s.toFixed(2) + " s" : `${Math.floor(s / 60)} min ${(s % 60).toFixed(1).padStart(4, "0")} s`;
+}
+
+async function openTrim(sound) {
+  const box = $(".trim", dlgSound);
+  trim.duration = sound.analysis?.duration_ms ?? 0;
+  box.hidden = !trim.duration;
+  if (!trim.duration) return;
+  trim.start = sound.start_ms ?? 0;
+  trim.end = Math.min(sound.end_ms ?? trim.duration, trim.duration);
+  trim.peaks = [];
+  drawTrim();
+  try {
+    trim.peaks = await invoke("get_waveform", { id: sound.id });
+  } catch (e) {
+    trim.peaks = [];
+  }
+  drawTrim();
+}
+
+function drawTrim() {
+  const ctx = canvas.getContext("2d");
+  const { width: w, height: h } = canvas;
+  const css = getComputedStyle(document.documentElement);
+  ctx.clearRect(0, 0, w, h);
+  const x = (ms) => (ms / trim.duration) * w;
+  const xs = x(trim.start);
+  const xe = x(trim.end);
+
+  // Forme d'onde : une barre par pic, plus sombre hors de la zone gardée.
+  const n = trim.peaks.length;
+  for (let i = 0; i < n; i++) {
+    const px = (i / n) * w;
+    const bh = Math.max(2, trim.peaks[i] * (h - 10));
+    const inside = px >= xs && px <= xe;
+    ctx.fillStyle = inside ? editing?.color ?? "#5865f2" : "#4e5058";
+    ctx.fillRect(px, (h - bh) / 2, Math.max(1, w / n - 1), bh);
+  }
+  if (!n) {
+    ctx.fillStyle = css.getPropertyValue("--muted");
+    ctx.font = "26px Segoe UI, sans-serif";
+    ctx.fillText("Chargement de la forme d'onde…", 20, h / 2 + 8);
+  }
+  ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
+  ctx.fillRect(0, 0, xs, h);
+  ctx.fillRect(xe, 0, w - xe, h);
+  for (const hx of [xs, xe]) {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(hx - 2, 0, 4, h);
+    ctx.fillRect(hx - 9, 0, 18, 14);
+    ctx.fillRect(hx - 9, h - 14, 18, 14);
+  }
+  $("#trim-info").textContent =
+    `${fmtTime(trim.start)} → ${fmtTime(trim.end)}  (durée ${fmtTime(trim.end - trim.start)})`;
+}
+
+function msAt(e) {
+  const r = canvas.getBoundingClientRect();
+  const ratio = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+  return Math.round(ratio * trim.duration);
+}
+
+const MIN_TRIM_MS = 50;
+
+canvas.addEventListener("pointerdown", (e) => {
+  if (!trim.duration) return;
+  const ms = msAt(e);
+  trim.drag = Math.abs(ms - trim.start) <= Math.abs(ms - trim.end) ? "start" : "end";
+  canvas.setPointerCapture(e.pointerId);
+  moveHandle(ms);
+});
+canvas.addEventListener("pointermove", (e) => trim.drag && moveHandle(msAt(e)));
+canvas.addEventListener("pointerup", () => (trim.drag = null));
+
+function moveHandle(ms) {
+  if (trim.drag === "start") trim.start = Math.min(ms, trim.end - MIN_TRIM_MS);
+  else trim.end = Math.max(ms, trim.start + MIN_TRIM_MS);
+  trim.start = Math.max(0, trim.start);
+  trim.end = Math.min(trim.duration, trim.end);
+  drawTrim();
+}
+
+$('[data-action="reset-trim"]', dlgSound).addEventListener("click", () => {
+  trim.start = 0;
+  trim.end = trim.duration;
+  drawTrim();
+});
+
+$('[data-action="preview"]', dlgSound).addEventListener("click", () => {
+  if (!editing) return;
+  call("preview_sound", {
+    id: editing.id,
+    startMs: trim.start,
+    endMs: trim.end >= trim.duration ? null : trim.end,
+    volume: Number(formSound.volume.value),
+  });
+});
+
+function trimValues() {
+  if (!trim.duration) return { start_ms: editing.start_ms ?? 0, end_ms: editing.end_ms ?? null };
+  return { start_ms: trim.start, end_ms: trim.end >= trim.duration ? null : trim.end };
 }
 
 dlgSound.addEventListener("close", () => {
@@ -259,6 +386,7 @@ dlgSound.addEventListener("close", () => {
       hotkey: formSound.hotkey.dataset.hotkey || null,
       volume: Number(formSound.volume.value),
       color: formSound.color.value,
+      ...trimValues(),
     },
   });
 });
@@ -289,6 +417,9 @@ function openSettings() {
     formSettings[k].update();
   }
   formSettings.stop_previous.checked = s.stop_previous;
+  formSettings.normalize.checked = s.normalize;
+  formSettings.launch_at_startup.checked = s.launch_at_startup;
+  formSettings.close_to_tray.checked = s.close_to_tray;
   setHotkeyInput(formSettings.stop_hotkey, s.stop_hotkey);
   dlgSettings.returnValue = "";
   dlgSettings.showModal();
@@ -306,6 +437,9 @@ dlgSettings.addEventListener("close", () => {
     master_volume: Number(f.master_volume.value),
     monitor_volume: Number(f.monitor_volume.value),
     stop_previous: f.stop_previous.checked,
+    normalize: f.normalize.checked,
+    launch_at_startup: f.launch_at_startup.checked,
+    close_to_tray: f.close_to_tray.checked,
     stop_hotkey: f.stop_hotkey.dataset.hotkey || null,
   });
 });
@@ -404,6 +538,126 @@ listen("tauri://drag-drop", async (event) => {
 // ---------- Événements venant des raccourcis globaux ----------
 
 listen("sound-triggered", (event) => flash(event.payload));
+listen("playing", (event) => {
+  playing = event.payload ?? [];
+  renderPlaying();
+});
+// Analyse des anciens sons terminée en arrière-plan.
+listen("state-changed", async () => render(await invoke("get_state")));
+
+listen("update-available", (event) => {
+  $("#update-version").textContent = event.payload.version;
+  $("#update").hidden = false;
+});
+$("#btn-update").addEventListener("click", async (e) => {
+  e.target.disabled = true;
+  e.target.textContent = "Téléchargement…";
+  try {
+    await invoke("install_update");
+  } catch (err) {
+    toast(String(err), true);
+    e.target.disabled = false;
+    e.target.textContent = "Installer et redémarrer";
+  }
+});
+
+// ---------- Recherche en ligne ----------
+
+const dlgOnline = $("#dlg-online");
+const onlineForm = $("#online-form");
+const results = $("#online-results");
+const moreBtn = $("#online-more");
+const online = { query: "", page: 1, audio: new Audio(), playingBtn: null };
+
+$("#btn-online").addEventListener("click", () => {
+  dlgOnline.showModal();
+  onlineForm.q.focus();
+  onlineForm.q.select();
+});
+$('[data-action="close"]', dlgOnline).addEventListener("click", () => dlgOnline.close());
+dlgOnline.addEventListener("close", stopOnlinePreview);
+
+onlineForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  online.query = onlineForm.q.value.trim();
+  online.page = 1;
+  results.replaceChildren();
+  searchOnline();
+});
+moreBtn.addEventListener("click", () => {
+  online.page += 1;
+  searchOnline();
+});
+
+async function searchOnline() {
+  if (!online.query) return;
+  moreBtn.hidden = true;
+  const loading = document.createElement("div");
+  loading.className = "empty-msg";
+  loading.textContent = "Recherche…";
+  results.append(loading);
+  let items = [];
+  try {
+    items = await invoke("search_online", { query: online.query, page: online.page });
+  } catch (e) {
+    loading.textContent = String(e);
+    return;
+  }
+  loading.remove();
+  if (items.length === 0 && online.page === 1) {
+    const msg = document.createElement("div");
+    msg.className = "empty-msg";
+    msg.textContent = "Aucun son trouvé. Essaie un autre mot, en anglais par exemple.";
+    results.append(msg);
+  }
+  results.append(...items.map(resultRow));
+  moreBtn.hidden = items.length === 0;
+}
+
+function resultRow(item) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const play = document.createElement("button");
+  play.type = "button";
+  play.textContent = "▶";
+  play.title = "Écouter (dans tes haut-parleurs seulement)";
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = item.name;
+  name.title = item.name;
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "primary";
+  add.textContent = "+ Ajouter";
+  row.append(play, name, add);
+
+  play.addEventListener("click", () => toggleOnlinePreview(item, play));
+  add.addEventListener("click", async () => {
+    add.disabled = true;
+    add.textContent = "…";
+    const res = await call("add_online", { name: item.name, url: item.url });
+    add.textContent = res ? "✓ Ajouté" : "+ Ajouter";
+    add.disabled = !!res;
+  });
+  return row;
+}
+
+function toggleOnlinePreview(item, btn) {
+  const wasThis = online.playingBtn === btn;
+  stopOnlinePreview();
+  if (wasThis) return;
+  online.audio.src = item.url;
+  online.audio.play().catch((e) => toast("Lecture impossible : " + e.message, true));
+  online.playingBtn = btn;
+  btn.textContent = "■";
+  online.audio.onended = stopOnlinePreview;
+}
+
+function stopOnlinePreview() {
+  online.audio.pause();
+  if (online.playingBtn) online.playingBtn.textContent = "▶";
+  online.playingBtn = null;
+}
 
 // ---------- Démarrage ----------
 

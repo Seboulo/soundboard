@@ -24,10 +24,19 @@ Dans **Paramètres utilisateur → Voix et vidéo** :
 ## Utilisation
 
 - **Ajouter des sons** : glisse des fichiers MP3, WAV, OGG, FLAC ou M4A dans la fenêtre, ou clique sur « Ajouter des sons ». Les fichiers sont copiés dans le dossier de l'app.
-- **Jouer** : clic sur un pad, ou son raccourci global (marche même quand Discord ou un jeu est au premier plan).
-- **Modifier** : clic droit sur un pad (ou ✎) pour le nom, le raccourci, le volume et la couleur.
+- **Chercher en ligne** : bouton « 🔎 Chercher en ligne » pour trouver des sons sur myinstants.com, les écouter et les ajouter en un clic.
+- **Jouer / arrêter** : clic sur un pad ou son raccourci global (marche même quand Discord ou un jeu est au premier plan). Re-cliquer (ou re-appuyer) arrête le son. Une barre montre la progression.
+- **Modifier** : clic droit sur un pad (ou ✎) pour le nom, le raccourci, le volume, la couleur et la **découpe** (glisse les poignées sur la forme d'onde pour couper le début et la fin, puis « Écouter »).
 - **Réorganiser** : glisse un pad sur un autre.
 - **Tout arrêter** : bouton « Stop » ou touche **Pause** par défaut.
+
+Dans les réglages :
+
+- **Égaliser le volume** (activé par défaut) : les sons trop forts ou trop faibles sont ramenés à un niveau commun.
+- **Lancer au démarrage de Windows** : l'app démarre discrètement près de l'horloge.
+- **Fermer la fenêtre garde l'app près de l'horloge** : les raccourcis restent actifs. Clic sur l'icône pour rouvrir, clic droit → « Quitter » pour fermer vraiment.
+
+Quand une nouvelle version est publiée, un bandeau propose de l'installer en un clic.
 
 Astuce raccourcis : le pavé numérique ou F13–F24 évitent les conflits avec les jeux.
 
@@ -48,13 +57,15 @@ Structure :
 - `src-tauri/src/audio.rs` : moteur audio (casque + câble virtuel + mixage du micro), dans un thread dédié
 - `src-tauri/src/lib.rs` : commandes appelées par l'interface, raccourcis globaux, assistant
 - `src-tauri/src/config.rs` : sauvegarde de la config (JSON)
+- `src-tauri/src/analysis.rs` : durée, niveau et forme d'onde des sons
+- `src-tauri/src/online.rs` : recherche et téléchargement sur myinstants.com
 - `ui/` : interface (HTML/CSS/JS sans framework)
 
 ### Publier une version
 
-Le workflow `.github/workflows/release.yml` compile l'installeur Windows à chaque push. Pour publier une release téléchargeable :
+Le workflow `.github/workflows/release.yml` compile l'installeur Windows à chaque push. Les mises à jour sont signées : la clé privée doit être enregistrée dans le secret `TAURI_SIGNING_PRIVATE_KEY` du dépôt (la clé publique est dans `tauri.conf.json`). Pour publier une release téléchargeable, monte la version dans `tauri.conf.json`, `Cargo.toml` et `package.json`, puis :
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```

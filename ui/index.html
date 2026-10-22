@@ -12,11 +12,17 @@
     <button id="cable-status" class="pill" type="button" title="État du câble virtuel"></button>
     <div class="spacer"></div>
     <input id="search" type="search" placeholder="Rechercher…" autocomplete="off">
+    <button id="btn-online" type="button">🔎 Chercher en ligne</button>
     <button id="btn-add" type="button" class="primary">+ Ajouter des sons</button>
     <button id="btn-stop" type="button" class="danger" title="Tout arrêter">■ Stop</button>
     <button id="btn-settings" type="button" class="icon" title="Réglages">⚙</button>
   </header>
 
+  <div id="update" class="update" hidden>
+    <span>Nouvelle version <b id="update-version"></b> disponible.</span>
+    <div class="spacer"></div>
+    <button type="button" class="primary" id="btn-update">Installer et redémarrer</button>
+  </div>
   <div id="warnings" class="warnings" hidden></div>
 
   <main>
@@ -31,7 +37,7 @@
   <div id="toast" class="toast" hidden></div>
 
   <!-- Édition d'un son -->
-  <dialog id="dlg-sound">
+  <dialog id="dlg-sound" class="wide">
     <form method="dialog" class="form">
       <h2>Modifier le son</h2>
       <label>Nom <input name="sound_name" required maxlength="60"></label>
@@ -39,6 +45,16 @@
         <input name="hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche">
       </label>
       <p class="hint">Astuce : le pavé numérique (Num 1, Num 2…) ou F13–F24 évitent les conflits avec les jeux. Retour arrière pour effacer.</p>
+      <div class="trim">
+        <span class="label">Découpe : glisse les poignées pour couper le début et la fin</span>
+        <canvas id="wave" width="1200" height="180"></canvas>
+        <div class="trim-bar">
+          <span id="trim-info"></span>
+          <div class="spacer"></div>
+          <button type="button" data-action="preview">▶ Écouter</button>
+          <button type="button" data-action="reset-trim">Tout garder</button>
+        </div>
+      </div>
       <label>Volume <span class="value" data-for="volume"></span>
         <input name="volume" type="range" min="0" max="2" step="0.05">
       </label>
@@ -76,6 +92,9 @@
         <input name="monitor_volume" type="range" min="0" max="1.5" step="0.05">
       </label>
       <label class="check"><input name="stop_previous" type="checkbox"> Un nouveau son coupe ceux en cours</label>
+      <label class="check"><input name="normalize" type="checkbox"> Égaliser le volume des sons entre eux</label>
+      <label class="check"><input name="launch_at_startup" type="checkbox"> Lancer au démarrage de Windows (discrètement, près de l'horloge)</label>
+      <label class="check"><input name="close_to_tray" type="checkbox"> Fermer la fenêtre garde l'app près de l'horloge (les raccourcis restent actifs)</label>
       <label>Raccourci « Tout arrêter »
         <input name="stop_hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche">
       </label>
@@ -86,6 +105,24 @@
         <button value="save" class="primary">Enregistrer</button>
       </div>
     </form>
+  </dialog>
+
+  <!-- Recherche en ligne -->
+  <dialog id="dlg-online" class="wide">
+    <div class="form">
+      <h2>Chercher des sons en ligne</h2>
+      <form id="online-form" class="search-row">
+        <input name="q" type="search" placeholder="bruh, airhorn, rire, fail…" autocomplete="off" required>
+        <button class="primary">Rechercher</button>
+      </form>
+      <div id="online-results" class="results"></div>
+      <div class="actions">
+        <span class="hint">Sons proposés par myinstants.com</span>
+        <div class="spacer"></div>
+        <button type="button" id="online-more" hidden>Plus de résultats</button>
+        <button type="button" data-action="close">Fermer</button>
+      </div>
+    </div>
   </dialog>
 
   <!-- Assistant de premier lancement -->
