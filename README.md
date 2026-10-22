@@ -6,7 +6,7 @@ L'app joue chaque son à deux endroits en même temps : dans ton casque, pour qu
 
 ## Installation
 
-1. Télécharge `Soundboard_x.y.z_x64-setup.exe` depuis la page **Releases** et lance-le.
+1. Télécharge `Soundboard_x.y.z_x64-setup.exe` depuis la [page Releases](https://github.com/Seboulo/soundboard/releases/latest) et lance-le.
    Windows peut afficher « Windows a protégé votre ordinateur » (l'app n'est pas signée) : clique sur **Informations complémentaires** puis **Exécuter quand même**.
 2. Au premier lancement, l'assistant te guide :
    - installation de VB-Cable (clic droit sur `VBCABLE_Setup_x64.exe` → *Exécuter en tant qu'administrateur*, puis redémarrage si demandé) ;
@@ -36,7 +36,7 @@ Dans les réglages :
 - **Lancer au démarrage de Windows** : l'app démarre discrètement près de l'horloge.
 - **Fermer la fenêtre garde l'app près de l'horloge** : les raccourcis restent actifs. Clic sur l'icône pour rouvrir, clic droit → « Quitter » pour fermer vraiment.
 
-Quand une nouvelle version est publiée, un bandeau propose de l'installer en un clic.
+Pour mettre à jour : télécharge la dernière version sur la page Releases et installe-la par-dessus (sons et réglages conservés).
 
 Astuce raccourcis : le pavé numérique ou F13–F24 évitent les conflits avec les jeux.
 
@@ -63,9 +63,9 @@ Structure :
 
 ### Publier une version
 
-Le workflow `.github/workflows/release.yml` compile l'installeur Windows à chaque push. Les mises à jour sont signées : la clé privée doit être enregistrée dans le secret `TAURI_SIGNING_PRIVATE_KEY` du dépôt (la clé publique est dans `tauri.conf.json`). Pour publier une release téléchargeable, monte la version dans `tauri.conf.json`, `Cargo.toml` et `package.json`, puis :
+Le workflow `.github/workflows/release.yml` compile l'installeur Windows à chaque push. Pour publier une release téléchargeable, monte la version dans `tauri.conf.json`, `Cargo.toml` et `package.json`, puis :
 
 ```sh
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.2.1
+git push origin v0.2.1
 ```

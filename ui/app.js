@@ -545,22 +545,6 @@ listen("playing", (event) => {
 // Analyse des anciens sons terminée en arrière-plan.
 listen("state-changed", async () => render(await invoke("get_state")));
 
-listen("update-available", (event) => {
-  $("#update-version").textContent = event.payload.version;
-  $("#update").hidden = false;
-});
-$("#btn-update").addEventListener("click", async (e) => {
-  e.target.disabled = true;
-  e.target.textContent = "Téléchargement…";
-  try {
-    await invoke("install_update");
-  } catch (err) {
-    toast(String(err), true);
-    e.target.disabled = false;
-    e.target.textContent = "Installer et redémarrer";
-  }
-});
-
 // ---------- Recherche en ligne ----------
 
 const dlgOnline = $("#dlg-online");

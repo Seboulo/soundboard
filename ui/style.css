@@ -74,17 +74,6 @@ input[type="checkbox"] { width: auto; }
 .pill.ok { background: color-mix(in srgb, var(--ok) 25%, transparent); border-color: var(--ok); }
 .pill.ko { background: color-mix(in srgb, var(--warn) 25%, transparent); border-color: var(--warn); }
 
-.update {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 10px 16px 0;
-  padding: 8px 12px;
-  border-left: 3px solid var(--accent);
-  background: color-mix(in srgb, var(--accent) 15%, var(--panel));
-  border-radius: 4px;
-}
-
 .warnings {
   margin: 10px 16px 0;
   padding: 8px 12px;

@@ -19,7 +19,6 @@ use tauri_plugin_autostart::ManagerExt as AutostartExt;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_opener::OpenerExt;
-use tauri_plugin_updater::UpdaterExt;
 
 const AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "ogg", "flac", "m4a", "aac"];
 const COLORS: &[&str] = &[
@@ -457,42 +456,6 @@ async fn add_online(app: AppHandle, name: String, url: String) -> Result<Snapsho
     Ok(state.snapshot())
 }
 
-#[derive(Clone, Serialize)]
-struct UpdateInfo {
-    version: String,
-    notes: Option<String>,
-}
-
-/// Prévient l'interface si une nouvelle version est publiée sur GitHub.
-async fn check_update(app: AppHandle) {
-    let Ok(updater) = app.updater() else { return };
-    if let Ok(Some(update)) = updater.check().await {
-        let _ = app.emit(
-            "update-available",
-            UpdateInfo {
-                version: update.version.clone(),
-                notes: update.body.clone(),
-            },
-        );
-    }
-}
-
-#[tauri::command]
-async fn install_update(app: AppHandle) -> Result<(), String> {
-    let update = app
-        .updater()
-        .map_err(|e| e.to_string())?
-        .check()
-        .await
-        .map_err(|e| format!("vérification impossible : {e}"))?
-        .ok_or("aucune mise à jour disponible")?;
-    update
-        .download_and_install(|_, _| {}, || {})
-        .await
-        .map_err(|e| format!("mise à jour impossible : {e}"))?;
-    app.restart();
-}
-
 #[tauri::command]
 fn stop_all(state: State<AppState>) {
     state.audio.stop_all();
@@ -550,7 +513,6 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![MINIMIZED_ARG]),
         ))
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(
@@ -591,7 +553,6 @@ pub fn run() {
             apply_autostart(app.handle(), config.settings.launch_at_startup);
             analyze_missing(app.handle().clone());
             build_tray(app.handle())?;
-            tauri::async_runtime::spawn(check_update(app.handle().clone()));
 
             // Lancé avec Windows : on reste discret près de l'horloge.
             if !std::env::args().any(|a| a == MINIMIZED_ARG) {
@@ -622,7 +583,6 @@ pub fn run() {
             get_waveform,
             search_online,
             add_online,
-            install_update,
             stop_all,
             open_vb_cable_page,
         ])
