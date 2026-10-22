@@ -28,13 +28,21 @@ jobs:
 
       - run: npm ci
 
-      # Clé qui signe les mises à jour (secret du dépôt). Sans elle,
-      # l'app refuserait d'installer les nouvelles versions.
+      # Clé qui signe les mises à jour (secret du dépôt). Sans elle, on
+      # construit quand même l'installeur, mais sans fichiers de mise à jour.
       - name: Clé de signature
         shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
-          echo "TAURI_SIGNING_PRIVATE_KEY=${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" >> "$GITHUB_ENV"
-          echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
+          if [ -n "$KEY" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY=$KEY" >> "$GITHUB_ENV"
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
+            echo "BUILD_ARGS=" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Secret TAURI_SIGNING_PRIVATE_KEY absent : pas de mise à jour automatique pour cette version."
+            echo 'BUILD_ARGS=--config {"bundle":{"createUpdaterArtifacts":false}}' >> "$GITHUB_ENV"
+          fi
 
       # Sur un tag vX.Y.Z : crée une release GitHub avec l'installeur.
       - name: Build et release
@@ -49,11 +57,13 @@ jobs:
             Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le.
             Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
           releaseDraft: false
+          args: ${{ env.BUILD_ARGS }}
 
       # Sinon : simple build, installeur disponible dans les artefacts du run.
       - name: Build
         if: "!startsWith(github.ref, 'refs/tags/v')"
-        run: npm run build
+        shell: bash
+        run: npm run build -- $BUILD_ARGS
 
       - name: Installeur en artefact
         if: "!startsWith(github.ref, 'refs/tags/v')"
