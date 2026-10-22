@@ -28,7 +28,7 @@ Les bruits de clavier, de souris et de fond sont filtrés par l'app elle-même, 
 - **Ajouter des sons** : glisse des fichiers MP3, WAV, OGG, FLAC ou M4A dans la fenêtre, ou clique sur « Ajouter des sons ». Les fichiers sont copiés dans le dossier de l'app.
 - **Chercher en ligne** : bouton « 🔎 En ligne » pour trouver des sons sur **MyInstants** (mèmes, répliques) ou **Freesound** (bruitages, ambiances), les écouter et les ajouter en un clic. Freesound demande une clé gratuite à coller dans les réglages ([demande de clé](https://freesound.org/apiv2/apply)).
 - **Jouer / arrêter** : clic sur un pad ou son raccourci global (marche même quand Discord ou un jeu est au premier plan). Re-cliquer (ou re-appuyer) arrête le son. Une barre montre la progression. Le volume des écoutes de la recherche en ligne se règle dans sa fenêtre.
-- **Modifier** : clic droit sur un pad (ou ✎) pour le nom, le raccourci, le volume, la couleur et la **découpe** (glisse les poignées sur la forme d'onde pour couper le début et la fin, puis « Écouter »).
+- **Modifier** : clic droit sur un pad (ou ✎) pour le nom, l'emoji, le raccourci, le volume, la couleur et la **découpe** (glisse les poignées sur la forme d'onde pour couper le début et la fin, puis « Écouter »).
 - **Onglets** : donne un onglet à un son (champ « Onglet » quand tu le modifies) pour ranger tes sons par thème.
 - **Boucle** : coche « Jouer en boucle » sur un son (musique d'ambiance…) ; re-clique pour l'arrêter.
 - **🎲 Au hasard** : joue un son au hasard de l'onglet affiché (un raccourci peut aussi être réglé).

@@ -343,6 +343,7 @@ fn store_sound(
         analysis: Some(analysis),
         category: None,
         looping: false,
+        emoji: None,
     })
 }
 
@@ -350,6 +351,13 @@ fn clean_category(category: Option<String>) -> Option<String> {
     category
         .map(|c| c.trim().chars().take(30).collect::<String>())
         .filter(|c| !c.is_empty())
+}
+
+/// Un emoji peut faire plusieurs caractères (drapeaux, couleurs de peau…).
+fn clean_emoji(emoji: Option<String>) -> Option<String> {
+    emoji
+        .map(|e| e.trim().chars().take(8).collect::<String>())
+        .filter(|e| !e.is_empty())
 }
 
 #[tauri::command]
@@ -413,6 +421,7 @@ fn update_sound(app: AppHandle, state: State<AppState>, sound: Sound) -> Result<
         existing.color = sound.color;
         existing.category = clean_category(sound.category);
         existing.looping = sound.looping;
+        existing.emoji = clean_emoji(sound.emoji);
         let total = existing.analysis.map(|a| a.duration_ms).unwrap_or(u64::MAX);
         existing.start_ms = sound.start_ms.min(total);
         // Une fin au bout du fichier revient à « pas de découpe ».
@@ -617,6 +626,8 @@ struct PackSound {
     category: Option<String>,
     #[serde(default)]
     looping: bool,
+    #[serde(default)]
+    emoji: Option<String>,
 }
 
 fn one() -> f32 {
@@ -653,6 +664,7 @@ fn write_pack(dest: &Path, sounds: &[Sound]) -> Result<usize, String> {
             end_ms: s.end_ms,
             category: s.category.clone(),
             looping: s.looping,
+            emoji: s.emoji.clone(),
         });
     }
     zip.start_file("pack.json", options).map_err(|e| e.to_string())?;
@@ -735,6 +747,7 @@ fn read_pack(src: &Path, config: &Config, sounds_dir: &Path) -> Result<(Vec<Soun
                 sound.end_ms = p.end_ms.filter(|&e| e < total_ms && e > sound.start_ms);
                 sound.category = clean_category(p.category);
                 sound.looping = p.looping;
+                sound.emoji = clean_emoji(p.emoji);
                 added.push(sound);
             }
             Err(e) => errors.push(format!("{} : {e}", p.name)),

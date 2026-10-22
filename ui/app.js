@@ -227,19 +227,35 @@ function padElement(sound) {
   pad.dataset.id = sound.id;
   pad.style.setProperty("--pad-color", sound.color);
 
+  const icon = document.createElement("span");
+  icon.className = "icon" + (sound.emoji ? " emoji" : "");
+  // Sans emoji : l'initiale du son dans une pastille de sa couleur.
+  icon.textContent = sound.emoji || [...sound.name.trim()][0]?.toUpperCase() || "♪";
+  const eq = document.createElement("span");
+  eq.className = "eq";
+  eq.append(...[0, 1, 2, 3].map(() => document.createElement("i")));
   const name = document.createElement("span");
   name.className = "name";
   name.textContent = sound.name;
   const key = document.createElement("span");
   key.className = "key";
-  key.textContent = (sound.looping ? "↻ " : "") + (hotkeyLabel(sound.hotkey) || "—");
+  if (sound.looping) {
+    const loop = document.createElement("b");
+    loop.textContent = "↻ boucle";
+    key.append(loop);
+  }
+  if (sound.hotkey) {
+    const kbd = document.createElement("kbd");
+    kbd.textContent = hotkeyLabel(sound.hotkey);
+    key.append(kbd);
+  }
   const edit = document.createElement("span");
   edit.className = "edit";
   edit.textContent = "✎";
   edit.title = "Modifier";
   const progress = document.createElement("span");
   progress.className = "progress";
-  pad.append(name, key, edit, progress);
+  pad.append(icon, eq, name, key, edit, progress);
 
   pad.addEventListener("click", (e) => {
     if (reorder.justDropped) return;
@@ -319,10 +335,33 @@ function openSoundDialog(sound) {
   formSound.color.value = sound.color;
   formSound.category.value = sound.category ?? "";
   formSound.looping.checked = !!sound.looping;
+  formSound.emoji.value = sound.emoji ?? "";
+  renderEmojiPicks();
   dlgSound.returnValue = "";
   dlgSound.showModal();
   openTrim(sound);
 }
+
+const EMOJIS = ["😂", "🤣", "😱", "💀", "🔥", "💥", "👏", "🎉", "📯", "🥁", "🎺", "🎵", "🚨", "🐐", "🤡", "👀", "🍆", "💨", "😡", "🙏"];
+
+function renderEmojiPicks() {
+  const box = $("#emoji-picks");
+  const current = formSound.emoji.value;
+  box.replaceChildren(
+    ...EMOJIS.map((e) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = e;
+      b.classList.toggle("active", e === current);
+      b.addEventListener("click", () => {
+        formSound.emoji.value = formSound.emoji.value === e ? "" : e;
+        renderEmojiPicks();
+      });
+      return b;
+    })
+  );
+}
+formSound.emoji.addEventListener("input", renderEmojiPicks);
 
 // ---------- Découpe (forme d'onde) ----------
 
@@ -445,6 +484,7 @@ dlgSound.addEventListener("close", () => {
       color: formSound.color.value,
       category: formSound.category.value.trim() || null,
       looping: formSound.looping.checked,
+      emoji: formSound.emoji.value.trim() || null,
       ...trimValues(),
     },
   });

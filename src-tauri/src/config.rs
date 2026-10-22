@@ -27,6 +27,9 @@ pub struct Sound {
     /// Rejoue le son en boucle jusqu'à ce qu'on l'arrête.
     #[serde(default)]
     pub looping: bool,
+    /// Emoji affiché sur le pad.
+    #[serde(default)]
+    pub emoji: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

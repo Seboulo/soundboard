@@ -8,13 +8,13 @@
 </head>
 <body>
   <header class="topbar">
-    <h1>Soundboard</h1>
+    <div class="brand"><span class="logo">🔊</span><h1>Soundboard</h1></div>
     <button id="cable-status" class="pill" type="button" title="État du câble virtuel"></button>
     <button id="mic-toggle" class="pill" type="button" hidden></button>
     <div class="spacer"></div>
     <input id="search" type="search" placeholder="Rechercher…" autocomplete="off">
     <button id="btn-online" type="button"title="Chercher des sons sur internet">🔎 En ligne</button>
-    <button id="btn-add" type="button" class="primary">+ Ajouter des sons</button>
+    <button id="btn-add" type="button" class="primary"title="Ajouter des fichiers audio">+ Ajouter</button>
     <button id="btn-stop" type="button" class="danger" title="Tout arrêter">■ Stop</button>
     <button id="btn-settings" type="button" class="icon" title="Réglages">⚙</button>
   </header>
@@ -38,6 +38,7 @@
   <main>
     <div id="grid" class="grid"></div>
     <div id="empty" class="empty" hidden>
+      <div class="empty-icon">🎧</div>
       <p class="big">Aucun son pour l'instant</p>
       <p>Glisse des fichiers audio (MP3, WAV, OGG, FLAC…) dans la fenêtre, ou clique sur « Ajouter des sons ».</p>
     </div>
@@ -70,6 +71,11 @@
       <label>Volume <span class="value" data-for="volume"></span>
         <input name="volume" type="range" min="0" max="2" step="0.05">
       </label>
+      <div class="emoji-row">
+        <label>Emoji <input name="emoji" maxlength="16" placeholder="🙂" class="emoji-input"></label>
+        <div id="emoji-picks" class="emoji-picks"></div>
+      </div>
+      <p class="hint">Choisis-en un ou tape celui que tu veux (Windows + . ouvre le clavier d'emojis).</p>
       <div class="row2">
         <label>Onglet
           <input name="category" list="categories" maxlength="30" placeholder="Aucun (seulement dans « Tous »)">
