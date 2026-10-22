@@ -129,6 +129,7 @@ function render(snapshot) {
   renderWarnings();
   renderTabs();
   renderGrid();
+  $("#version").textContent = `Soundboard v${state.version}`;
 }
 
 function renderMic() {
@@ -712,6 +713,26 @@ const CREDITS = {
 try {
   online.source = localStorage.getItem("soundboard.source") || "myinstants";
 } catch {}
+
+// Volume des écoutes de la recherche en ligne (ne touche pas aux sons de la soundboard).
+const volumeInput = $("#online-volume");
+function applyOnlineVolume() {
+  online.audio.volume = Number(volumeInput.value);
+  $("#online-volume-value").textContent = Math.round(volumeInput.value * 100) + " %";
+}
+try {
+  const saved = localStorage.getItem("soundboard.onlineVolume");
+  volumeInput.value = saved !== null ? saved : 0.5;
+} catch {
+  volumeInput.value = 0.5;
+}
+applyOnlineVolume();
+volumeInput.addEventListener("input", () => {
+  applyOnlineVolume();
+  try {
+    localStorage.setItem("soundboard.onlineVolume", volumeInput.value);
+  } catch {}
+});
 
 function setSource(source) {
   online.source = source;

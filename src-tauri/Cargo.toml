@@ -1,6 +1,6 @@
 [package]
 name = "soundboard"
-version = "0.4.0"
+version = "0.4.1"
 description = "Soundboard pour Discord : joue des sons dans ton micro via un câble audio virtuel"
 edition = "2021"
 

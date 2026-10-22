@@ -161,6 +161,21 @@ main { padding: 16px; }
   pointer-events: none;
 }
 
+.version {
+  position: fixed;
+  right: 12px;
+  bottom: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  opacity: .7;
+  pointer-events: none;
+}
+main { padding-bottom: 32px; }
+
+.form label.volume-row { flex-direction: row; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; }
+.form label.volume-row input { flex: 1; }
+.form label.volume-row .value { width: 44px; text-align: right; }
+
 .toast {
   position: fixed;
   bottom: 16px;

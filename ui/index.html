@@ -43,6 +43,8 @@
     </div>
   </main>
 
+  <footer id="version" class="version"></footer>
+
   <div id="drop-overlay" class="drop-overlay" hidden><p>Lâche tes fichiers pour les ajouter</p></div>
   <div id="toast" class="toast" hidden></div>
 
@@ -166,6 +168,10 @@
         <input name="q" type="search" placeholder="bruh, airhorn, rire, fail…" autocomplete="off" required>
         <button class="primary">Rechercher</button>
       </form>
+      <label class="volume-row">🔊 Volume des écoutes
+        <input id="online-volume" type="range" min="0" max="1" step="0.05">
+        <span class="value" id="online-volume-value"></span>
+      </label>
       <div id="online-results" class="results"></div>
       <div class="actions">
         <span class="hint" id="online-credit">Sons proposés par myinstants.com</span>
