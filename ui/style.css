@@ -12,7 +12,36 @@
   --warn: #d97706;
   --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
   --shadow-lg: 0 12px 32px rgba(16, 24, 40, .14);
+  --pad-base: #ffffff;
+  --ink-base: #1c1e23;
+  --tint-amount: 20%;
+  --ink-amount: 45%;
+  --chip: rgba(255, 255, 255, .7);
+  --wave-off: #c9cdd4;
+  --wave-mask: rgba(244, 245, 247, .65);
   color-scheme: light;
+}
+
+/* Mode nuit : mêmes couleurs douces sur fond sombre */
+:root[data-theme="dark"] {
+  --bg: #16171b;
+  --panel: #202127;
+  --panel-2: #26282f;
+  --border: #33353d;
+  --text: #ececf1;
+  --muted: #9a9fab;
+  --accent: #7c83f5;
+  --on-accent: #ffffff;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .3);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, .45);
+  --pad-base: #202127;
+  --ink-base: #ffffff;
+  --tint-amount: 20%;
+  --ink-amount: 55%;
+  --chip: rgba(0, 0, 0, .22);
+  --wave-off: #4a4d57;
+  --wave-mask: rgba(22, 23, 27, .65);
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -104,8 +133,8 @@ input[type="checkbox"] { width: auto; }
   font-size: 12px;
 }
 .pill { box-shadow: none; }
-.pill.ok { background: color-mix(in srgb, var(--ok) 10%, var(--panel)); border-color: color-mix(in srgb, var(--ok) 35%, var(--border)); color: color-mix(in srgb, var(--ok) 80%, #000); }
-.pill.ko { background: color-mix(in srgb, var(--warn) 10%, var(--panel)); border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); color: color-mix(in srgb, var(--warn) 85%, #000); }
+.pill.ok { background: color-mix(in srgb, var(--ok) 10%, var(--panel)); border-color: color-mix(in srgb, var(--ok) 35%, var(--border)); color: color-mix(in srgb, var(--ok) 80%, var(--ink-base)); }
+.pill.ko { background: color-mix(in srgb, var(--warn) 10%, var(--panel)); border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); color: color-mix(in srgb, var(--warn) 85%, var(--ink-base)); }
 .pill:hover { filter: none; }
 
 .warnings {
@@ -127,8 +156,8 @@ main { padding: 16px; }
 
 .pad {
   --c: var(--pad-color, var(--accent));
-  --tint: color-mix(in srgb, var(--c) 20%, #fff);
-  --ink: color-mix(in srgb, var(--c) 45%, #1c1e23);
+  --tint: color-mix(in srgb, var(--c) var(--tint-amount), var(--pad-base));
+  --ink: color-mix(in srgb, var(--c) var(--ink-amount), var(--ink-base));
   position: relative;
   aspect-ratio: 1;
   display: flex;
@@ -140,7 +169,7 @@ main { padding: 16px; }
   text-align: center;
   overflow: hidden;
   background: var(--tint);
-  border: 1px solid color-mix(in srgb, var(--c) 28%, #fff);
+  border: 1px solid color-mix(in srgb, var(--c) 28%, var(--pad-base));
   border-radius: 18px;
   box-shadow: none;
   transition: transform .12s ease, background .2s ease, box-shadow .2s ease;
@@ -148,7 +177,7 @@ main { padding: 16px; }
 .pad:hover {
   filter: none;
   transform: translateY(-2px);
-  background: color-mix(in srgb, var(--c) 28%, #fff);
+  background: color-mix(in srgb, var(--c) calc(var(--tint-amount) + 8%), var(--pad-base));
   box-shadow: 0 10px 24px color-mix(in srgb, var(--c) 22%, transparent);
 }
 .pad:active { transform: scale(.96); }
@@ -161,7 +190,7 @@ main { padding: 16px; }
   font-size: 24px;
   font-weight: 700;
   color: var(--ink);
-  background: rgba(255, 255, 255, .7);
+  background: var(--chip);
   pointer-events: none;
 }
 .pad .icon.emoji { font-size: 32px; }
@@ -194,7 +223,7 @@ main { padding: 16px; }
   font: inherit;
   padding: 1px 7px;
   border-radius: 6px;
-  background: rgba(255, 255, 255, .6);
+  background: var(--chip);
 }
 .pad .key b { font-weight: 600; }
 .pad .edit {
@@ -208,12 +237,12 @@ main { padding: 16px; }
   border-radius: 8px;
   font-size: 13px;
   color: var(--ink);
-  background: rgba(255, 255, 255, .75);
+  background: var(--chip);
   opacity: 0;
   transition: opacity .15s;
 }
 .pad:hover .edit { opacity: 1; }
-.pad .edit:hover { background: #fff; }
+.pad .edit:hover { background: var(--panel); }
 .pad .progress {
   position: absolute;
   left: 0;
@@ -252,8 +281,8 @@ main { padding: 16px; }
   50% { height: 100%; }
 }
 .pad.playing {
-  background: color-mix(in srgb, var(--c) 34%, #fff);
-  border-color: color-mix(in srgb, var(--c) 60%, #fff);
+  background: color-mix(in srgb, var(--c) calc(var(--tint-amount) + 14%), var(--pad-base));
+  border-color: color-mix(in srgb, var(--c) 60%, var(--pad-base));
 }
 .pad.playing .key kbd, .pad.playing .key b { display: none; }
 .pad.playing .key::after { content: "■ clic pour arrêter"; font-weight: 600; }
@@ -487,3 +516,5 @@ dialog::backdrop { background: rgba(16, 24, 40, .35); backdrop-filter: blur(2px)
   background: var(--bg);
 }
 .emoji-picks button.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 30%, var(--bg)); }
+
+#btn-theme { font-size: 16px; padding: 4px 10px; }

@@ -405,7 +405,7 @@ function drawTrim() {
     const px = (i / n) * w;
     const bh = Math.max(2, trim.peaks[i] * (h - 10));
     const inside = px >= xs && px <= xe;
-    ctx.fillStyle = inside ? editing?.color ?? "#4f46e5" : "#c9cdd4";
+    ctx.fillStyle = inside ? editing?.color ?? "#4f46e5" : css.getPropertyValue("--wave-off");
     ctx.fillRect(px, (h - bh) / 2, Math.max(1, w / n - 1), bh);
   }
   if (!n) {
@@ -413,11 +413,11 @@ function drawTrim() {
     ctx.font = "26px Segoe UI, sans-serif";
     ctx.fillText("Chargement de la forme d'onde…", 20, h / 2 + 8);
   }
-  ctx.fillStyle = "rgba(244, 245, 247, 0.65)";
+  ctx.fillStyle = css.getPropertyValue("--wave-mask");
   ctx.fillRect(0, 0, xs, h);
   ctx.fillRect(xe, 0, w - xe, h);
   for (const hx of [xs, xe]) {
-    ctx.fillStyle = "#1c1e23";
+    ctx.fillStyle = css.getPropertyValue("--text");
     ctx.fillRect(hx - 2, 0, 4, h);
     ctx.fillRect(hx - 9, 0, 18, 14);
     ctx.fillRect(hx - 9, h - 14, 18, 14);
@@ -661,6 +661,37 @@ $('[data-action="finish"]', dlgWizard).addEventListener("click", async () => {
   });
   dlgWizard.close();
 });
+
+// ---------- Mode nuit ----------
+
+// « auto » suit le thème de Windows ; le choix est gardé sur ce PC.
+const THEMES = ["auto", "light", "dark"];
+const THEME_ICONS = { auto: "🌗", light: "☀️", dark: "🌙" };
+const THEME_LABELS = { auto: "Thème : automatique (comme Windows)", light: "Thème : clair", dark: "Thème : nuit" };
+const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+let theme = "auto";
+try {
+  theme = THEMES.includes(localStorage.getItem("soundboard.theme")) ? localStorage.getItem("soundboard.theme") : "auto";
+} catch {}
+
+function applyTheme() {
+  const dark = theme === "dark" || (theme === "auto" && darkQuery.matches);
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  const btn = $("#btn-theme");
+  btn.textContent = THEME_ICONS[theme];
+  btn.title = THEME_LABELS[theme] + " — clique pour changer";
+  if (dlgSound.open) drawTrim();
+}
+darkQuery.addEventListener("change", applyTheme);
+$("#btn-theme").addEventListener("click", () => {
+  theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
+  try {
+    localStorage.setItem("soundboard.theme", theme);
+  } catch {}
+  applyTheme();
+  toast(THEME_LABELS[theme]);
+});
+applyTheme();
 
 // ---------- Barre du haut ----------
 

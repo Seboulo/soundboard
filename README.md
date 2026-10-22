@@ -33,6 +33,7 @@ Les bruits de clavier, de souris et de fond sont filtrés par l'app elle-même, 
 - **Boucle** : coche « Jouer en boucle » sur un son (musique d'ambiance…) ; re-clique pour l'arrêter.
 - **🎲 Au hasard** : joue un son au hasard de l'onglet affiché (un raccourci peut aussi être réglé).
 - **Packs** : « 📦 Exporter » enregistre les sons de l'onglet (ou tous) dans un .zip à envoyer à tes potes ; « 📥 Importer un pack » les ajoute chez eux.
+- **Mode nuit** : bouton 🌗 en haut (automatique comme Windows, ☀️ clair ou 🌙 nuit).
 - **Réorganiser** : glisse un pad sur un autre.
 - **Tout arrêter** : bouton « Stop » ou touche **Pause** par défaut.
 
