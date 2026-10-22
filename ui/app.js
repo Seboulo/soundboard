@@ -405,7 +405,7 @@ function drawTrim() {
     const px = (i / n) * w;
     const bh = Math.max(2, trim.peaks[i] * (h - 10));
     const inside = px >= xs && px <= xe;
-    ctx.fillStyle = inside ? editing?.color ?? "#5865f2" : "#4e5058";
+    ctx.fillStyle = inside ? editing?.color ?? "#4f46e5" : "#c9cdd4";
     ctx.fillRect(px, (h - bh) / 2, Math.max(1, w / n - 1), bh);
   }
   if (!n) {
@@ -413,11 +413,11 @@ function drawTrim() {
     ctx.font = "26px Segoe UI, sans-serif";
     ctx.fillText("Chargement de la forme d'onde…", 20, h / 2 + 8);
   }
-  ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
+  ctx.fillStyle = "rgba(244, 245, 247, 0.65)";
   ctx.fillRect(0, 0, xs, h);
   ctx.fillRect(xe, 0, w - xe, h);
   for (const hx of [xs, xe]) {
-    ctx.fillStyle = "#ffffff";
+    ctx.fillStyle = "#1c1e23";
     ctx.fillRect(hx - 2, 0, 4, h);
     ctx.fillRect(hx - 9, 0, 18, 14);
     ctx.fillRect(hx - 9, h - 14, 18, 14);
