@@ -26,19 +26,26 @@ Les bruits de clavier, de souris et de fond sont filtrés par l'app elle-même, 
 ## Utilisation
 
 - **Ajouter des sons** : glisse des fichiers MP3, WAV, OGG, FLAC ou M4A dans la fenêtre, ou clique sur « Ajouter des sons ». Les fichiers sont copiés dans le dossier de l'app.
-- **Chercher en ligne** : bouton « 🔎 Chercher en ligne » pour trouver des sons sur myinstants.com, les écouter et les ajouter en un clic.
+- **Chercher en ligne** : bouton « 🔎 En ligne » pour trouver des sons sur **MyInstants** (mèmes, répliques) ou **Freesound** (bruitages, ambiances), les écouter et les ajouter en un clic. Freesound demande une clé gratuite à coller dans les réglages ([demande de clé](https://freesound.org/apiv2/apply)).
 - **Jouer / arrêter** : clic sur un pad ou son raccourci global (marche même quand Discord ou un jeu est au premier plan). Re-cliquer (ou re-appuyer) arrête le son. Une barre montre la progression.
 - **Modifier** : clic droit sur un pad (ou ✎) pour le nom, le raccourci, le volume, la couleur et la **découpe** (glisse les poignées sur la forme d'onde pour couper le début et la fin, puis « Écouter »).
+- **Onglets** : donne un onglet à un son (champ « Onglet » quand tu le modifies) pour ranger tes sons par thème.
+- **Boucle** : coche « Jouer en boucle » sur un son (musique d'ambiance…) ; re-clique pour l'arrêter.
+- **🎲 Au hasard** : joue un son au hasard de l'onglet affiché (un raccourci peut aussi être réglé).
+- **Packs** : « 📦 Exporter » enregistre les sons de l'onglet (ou tous) dans un .zip à envoyer à tes potes ; « 📥 Importer un pack » les ajoute chez eux.
 - **Réorganiser** : glisse un pad sur un autre.
 - **Tout arrêter** : bouton « Stop » ou touche **Pause** par défaut.
 
 Dans les réglages :
 
+- **Couper ton micro** : bouton « 🎙 Micro » en haut ou raccourci dédié ; les sons passent toujours.
+- **Indicateur du micro** : montre ton niveau et la détection de voix pour régler le seuil.
+- **Effet sur ta voix** : robot, aiguë, grave ou écho.
 - **Égaliser le volume** (activé par défaut) : les sons trop forts ou trop faibles sont ramenés à un niveau commun.
 - **Lancer au démarrage de Windows** : l'app démarre discrètement près de l'horloge.
 - **Fermer la fenêtre garde l'app près de l'horloge** : les raccourcis restent actifs. Clic sur l'icône pour rouvrir, clic droit → « Quitter » pour fermer vraiment.
 
-Pour mettre à jour : télécharge la dernière version sur la page Releases et installe-la par-dessus (sons et réglages conservés).
+Pour mettre à jour : un bandeau apparaît quand une nouvelle version sort. Télécharge la dernière version sur la page Releases et installe-la par-dessus (sons et réglages conservés).
 
 Astuce raccourcis : le pavé numérique ou F13–F24 évitent les conflits avec les jeux.
 

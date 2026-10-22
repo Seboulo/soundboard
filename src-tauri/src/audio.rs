@@ -9,7 +9,7 @@
 //! vit dans un thread dédié piloté par des messages.
 
 use crate::config::Settings;
-use crate::denoise::{self, MicFilters, MicProcessor};
+use crate::denoise::{self, MicFilters, MicLevel, MicMeter, MicProcessor};
 use rodio::cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rodio::cpal::{self, SampleFormat};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
@@ -19,6 +19,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -40,6 +41,7 @@ pub struct PlayRequest {
     pub end_ms: Option<u64>,
     /// Durée jouée, pour la barre de progression.
     pub duration_ms: Option<u64>,
+    pub looping: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
@@ -54,6 +56,15 @@ pub struct PlayingStatus {
     pub id: String,
     pub elapsed_ms: u64,
     pub duration_ms: Option<u64>,
+    pub looping: bool,
+}
+
+/// Ce que le moteur signale à l'interface.
+pub enum AudioEvent {
+    /// Sons en cours (~10 fois par seconde pendant la lecture, puis une liste vide).
+    Playing(Vec<PlayingStatus>),
+    /// Niveau du micro, seulement quand l'indicateur est affiché.
+    Mic(MicLevel),
 }
 
 /// Identifiant réservé à la pré-écoute dans l'éditeur (casque uniquement).
@@ -65,23 +76,35 @@ enum Command {
     Toggle(PlayRequest, Option<PlayReply>),
     Preview(PlayRequest, Reply),
     StopAll,
+    SetMicMuted(bool),
 }
 
 #[derive(Clone)]
 pub struct AudioHandle {
     tx: Sender<Command>,
+    meter_on: Arc<AtomicBool>,
 }
 
 impl AudioHandle {
-    /// `on_status` reçoit la liste des sons en cours ~10 fois par seconde
-    /// pendant la lecture, puis une liste vide quand tout est fini.
-    pub fn spawn(on_status: impl Fn(Vec<PlayingStatus>) + Send + 'static) -> Self {
+    pub fn spawn(on_event: impl Fn(AudioEvent) + Send + 'static) -> Self {
         let (tx, rx) = mpsc::channel();
+        let meter_on = Arc::new(AtomicBool::new(false));
+        let flag = meter_on.clone();
         thread::Builder::new()
             .name("audio".into())
-            .spawn(move || run(rx, on_status))
+            .spawn(move || run(rx, flag, on_event))
             .expect("impossible de démarrer le thread audio");
-        Self { tx }
+        Self { tx, meter_on }
+    }
+
+    /// Coupe ou rallume le micro ; les sons passent toujours.
+    pub fn set_mic_muted(&self, muted: bool) {
+        let _ = self.send(Command::SetMicMuted(muted));
+    }
+
+    /// Active l'envoi du niveau du micro (indicateur des réglages).
+    pub fn set_meter(&self, on: bool) {
+        self.meter_on.store(on, Ordering::Relaxed);
     }
 
     pub fn configure(&self, settings: Settings) -> Result<(), String> {
@@ -198,6 +221,7 @@ struct Playing {
     sinks: Vec<Sink>,
     started: Instant,
     duration_ms: Option<u64>,
+    looping: bool,
 }
 
 #[derive(Default)]
@@ -207,10 +231,12 @@ struct Engine {
     virt: Option<Output>,
     mic_stream: Option<cpal::Stream>,
     mic_sink: Option<Sink>,
+    mic_muted: bool,
+    meter: Arc<MicMeter>,
     playing: Vec<Playing>,
 }
 
-fn run(rx: Receiver<Command>, on_status: impl Fn(Vec<PlayingStatus>)) {
+fn run(rx: Receiver<Command>, meter_on: Arc<AtomicBool>, on_event: impl Fn(AudioEvent)) {
     let mut engine = Engine::default();
     let mut last_status: Vec<PlayingStatus> = Vec::new();
     loop {
@@ -222,9 +248,12 @@ fn run(rx: Receiver<Command>, on_status: impl Fn(Vec<PlayingStatus>)) {
         engine.playing.retain(|p| p.sinks.iter().any(|s| !s.empty()));
         let status = engine.status();
         if !(status.is_empty() && last_status.is_empty()) {
-            on_status(status.clone());
+            on_event(AudioEvent::Playing(status.clone()));
         }
         last_status = status;
+        if meter_on.load(Ordering::Relaxed) && engine.mic_stream.is_some() {
+            on_event(AudioEvent::Mic(engine.meter.read()));
+        }
     }
 }
 
@@ -296,7 +325,13 @@ impl Engine {
         let max_len = denoise::RATE as usize / 10;
         let buffer = Arc::new(Mutex::new(VecDeque::<f32>::with_capacity(max_len * 2)));
         let new_filter = || {
-            let mut processor = MicProcessor::new(channels, sample_rate, filters);
+            let mut processor = MicProcessor::new(
+                channels,
+                sample_rate,
+                filters,
+                self.settings.voice_effect,
+                self.meter.clone(),
+            );
             move |samples: &mut dyn Iterator<Item = f32>| -> Vec<f32> {
                 let mut out = Vec::new();
                 processor.process(samples, &mut out);
@@ -350,7 +385,7 @@ impl Engine {
         stream.play().map_err(|e| e.to_string())?;
 
         let sink = Sink::try_new(&virt.handle).map_err(|e| e.to_string())?;
-        sink.set_volume(self.settings.mic_volume);
+        sink.set_volume(if self.mic_muted { 0.0 } else { self.settings.mic_volume });
         sink.append(MicSource {
             buffer,
             local: VecDeque::new(),
@@ -388,6 +423,12 @@ impl Engine {
                 let _ = reply.send(res);
             }
             Command::StopAll => self.stop_all(),
+            Command::SetMicMuted(muted) => {
+                self.mic_muted = muted;
+                if let Some(sink) = &self.mic_sink {
+                    sink.set_volume(if muted { 0.0 } else { self.settings.mic_volume });
+                }
+            }
         }
     }
 
@@ -399,6 +440,7 @@ impl Engine {
                 id: p.id.clone(),
                 elapsed_ms: p.started.elapsed().as_millis() as u64,
                 duration_ms: p.duration_ms,
+                looping: p.looping,
             })
             .collect()
     }
@@ -435,6 +477,7 @@ impl Engine {
             sinks,
             started: Instant::now(),
             duration_ms: req.duration_ms,
+            looping: req.looping,
         });
         Ok(())
     }
@@ -458,7 +501,7 @@ impl Engine {
     }
 }
 
-fn open_source(req: &PlayRequest) -> Result<impl Source<Item = i16> + Send, String> {
+fn open_source(req: &PlayRequest) -> Result<Box<dyn Source<Item = i16> + Send>, String> {
     let file = File::open(&req.path).map_err(|e| format!("fichier illisible : {e}"))?;
     let decoder =
         Decoder::new(BufReader::new(file)).map_err(|e| format!("format audio non reconnu : {e}"))?;
@@ -466,10 +509,16 @@ fn open_source(req: &PlayRequest) -> Result<impl Source<Item = i16> + Send, Stri
         Some(end) => Duration::from_millis(end.saturating_sub(req.start_ms)),
         None => Duration::from_secs(24 * 3600),
     };
-    Ok(decoder
+    let source = decoder
         .skip_duration(Duration::from_millis(req.start_ms))
         .take_duration(length)
-        .amplify(req.gain))
+        .amplify(req.gain);
+    if req.looping {
+        // Gardé en mémoire pour pouvoir le rejouer sans relire le fichier.
+        Ok(Box::new(source.buffered().repeat_infinite()))
+    } else {
+        Ok(Box::new(source))
+    }
 }
 
 fn push(buf: &Mutex<VecDeque<f32>>, samples: Vec<f32>, max_len: usize) {

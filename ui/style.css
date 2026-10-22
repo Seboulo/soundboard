@@ -58,12 +58,13 @@ input[type="checkbox"] { width: auto; }
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
   padding: 10px 16px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
 .topbar h1 { font-size: 17px; margin: 0; }
-.topbar #search { width: 180px; min-width: 90px; flex-shrink: 1; }
+.topbar #search { width: 160px; min-width: 80px; flex-shrink: 1; }
 .topbar button, .pill { white-space: nowrap; flex-shrink: 0; }
 
 .pill {
@@ -242,3 +243,80 @@ dialog::backdrop { background: rgba(0, 0, 0, .55); }
 .results .row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .results .row button { padding: 4px 10px; }
 .results .empty-msg { color: var(--muted); padding: 8px 0; }
+
+/* Bandeau de nouvelle version */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 16px 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, var(--panel));
+  border-radius: 4px;
+}
+.banner button { white-space: nowrap; }
+
+/* Onglets et actions de la grille */
+.tabbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px 0;
+  flex-wrap: wrap;
+}
+.tabbar > button { white-space: nowrap; padding: 5px 10px; }
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.tab {
+  border-radius: 999px;
+  padding: 4px 12px;
+  background: transparent;
+  color: var(--muted);
+}
+.tab.active { background: var(--accent); border-color: var(--accent); color: var(--text); }
+
+.form .row2 { display: flex; gap: 12px; align-items: flex-end; }
+.form .row2 label:first-child { flex: 1; }
+.form a { color: #00a8fc; }
+
+/* Choix de la source en ligne */
+.segmented { display: flex; gap: 0; }
+.segmented button {
+  flex: 1;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  color: var(--muted);
+}
+.segmented button:first-child { border-radius: 6px 0 0 6px; }
+.segmented button:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
+.segmented button.active { background: var(--accent); border-color: var(--accent); color: var(--text); }
+.segmented small { font-size: 11px; opacity: .8; }
+
+/* Indicateur du micro */
+.meter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.meter-row { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+.meter-row span { width: 40px; }
+.meter .bar {
+  position: relative;
+  flex: 1;
+  height: 10px;
+  background: var(--panel-2);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.meter .fill { height: 100%; width: 0; background: var(--ok); transition: width .1s linear; }
+.meter .fill.voice { background: var(--accent); }
+.meter .mark { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; }
+.meter-state { font-size: 12px; color: var(--muted); }
+.meter.open .meter-state { color: var(--ok); }

@@ -10,15 +10,30 @@
   <header class="topbar">
     <h1>Soundboard</h1>
     <button id="cable-status" class="pill" type="button" title="État du câble virtuel"></button>
+    <button id="mic-toggle" class="pill" type="button" hidden></button>
     <div class="spacer"></div>
     <input id="search" type="search" placeholder="Rechercher…" autocomplete="off">
-    <button id="btn-online" type="button">🔎 Chercher en ligne</button>
+    <button id="btn-online" type="button"title="Chercher des sons sur internet">🔎 En ligne</button>
     <button id="btn-add" type="button" class="primary">+ Ajouter des sons</button>
     <button id="btn-stop" type="button" class="danger" title="Tout arrêter">■ Stop</button>
     <button id="btn-settings" type="button" class="icon" title="Réglages">⚙</button>
   </header>
 
+  <div id="update-banner" class="banner" hidden>
+    <span></span>
+    <div class="spacer"></div>
+    <button type="button" class="primary" data-action="download">Voir la nouvelle version</button>
+    <button type="button" class="icon" data-action="dismiss" title="Plus tard">✕</button>
+  </div>
   <div id="warnings" class="warnings" hidden></div>
+
+  <nav class="tabbar">
+    <div id="tabs" class="tabs"></div>
+    <div class="spacer"></div>
+    <button id="btn-random" type="button" title="Jouer un son au hasard de cet onglet">🎲 Au hasard</button>
+    <button id="btn-export" type="button" title="Enregistrer les sons de cet onglet dans un .zip à partager">📦 Exporter</button>
+    <button id="btn-import" type="button" title="Ajouter les sons d'un pack .zip">📥 Importer un pack</button>
+  </nav>
 
   <main>
     <div id="grid" class="grid"></div>
@@ -53,7 +68,14 @@
       <label>Volume <span class="value" data-for="volume"></span>
         <input name="volume" type="range" min="0" max="2" step="0.05">
       </label>
-      <label>Couleur <input name="color" type="color"></label>
+      <div class="row2">
+        <label>Onglet
+          <input name="category" list="categories" maxlength="30" placeholder="Aucun (seulement dans « Tous »)">
+        </label>
+        <label>Couleur <input name="color" type="color"></label>
+      </div>
+      <datalist id="categories"></datalist>
+      <label class="check"><input name="looping" type="checkbox"> Jouer en boucle (clique à nouveau sur le son pour l'arrêter)</label>
       <div class="actions">
         <button type="button" class="danger" data-action="delete">Supprimer</button>
         <div class="spacer"></div>
@@ -85,7 +107,21 @@
       <label>Seuil de détection de la voix <span class="value" data-for="gate_threshold"></span>
         <input name="gate_threshold" type="range" min="0.1" max="0.95" step="0.05">
       </label>
-      <p class="hint">Ces filtres ne touchent que ton micro, jamais les sons de la soundboard. Si le début de tes phrases est coupé, baisse le seuil ; si des bruits passent encore, monte-le.</p>
+      <div class="meter" id="mic-meter">
+        <div class="meter-row"><span>Niveau</span><div class="bar"><div class="fill" data-level></div></div></div>
+        <div class="meter-row"><span>Voix</span><div class="bar"><div class="fill voice" data-voice></div><div class="mark" data-threshold></div></div></div>
+        <div class="meter-state" data-state>Parle pour tester ton micro…</div>
+      </div>
+      <p class="hint">Ces filtres ne touchent que ton micro, jamais les sons de la soundboard. Si le début de tes phrases est coupé, baisse le seuil (le trait blanc) ; si des bruits passent encore, monte-le. L'indicateur montre les réglages enregistrés.</p>
+      <label>Effet sur ta voix
+        <select name="voice_effect">
+          <option value="none">Aucun</option>
+          <option value="robot">Robot</option>
+          <option value="high">Voix aiguë</option>
+          <option value="low">Voix grave</option>
+          <option value="echo">Écho</option>
+        </select>
+      </label>
       <label>Volume des sons dans Discord <span class="value" data-for="master_volume"></span>
         <input name="master_volume" type="range" min="0" max="1.5" step="0.05">
       </label>
@@ -99,6 +135,16 @@
       <label>Raccourci « Tout arrêter »
         <input name="stop_hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche">
       </label>
+      <label>Raccourci « Couper / rallumer mon micro » (les sons passent toujours)
+        <input name="mute_hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche">
+      </label>
+      <label>Raccourci « Son au hasard »
+        <input name="random_hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche">
+      </label>
+      <label>Clé Freesound (pour chercher sur freesound.org)
+        <input name="freesound_key" autocomplete="off" spellcheck="false" placeholder="Colle ta clé ici">
+      </label>
+      <p class="hint">Gratuite : crée un compte Freesound puis <a href="#" data-action="freesound-key">demande une clé ici</a> (copie la valeur « Client secret/Api key »).</p>
       <div class="actions">
         <button type="button" data-action="wizard">Revoir l'assistant</button>
         <div class="spacer"></div>
@@ -112,13 +158,17 @@
   <dialog id="dlg-online" class="wide">
     <div class="form">
       <h2>Chercher des sons en ligne</h2>
+      <div class="segmented" id="online-source">
+        <button type="button" data-source="myinstants" class="active">MyInstants <small>mèmes, répliques</small></button>
+        <button type="button" data-source="freesound">Freesound <small>bruitages, ambiances</small></button>
+      </div>
       <form id="online-form" class="search-row">
         <input name="q" type="search" placeholder="bruh, airhorn, rire, fail…" autocomplete="off" required>
         <button class="primary">Rechercher</button>
       </form>
       <div id="online-results" class="results"></div>
       <div class="actions">
-        <span class="hint">Sons proposés par myinstants.com</span>
+        <span class="hint" id="online-credit">Sons proposés par myinstants.com</span>
         <div class="spacer"></div>
         <button type="button" id="online-more" hidden>Plus de résultats</button>
         <button type="button" data-action="close">Fermer</button>

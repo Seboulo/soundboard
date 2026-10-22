@@ -2,16 +2,19 @@ mod analysis;
 mod audio;
 mod config;
 mod denoise;
+mod effects;
 mod online;
 
-use audio::{AudioHandle, DeviceList, PlayOutcome, PlayRequest, PlayingStatus};
+use audio::{AudioEvent, AudioHandle, DeviceList, PlayOutcome, PlayRequest};
 use config::{Config, Settings, Sound};
-use online::OnlineSound;
-use serde::Serialize;
+use online::{OnlineSound, UpdateInfo};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -26,11 +29,14 @@ const COLORS: &[&str] = &[
     "#5865f2", "#57f287", "#fee75c", "#eb459e", "#ed4245", "#3ba55c", "#faa61a", "#9b59b6",
 ];
 pub const VB_CABLE_URL: &str = "https://vb-audio.com/Cable/";
+const FREESOUND_KEY_URL: &str = "https://freesound.org/apiv2/apply";
 
 #[derive(Clone)]
 enum HotkeyAction {
     Play(String),
     StopAll,
+    ToggleMute,
+    Random,
 }
 
 struct AppState {
@@ -41,6 +47,9 @@ struct AppState {
     hotkeys: Mutex<HashMap<u32, HotkeyAction>>,
     /// Problèmes à montrer dans l'interface (raccourci déjà pris, sortie absente…).
     warnings: Mutex<Vec<String>>,
+    mic_muted: AtomicBool,
+    /// Dernier son tiré au hasard, pour ne pas retomber dessus deux fois de suite.
+    last_random: Mutex<Option<String>>,
 }
 
 #[derive(Serialize)]
@@ -49,6 +58,8 @@ struct Snapshot {
     devices: DeviceList,
     warnings: Vec<String>,
     vb_cable_url: &'static str,
+    mic_muted: bool,
+    version: &'static str,
 }
 
 impl AppState {
@@ -62,6 +73,8 @@ impl AppState {
             devices: audio::list_devices(),
             warnings: self.warnings.lock().unwrap().clone(),
             vb_cable_url: VB_CABLE_URL,
+            mic_muted: self.mic_muted.load(Ordering::Relaxed),
+            version: env!("CARGO_PKG_VERSION"),
         }
     }
 
@@ -99,6 +112,7 @@ fn play_request(state: &AppState, sound: &Sound) -> PlayRequest {
         start_ms: sound.start_ms,
         end_ms: sound.end_ms,
         duration_ms: sound.play_duration_ms(),
+        looping: sound.looping,
     }
 }
 
@@ -178,8 +192,14 @@ fn register_hotkeys(app: &AppHandle) {
                 .map(|h| (h, HotkeyAction::Play(s.id.clone()), s.name.clone()))
         })
         .collect();
-    if let Some(h) = config.settings.stop_hotkey.clone() {
-        entries.push((h, HotkeyAction::StopAll, "Tout arrêter".into()));
+    for (hotkey, action, label) in [
+        (&config.settings.stop_hotkey, HotkeyAction::StopAll, "Tout arrêter"),
+        (&config.settings.mute_hotkey, HotkeyAction::ToggleMute, "Couper le micro"),
+        (&config.settings.random_hotkey, HotkeyAction::Random, "Son au hasard"),
+    ] {
+        if let Some(h) = hotkey.clone().filter(|h| !h.is_empty()) {
+            entries.push((h, action, label.into()));
+        }
     }
 
     let mut map = HashMap::new();
@@ -229,8 +249,48 @@ fn on_hotkey(app: &AppHandle, shortcut: &Shortcut) {
             state.audio.stop_all();
             let _ = app.emit("stopped", ());
         }
+        Some(HotkeyAction::ToggleMute) => {
+            let muted = !state.mic_muted.load(Ordering::Relaxed);
+            set_muted(app, muted);
+        }
+        Some(HotkeyAction::Random) => {
+            if let Some(sound) = pick_random(&state, None) {
+                state.audio.toggle_detached(play_request(&state, &sound));
+                let _ = app.emit("sound-triggered", &sound.id);
+            }
+        }
         None => {}
     }
+}
+
+fn set_muted(app: &AppHandle, muted: bool) {
+    let state = app.state::<AppState>();
+    state.mic_muted.store(muted, Ordering::Relaxed);
+    state.audio.set_mic_muted(muted);
+    let _ = app.emit("mic-muted", muted);
+}
+
+/// Tire un son au hasard (dans une catégorie si on en donne une).
+fn pick_random(state: &AppState, category: Option<&str>) -> Option<Sound> {
+    let config = state.config.lock().unwrap();
+    let mut last = state.last_random.lock().unwrap();
+    let pool: Vec<&Sound> = config
+        .sounds
+        .iter()
+        .filter(|s| category.is_none() || s.category.as_deref() == category)
+        .collect();
+    let candidates: Vec<&Sound> = if pool.len() > 1 {
+        pool.iter().copied().filter(|s| Some(&s.id) != last.as_ref()).collect()
+    } else {
+        pool
+    };
+    if candidates.is_empty() {
+        return None;
+    }
+    let index = (uuid::Uuid::new_v4().as_u128() % candidates.len() as u128) as usize;
+    let sound = candidates[index].clone();
+    *last = Some(sound.id.clone());
+    Some(sound)
 }
 
 fn import_file(src: &Path, sounds_dir: &Path, color_index: usize) -> Result<Sound, String> {
@@ -281,7 +341,15 @@ fn store_sound(
         start_ms: 0,
         end_ms: None,
         analysis: Some(analysis),
+        category: None,
+        looping: false,
     })
+}
+
+fn clean_category(category: Option<String>) -> Option<String> {
+    category
+        .map(|c| c.trim().chars().take(30).collect::<String>())
+        .filter(|c| !c.is_empty())
 }
 
 #[tauri::command]
@@ -343,6 +411,8 @@ fn update_sound(app: AppHandle, state: State<AppState>, sound: Sound) -> Result<
         existing.hotkey = sound.hotkey.filter(|h| !h.is_empty());
         existing.volume = sound.volume.clamp(0.0, 2.0);
         existing.color = sound.color;
+        existing.category = clean_category(sound.category);
+        existing.looping = sound.looping;
         let total = existing.analysis.map(|a| a.duration_ms).unwrap_or(u64::MAX);
         existing.start_ms = sound.start_ms.min(total);
         // Une fin au bout du fichier revient à « pas de découpe ».
@@ -434,8 +504,29 @@ async fn get_waveform(app: AppHandle, id: String) -> Result<Vec<f32>, String> {
 }
 
 #[tauri::command]
-async fn search_online(query: String, page: Option<u32>) -> Result<Vec<OnlineSound>, String> {
-    online::search(query.trim(), page.unwrap_or(1)).await
+async fn search_online(
+    app: AppHandle,
+    source: Option<String>,
+    query: String,
+    page: Option<u32>,
+) -> Result<Vec<OnlineSound>, String> {
+    let page = page.unwrap_or(1);
+    match source.as_deref() {
+        Some("freesound") => {
+            let key = app
+                .state::<AppState>()
+                .config
+                .lock()
+                .unwrap()
+                .settings
+                .freesound_key
+                .clone()
+                .filter(|k| !k.trim().is_empty())
+                .ok_or("Ajoute ta clé Freesound dans les réglages (⚙) pour chercher ici.")?;
+            online::search_freesound(query.trim(), page, key.trim()).await
+        }
+        _ => online::search(query.trim(), page).await,
+    }
 }
 
 #[tauri::command]
@@ -460,6 +551,272 @@ async fn add_online(app: AppHandle, name: String, url: String) -> Result<Snapsho
 #[tauri::command]
 fn stop_all(state: State<AppState>) {
     state.audio.stop_all();
+}
+
+#[tauri::command]
+fn open_freesound_key_page(app: AppHandle) -> Result<(), String> {
+    app.opener()
+        .open_url(FREESOUND_KEY_URL, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_mic_muted(app: AppHandle, muted: bool) {
+    set_muted(&app, muted);
+}
+
+/// Joue un son au hasard de l'onglet affiché et renvoie son id.
+#[tauri::command]
+fn play_random(state: State<AppState>, category: Option<String>) -> Result<Option<String>, String> {
+    let Some(sound) = pick_random(&state, category.as_deref()) else {
+        return Ok(None);
+    };
+    state.audio.toggle(play_request(&state, &sound))?;
+    Ok(Some(sound.id))
+}
+
+#[tauri::command]
+fn set_meter(state: State<AppState>, on: bool) {
+    state.audio.set_meter(on);
+}
+
+#[tauri::command]
+async fn check_update() -> Result<Option<UpdateInfo>, String> {
+    online::check_update().await
+}
+
+#[tauri::command]
+fn open_release_page(app: AppHandle, url: String) -> Result<(), String> {
+    // On n'ouvre que les pages de versions du projet.
+    let url = if url.starts_with(online::RELEASES_PAGE) {
+        url
+    } else {
+        online::RELEASES_PAGE.to_string()
+    };
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// Description d'un son dans un pack (`pack.json`).
+#[derive(Serialize, Deserialize)]
+struct PackSound {
+    name: String,
+    file: String,
+    #[serde(default)]
+    hotkey: Option<String>,
+    #[serde(default = "one")]
+    volume: f32,
+    #[serde(default)]
+    color: Option<String>,
+    #[serde(default)]
+    start_ms: u64,
+    #[serde(default)]
+    end_ms: Option<u64>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    looping: bool,
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+#[derive(Serialize, Deserialize)]
+struct Pack {
+    sounds: Vec<PackSound>,
+}
+
+const PACK_MAX_FILE: u64 = 20 * 1024 * 1024;
+const PACK_MAX_TOTAL: u64 = 500 * 1024 * 1024;
+
+fn write_pack(dest: &Path, sounds: &[Sound]) -> Result<usize, String> {
+    let file = fs::File::create(dest).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored);
+    let mut pack = Pack { sounds: vec![] };
+    for (i, s) in sounds.iter().enumerate() {
+        let Ok(data) = fs::read(&s.path) else { continue };
+        let ext = s.path.extension().and_then(|e| e.to_str()).unwrap_or("mp3");
+        let name = format!("sounds/{i}.{ext}");
+        zip.start_file(name.as_str(), options).map_err(|e| e.to_string())?;
+        zip.write_all(&data).map_err(|e| e.to_string())?;
+        pack.sounds.push(PackSound {
+            name: s.name.clone(),
+            file: name,
+            hotkey: s.hotkey.clone(),
+            volume: s.volume,
+            color: Some(s.color.clone()),
+            start_ms: s.start_ms,
+            end_ms: s.end_ms,
+            category: s.category.clone(),
+            looping: s.looping,
+        });
+    }
+    zip.start_file("pack.json", options).map_err(|e| e.to_string())?;
+    let json = serde_json::to_vec_pretty(&pack).map_err(|e| e.to_string())?;
+    zip.write_all(&json).map_err(|e| e.to_string())?;
+    zip.finish().map_err(|e| e.to_string())?;
+    Ok(pack.sounds.len())
+}
+
+/// Lit un pack et range ses sons. Les raccourcis déjà pris sont ignorés.
+fn read_pack(src: &Path, config: &Config, sounds_dir: &Path) -> Result<(Vec<Sound>, Vec<String>), String> {
+    let file = fs::File::open(src).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|_| "ce fichier n'est pas un pack de sons".to_string())?;
+    let pack: Pack = {
+        let mut entry = zip
+            .by_name("pack.json")
+            .map_err(|_| "pack.json absent : ce n'est pas un pack de sons".to_string())?;
+        let mut json = String::new();
+        entry
+            .by_ref()
+            .take(1024 * 1024)
+            .read_to_string(&mut json)
+            .map_err(|e| e.to_string())?;
+        serde_json::from_str(&json).map_err(|e| format!("pack.json illisible : {e}"))?
+    };
+
+    let mut used: Vec<String> = config.sounds.iter().filter_map(|s| s.hotkey.clone()).collect();
+    used.extend(
+        [&config.settings.stop_hotkey, &config.settings.mute_hotkey, &config.settings.random_hotkey]
+            .into_iter()
+            .flatten()
+            .cloned(),
+    );
+    let mut added = Vec::new();
+    let mut errors = Vec::new();
+    let mut total = 0u64;
+    for (i, p) in pack.sounds.into_iter().enumerate() {
+        let ext = Path::new(&p.file)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+        if !AUDIO_EXTENSIONS.contains(&ext.as_str()) {
+            errors.push(format!("{} : format non pris en charge", p.name));
+            continue;
+        }
+        let data = match zip.by_name(&p.file) {
+            Ok(entry) => {
+                let mut data = Vec::new();
+                let read = entry.take(PACK_MAX_FILE + 1).read_to_end(&mut data);
+                if read.is_err() || data.len() as u64 > PACK_MAX_FILE {
+                    errors.push(format!("{} : fichier illisible ou trop gros", p.name));
+                    continue;
+                }
+                data
+            }
+            Err(_) => {
+                errors.push(format!("{} : fichier absent du pack", p.name));
+                continue;
+            }
+        };
+        total += data.len() as u64;
+        if total > PACK_MAX_TOTAL {
+            errors.push("pack trop gros : la suite n'a pas été importée".into());
+            break;
+        }
+        let name: String = p.name.chars().take(80).collect();
+        match store_sound(&data, &ext, name, sounds_dir, config.sounds.len() + i) {
+            Ok(mut sound) => {
+                sound.hotkey = p.hotkey.filter(|h| !h.is_empty() && !used.contains(h));
+                if let Some(h) = &sound.hotkey {
+                    used.push(h.clone());
+                }
+                sound.volume = p.volume.clamp(0.0, 2.0);
+                if let Some(c) = p.color.filter(|c| c.starts_with('#') && c.len() <= 9) {
+                    sound.color = c;
+                }
+                let total_ms = sound.analysis.map(|a| a.duration_ms).unwrap_or(u64::MAX);
+                sound.start_ms = p.start_ms.min(total_ms);
+                sound.end_ms = p.end_ms.filter(|&e| e < total_ms && e > sound.start_ms);
+                sound.category = clean_category(p.category);
+                sound.looping = p.looping;
+                added.push(sound);
+            }
+            Err(e) => errors.push(format!("{} : {e}", p.name)),
+        }
+    }
+    Ok((added, errors))
+}
+
+/// Enregistre les sons (d'un onglet ou tous) dans un .zip à partager.
+#[tauri::command]
+async fn export_pack(app: AppHandle, category: Option<String>) -> Result<Option<usize>, String> {
+    let state = app.state::<AppState>();
+    let sounds: Vec<Sound> = state
+        .config
+        .lock()
+        .unwrap()
+        .sounds
+        .iter()
+        .filter(|s| category.is_none() || s.category == category)
+        .cloned()
+        .collect();
+    if sounds.is_empty() {
+        return Err("aucun son à exporter".into());
+    }
+    let file_name = format!(
+        "{}.zip",
+        category.as_deref().unwrap_or("Soundboard").replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_")
+    );
+    let Some(dest) = app
+        .dialog()
+        .file()
+        .set_title("Exporter un pack de sons")
+        .set_file_name(file_name)
+        .add_filter("Pack de sons", &["zip"])
+        .blocking_save_file()
+        .and_then(|f| f.into_path().ok())
+    else {
+        return Ok(None);
+    };
+    tauri::async_runtime::spawn_blocking(move || write_pack(&dest, &sounds))
+        .await
+        .map_err(|e| e.to_string())?
+        .map(Some)
+}
+
+#[derive(Serialize)]
+struct ImportResult {
+    added: usize,
+    errors: Vec<String>,
+    snapshot: Snapshot,
+}
+
+#[tauri::command]
+async fn import_pack(app: AppHandle) -> Result<Option<ImportResult>, String> {
+    let Some(src) = app
+        .dialog()
+        .file()
+        .set_title("Importer un pack de sons")
+        .add_filter("Pack de sons", &["zip"])
+        .blocking_pick_file()
+        .and_then(|f| f.into_path().ok())
+    else {
+        return Ok(None);
+    };
+    let state = app.state::<AppState>();
+    let config = state.config.lock().unwrap().clone();
+    let sounds_dir = state.sounds_dir.clone();
+    let (added, errors) = tauri::async_runtime::spawn_blocking(move || read_pack(&src, &config, &sounds_dir))
+        .await
+        .map_err(|e| e.to_string())??;
+    let count = added.len();
+    {
+        let mut config = state.config.lock().unwrap();
+        config.sounds.extend(added);
+        state.save(&config)?;
+    }
+    register_hotkeys(&app);
+    Ok(Some(ImportResult {
+        added: count,
+        errors,
+        snapshot: state.snapshot(),
+    }))
 }
 
 #[tauri::command]
@@ -536,8 +893,13 @@ pub fn run() {
             }
 
             let handle = app.handle().clone();
-            let audio = AudioHandle::spawn(move |status: Vec<PlayingStatus>| {
-                let _ = handle.emit("playing", status);
+            let audio = AudioHandle::spawn(move |event| match event {
+                AudioEvent::Playing(status) => {
+                    let _ = handle.emit("playing", status);
+                }
+                AudioEvent::Mic(level) => {
+                    let _ = handle.emit("mic-level", level);
+                }
             });
 
             let state = AppState {
@@ -547,6 +909,8 @@ pub fn run() {
                 audio,
                 hotkeys: Mutex::new(HashMap::new()),
                 warnings: Mutex::new(Vec::new()),
+                mic_muted: AtomicBool::new(false),
+                last_random: Mutex::new(None),
             };
             apply_audio(&state, config.settings.clone());
             app.manage(state);
@@ -586,6 +950,14 @@ pub fn run() {
             add_online,
             stop_all,
             open_vb_cable_page,
+            open_freesound_key_page,
+            set_mic_muted,
+            play_random,
+            set_meter,
+            check_update,
+            open_release_page,
+            export_pack,
+            import_pack,
         ])
         .run(tauri::generate_context!())
         .expect("erreur au lancement de l'application");

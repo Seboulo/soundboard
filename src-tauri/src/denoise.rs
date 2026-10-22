@@ -11,7 +11,11 @@
 //!   la voix ; en dessous du seuil, le micro est coupé (après un court délai
 //!   pour ne pas hacher la fin des mots).
 
+use crate::config::VoiceEffect;
+use crate::effects::Effect;
 use nnnoiseless::DenoiseState;
+use serde::Serialize;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// RNNoise travaille en mono, 48 kHz, par trames de 10 ms.
 pub const RATE: u32 = 48_000;
@@ -30,8 +34,38 @@ pub struct MicFilters {
     pub gate_threshold: f32,
 }
 
+/// Dernières mesures du micro, lues par l'indicateur de niveau des réglages.
+#[derive(Default)]
+pub struct MicMeter {
+    level: AtomicU32,
+    voice: AtomicU32,
+    open: AtomicBool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct MicLevel {
+    /// Niveau du micro (0–1, échelle adaptée à l'œil).
+    pub level: f32,
+    /// Probabilité de voix donnée par RNNoise (0–1).
+    pub voice: f32,
+    /// Le micro passe-t-il (porte ouverte) ?
+    pub open: bool,
+}
+
+impl MicMeter {
+    pub fn read(&self) -> MicLevel {
+        MicLevel {
+            level: f32::from_bits(self.level.load(Ordering::Relaxed)),
+            voice: f32::from_bits(self.voice.load(Ordering::Relaxed)),
+            open: self.open.load(Ordering::Relaxed),
+        }
+    }
+}
+
 pub struct MicProcessor {
     filters: MicFilters,
+    effect: Effect,
+    meter: std::sync::Arc<MicMeter>,
     channels: usize,
     rnnoise: Box<DenoiseState<'static>>,
     // Rééchantillonnage linéaire vers 48 kHz.
@@ -48,9 +82,17 @@ pub struct MicProcessor {
 }
 
 impl MicProcessor {
-    pub fn new(channels: u16, in_rate: u32, filters: MicFilters) -> Self {
+    pub fn new(
+        channels: u16,
+        in_rate: u32,
+        filters: MicFilters,
+        effect: VoiceEffect,
+        meter: std::sync::Arc<MicMeter>,
+    ) -> Self {
         Self {
             filters,
+            effect: Effect::new(effect),
+            meter,
             channels: channels.max(1) as usize,
             rnnoise: DenoiseState::new(),
             step: in_rate as f64 / RATE as f64,
@@ -118,13 +160,21 @@ impl MicProcessor {
             }
         };
 
+        let rms = (source.iter().map(|s| (s / 32768.0).powi(2)).sum::<f32>() / FRAME as f32).sqrt();
+        // Échelle en dB ramenée à 0–1 (−60 dB → 0, 0 dB → 1).
+        let level = ((20.0 * rms.max(1e-6).log10() + 60.0) / 60.0).clamp(0.0, 1.0);
+        self.meter.level.store(level.to_bits(), Ordering::Relaxed);
+        self.meter.voice.store(voice.to_bits(), Ordering::Relaxed);
+        self.meter.open.store(target > 0.0, Ordering::Relaxed);
+
         for &s in source.iter() {
             if self.gain < target {
                 self.gain = (self.gain + ATTACK).min(target);
             } else if self.gain > target {
                 self.gain = (self.gain - RELEASE).max(target);
             }
-            out.push((s / 32768.0 * self.gain).clamp(-1.0, 1.0));
+            let v = self.effect.process(s / 32768.0 * self.gain);
+            out.push(v.clamp(-1.0, 1.0));
         }
         self.frame_in.clear();
     }
@@ -135,7 +185,7 @@ mod tests {
     use super::*;
 
     fn run(filters: MicFilters, rate: u32, channels: u16, input: &[f32]) -> Vec<f32> {
-        let mut p = MicProcessor::new(channels, rate, filters);
+        let mut p = MicProcessor::new(channels, rate, filters, VoiceEffect::None, Default::default());
         let mut out = Vec::new();
         p.process(input.iter().copied(), &mut out);
         out

@@ -1,15 +1,22 @@
-//! Recherche de sons sur MyInstants.
+//! Recherche de sons en ligne (MyInstants et Freesound) et vérification des
+//! nouvelles versions.
 //!
-//! Le site n'a pas d'API publique : on lit la page de résultats. Chaque
+//! MyInstants n'a pas d'API publique : on lit la page de résultats. Chaque
 //! résultat contient un `play('/media/sounds/xxx.mp3', …)` suivi du lien
 //! vers la page du son, dont le texte est le nom.
+//!
+//! Freesound a une API, mais il faut une clé personnelle (gratuite).
 
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 use std::time::Duration;
 
 const SITE: &str = "https://www.myinstants.com";
+const FREESOUND: &str = "https://freesound.org/apiv2/search/text/";
+const FREESOUND_CDN: &str = "https://cdn.freesound.org/previews/";
+const RELEASES_API: &str = "https://api.github.com/repos/Seboulo/soundboard/releases/latest";
+pub const RELEASES_PAGE: &str = "https://github.com/Seboulo/soundboard/releases";
 const MAX_DOWNLOAD: usize = 20 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -94,9 +101,120 @@ fn decode_entities(s: &str) -> String {
         .replace("&amp;", "&")
 }
 
-/// Télécharge un son trouvé par `search`. Seuls les fichiers du site sont acceptés.
+#[derive(Deserialize)]
+struct FreesoundPage {
+    #[serde(default)]
+    results: Vec<FreesoundResult>,
+}
+
+#[derive(Deserialize)]
+struct FreesoundResult {
+    name: String,
+    #[serde(default)]
+    previews: std::collections::HashMap<String, String>,
+}
+
+pub async fn search_freesound(query: &str, page: u32, key: &str) -> Result<Vec<OnlineSound>, String> {
+    let res = client()?
+        .get(FREESOUND)
+        .query(&[
+            ("query", query),
+            ("page", &page.max(1).to_string()),
+            ("page_size", "20"),
+            ("fields", "id,name,previews"),
+            ("token", key),
+        ])
+        .send()
+        .await
+        .map_err(|e| format!("recherche impossible : {e}"))?;
+    match res.status().as_u16() {
+        // Au-delà de la dernière page.
+        404 => return Ok(vec![]),
+        401 | 403 => return Err("clé Freesound refusée : vérifie-la dans les réglages".into()),
+        _ => {}
+    }
+    let body = res
+        .error_for_status()
+        .map_err(|e| format!("recherche impossible : {e}"))?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+    parse_freesound(&body)
+}
+
+pub fn parse_freesound(json: &str) -> Result<Vec<OnlineSound>, String> {
+    let page: FreesoundPage = serde_json::from_str(json).map_err(|e| format!("réponse Freesound illisible : {e}"))?;
+    Ok(page
+        .results
+        .into_iter()
+        .filter_map(|r| {
+            let url = r.previews.get("preview-hq-mp3").or(r.previews.get("preview-lq-mp3"))?.clone();
+            if !url.starts_with(FREESOUND_CDN) {
+                return None;
+            }
+            Some(OnlineSound {
+                name: strip_extension(&r.name),
+                url,
+            })
+        })
+        .collect())
+}
+
+/// Les noms Freesound sont souvent des noms de fichiers (« bark.wav »).
+fn strip_extension(name: &str) -> String {
+    let lower = name.to_lowercase();
+    for ext in [".wav", ".mp3", ".ogg", ".flac", ".aiff", ".aif", ".m4a"] {
+        if lower.ends_with(ext) {
+            return name[..name.len() - ext.len()].replace(['_', '-'], " ").trim().to_string();
+        }
+    }
+    name.trim().to_string()
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateInfo {
+    pub version: String,
+    pub url: String,
+}
+
+#[derive(Deserialize)]
+struct Release {
+    tag_name: String,
+    html_url: String,
+}
+
+/// Regarde sur GitHub si une version plus récente est publiée.
+pub async fn check_update() -> Result<Option<UpdateInfo>, String> {
+    let body = client()?
+        .get(RELEASES_API)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| e.to_string())?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+    let release: Release = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let latest = release.tag_name.trim_start_matches('v').to_string();
+    if !is_newer(&latest, env!("CARGO_PKG_VERSION")) || !release.html_url.starts_with(RELEASES_PAGE) {
+        return Ok(None);
+    }
+    Ok(Some(UpdateInfo {
+        version: latest,
+        url: release.html_url,
+    }))
+}
+
+pub fn is_newer(candidate: &str, current: &str) -> bool {
+    let parse = |v: &str| -> Vec<u64> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
+    parse(candidate) > parse(current)
+}
+
+/// Télécharge un son trouvé par une recherche. Seuls les fichiers des deux
+/// sites sont acceptés.
 pub async fn download(url: &str) -> Result<Vec<u8>, String> {
-    if !url.starts_with(&format!("{SITE}/media/sounds/")) {
+    if !url.starts_with(&format!("{SITE}/media/sounds/")) && !url.starts_with(FREESOUND_CDN) {
         return Err("adresse de son non autorisée".into());
     }
     let mut res = client()?
@@ -150,5 +268,28 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn parses_freesound() {
+        let json = r#"{"count":2,"next":null,"results":[
+            {"id":1,"name":"Dog_bark.WAV","previews":{"preview-hq-mp3":"https://cdn.freesound.org/previews/0/1_2-hq.mp3","preview-lq-mp3":"https://cdn.freesound.org/previews/0/1_2-lq.mp3"}},
+            {"id":2,"name":"evil","previews":{"preview-hq-mp3":"https://evil.example/x.mp3"}}
+        ]}"#;
+        assert_eq!(
+            parse_freesound(json).unwrap(),
+            vec![OnlineSound {
+                name: "Dog bark".into(),
+                url: "https://cdn.freesound.org/previews/0/1_2-hq.mp3".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn compares_versions() {
+        assert!(is_newer("0.4.0", "0.3.0"));
+        assert!(is_newer("0.10.0", "0.9.1"));
+        assert!(!is_newer("0.3.0", "0.3.0"));
+        assert!(!is_newer("0.2.9", "0.3.0"));
     }
 }

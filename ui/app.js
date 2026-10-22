@@ -125,8 +125,57 @@ function enterSaves(dialog) {
 function render(snapshot) {
   state = snapshot;
   renderStatus();
+  renderMic();
   renderWarnings();
+  renderTabs();
   renderGrid();
+}
+
+function renderMic() {
+  const pill = $("#mic-toggle");
+  const muted = state.mic_muted;
+  pill.hidden = !state.config.settings.mic_enabled;
+  pill.className = "pill " + (muted ? "ko" : "ok");
+  pill.textContent = muted ? "🔇 Micro coupé" : "🎙 Micro";
+  const hk = hotkeyLabel(state.config.settings.mute_hotkey);
+  pill.title = (muted ? "Rallumer ton micro" : "Couper ton micro (les sons passent toujours)") + (hk ? ` — ${hk}` : "");
+}
+
+// ---------- Onglets ----------
+
+const TAB_KEY = "soundboard.tab";
+let currentTab = null; // null = « Tous »
+try {
+  currentTab = localStorage.getItem(TAB_KEY) || null;
+} catch {}
+
+function categories() {
+  const set = new Set(state.config.sounds.map((s) => s.category).filter(Boolean));
+  return [...set].sort((a, b) => a.localeCompare(b, "fr"));
+}
+
+function renderTabs() {
+  const cats = categories();
+  if (currentTab && !cats.includes(currentTab)) currentTab = null;
+  const tab = (label, value) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "tab" + (currentTab === value ? " active" : "");
+    b.textContent = label;
+    b.addEventListener("click", () => {
+      currentTab = value;
+      try {
+        if (value) localStorage.setItem(TAB_KEY, value);
+        else localStorage.removeItem(TAB_KEY);
+      } catch {}
+      renderTabs();
+      renderGrid();
+    });
+    return b;
+  };
+  $("#tabs").replaceChildren(tab("Tous", null), ...cats.map((c) => tab(c, c)));
+  $("#categories").replaceChildren(...cats.map((c) => new Option(c)));
+  $("#btn-export").textContent = currentTab ? `📦 Exporter « ${currentTab} »` : "📦 Exporter";
 }
 
 function renderStatus() {
@@ -134,7 +183,7 @@ function renderStatus() {
   const s = state.config.settings;
   const ok = s.virtual_device && state.devices.outputs.includes(s.virtual_device);
   pill.className = "pill " + (ok ? "ok" : "ko");
-  pill.textContent = ok ? "● Envoi vers Discord actif" : "● Micro virtuel non configuré";
+  pill.textContent = ok ? "● Discord : actif" : "● Micro virtuel non configuré";
 }
 
 function renderWarnings() {
@@ -146,7 +195,9 @@ function renderWarnings() {
 function renderGrid() {
   const grid = $("#grid");
   const q = $("#search").value.trim().toLowerCase();
-  const sounds = state.config.sounds.filter((s) => !q || s.name.toLowerCase().includes(q));
+  const sounds = state.config.sounds.filter(
+    (s) => (!currentTab || s.category === currentTab) && (!q || s.name.toLowerCase().includes(q))
+  );
   grid.replaceChildren(...sounds.map(padElement));
   $("#empty").hidden = state.config.sounds.length > 0;
   renderPlaying();
@@ -160,7 +211,10 @@ function renderPlaying() {
   document.querySelectorAll(".pad").forEach((pad) => {
     const p = byId.get(pad.dataset.id);
     pad.classList.toggle("playing", !!p);
-    const ratio = p && p.duration_ms ? Math.min(1, p.elapsed_ms / p.duration_ms) : 0;
+    let ratio = 0;
+    if (p && p.duration_ms) {
+      ratio = p.looping ? (p.elapsed_ms % p.duration_ms) / p.duration_ms : Math.min(1, p.elapsed_ms / p.duration_ms);
+    }
     pad.style.setProperty("--progress", ratio);
   });
 }
@@ -177,7 +231,7 @@ function padElement(sound) {
   name.textContent = sound.name;
   const key = document.createElement("span");
   key.className = "key";
-  key.textContent = hotkeyLabel(sound.hotkey) || "—";
+  key.textContent = (sound.looping ? "↻ " : "") + (hotkeyLabel(sound.hotkey) || "—");
   const edit = document.createElement("span");
   edit.className = "edit";
   edit.textContent = "✎";
@@ -262,6 +316,8 @@ function openSoundDialog(sound) {
   formSound.volume.value = sound.volume;
   formSound.volume.update();
   formSound.color.value = sound.color;
+  formSound.category.value = sound.category ?? "";
+  formSound.looping.checked = !!sound.looping;
   dlgSound.returnValue = "";
   dlgSound.showModal();
   openTrim(sound);
@@ -386,6 +442,8 @@ dlgSound.addEventListener("close", () => {
       hotkey: formSound.hotkey.dataset.hotkey || null,
       volume: Number(formSound.volume.value),
       color: formSound.color.value,
+      category: formSound.category.value.trim() || null,
+      looping: formSound.looping.checked,
       ...trimValues(),
     },
   });
@@ -401,7 +459,7 @@ $('[data-action="delete"]', dlgSound).addEventListener("click", () => {
 
 const dlgSettings = $("#dlg-settings");
 const formSettings = $("form", dlgSettings);
-setupHotkeyInput(formSettings.stop_hotkey);
+for (const k of ["stop_hotkey", "mute_hotkey", "random_hotkey"]) setupHotkeyInput(formSettings[k]);
 bindRangeLabels(formSettings);
 enterSaves(dlgSettings);
 
@@ -422,12 +480,54 @@ function openSettings() {
   formSettings.normalize.checked = s.normalize;
   formSettings.launch_at_startup.checked = s.launch_at_startup;
   formSettings.close_to_tray.checked = s.close_to_tray;
-  setHotkeyInput(formSettings.stop_hotkey, s.stop_hotkey);
+  for (const k of ["stop_hotkey", "mute_hotkey", "random_hotkey"]) setHotkeyInput(formSettings[k], s[k]);
+  formSettings.voice_effect.value = s.voice_effect ?? "none";
+  formSettings.freesound_key.value = s.freesound_key ?? "";
   dlgSettings.returnValue = "";
   dlgSettings.showModal();
+  startMeter();
 }
 
+// Indicateur du micro : le moteur envoie le niveau tant que les réglages sont ouverts.
+const meter = $("#mic-meter");
+
+function startMeter() {
+  updateThresholdMark();
+  $("[data-level]", meter).style.width = "0%";
+  $("[data-voice]", meter).style.width = "0%";
+  const s = state.config.settings;
+  $("[data-state]", meter).textContent = s.mic_enabled
+    ? "Parle pour tester ton micro…"
+    : "Ta voix n'est pas envoyée (case ci-dessus décochée).";
+  meter.classList.remove("open", "closed");
+  invoke("set_meter", { on: true });
+}
+
+function updateThresholdMark() {
+  $("[data-threshold]", meter).style.left = formSettings.gate_threshold.value * 100 + "%";
+}
+formSettings.gate_threshold.addEventListener("input", updateThresholdMark);
+
+listen("mic-level", ({ payload: m }) => {
+  if (!dlgSettings.open) return;
+  $("[data-level]", meter).style.width = m.level * 100 + "%";
+  $("[data-voice]", meter).style.width = m.voice * 100 + "%";
+  meter.classList.toggle("open", m.open);
+  meter.classList.toggle("closed", !m.open);
+  $("[data-state]", meter).textContent = state.mic_muted
+    ? "🔇 Micro coupé par le raccourci"
+    : m.open
+      ? "● Ta voix passe"
+      : "○ Micro fermé (pas de voix détectée)";
+});
+
+$('[data-action="freesound-key"]', dlgSettings).addEventListener("click", (e) => {
+  e.preventDefault();
+  call("open_freesound_key_page");
+});
+
 dlgSettings.addEventListener("close", () => {
+  invoke("set_meter", { on: false });
   if (dlgSettings.returnValue !== "save") return;
   const f = formSettings;
   saveSettings({
@@ -446,6 +546,10 @@ dlgSettings.addEventListener("close", () => {
     launch_at_startup: f.launch_at_startup.checked,
     close_to_tray: f.close_to_tray.checked,
     stop_hotkey: f.stop_hotkey.dataset.hotkey || null,
+    mute_hotkey: f.mute_hotkey.dataset.hotkey || null,
+    random_hotkey: f.random_hotkey.dataset.hotkey || null,
+    voice_effect: f.voice_effect.value,
+    freesound_key: f.freesound_key.value.trim() || null,
   });
 });
 
@@ -526,6 +630,49 @@ $("#cable-status").addEventListener("click", () =>
   state.devices.vb_cable ? openSettings() : openWizard()
 );
 $("#search").addEventListener("input", renderGrid);
+$("#mic-toggle").addEventListener("click", () => call("set_mic_muted", { muted: !state.mic_muted }));
+listen("mic-muted", ({ payload }) => {
+  state.mic_muted = payload;
+  renderMic();
+});
+
+$("#btn-random").addEventListener("click", async () => {
+  if (!state.config.sounds.some((s) => !currentTab || s.category === currentTab)) {
+    return toast("Aucun son dans cet onglet", true);
+  }
+  const id = await call("play_random", { category: currentTab });
+  if (id) flash(id);
+});
+
+$("#btn-export").addEventListener("click", async () => {
+  const n = await call("export_pack", { category: currentTab });
+  if (n) toast(n > 1 ? `Pack enregistré (${n} sons)` : "Pack enregistré (1 son)");
+});
+
+$("#btn-import").addEventListener("click", async () => {
+  const res = await call("import_pack");
+  if (!res) return;
+  render(res.snapshot);
+  if (res.errors.length) toast(`${res.added} son(s) ajouté(s). Problèmes :\n${res.errors.join("\n")}`, true);
+  else toast(res.added > 1 ? `${res.added} sons ajoutés` : `${res.added} son ajouté`);
+});
+
+// ---------- Nouvelle version ----------
+
+const banner = $("#update-banner");
+async function checkUpdate() {
+  let info = null;
+  try {
+    info = await invoke("check_update");
+  } catch {
+    return; // Pas de connexion : on réessaiera au prochain lancement.
+  }
+  if (!info) return;
+  $("span", banner).textContent = `Une nouvelle version (${info.version}) est disponible. Tes sons et réglages sont gardés quand tu l'installes.`;
+  banner.hidden = false;
+  $('[data-action="download"]', banner).onclick = () => call("open_release_page", { url: info.url });
+}
+$('[data-action="dismiss"]', banner).addEventListener("click", () => (banner.hidden = true));
 
 // ---------- Fichiers glissés depuis l'Explorateur ----------
 
@@ -556,9 +703,52 @@ const dlgOnline = $("#dlg-online");
 const onlineForm = $("#online-form");
 const results = $("#online-results");
 const moreBtn = $("#online-more");
-const online = { query: "", page: 1, audio: new Audio(), playingBtn: null };
+const online = { query: "", page: 1, source: "myinstants", audio: new Audio(), playingBtn: null };
+const CREDITS = {
+  myinstants: "Sons proposés par myinstants.com",
+  freesound: "Sons proposés par freesound.org (vérifie la licence avant de les partager)",
+};
+
+try {
+  online.source = localStorage.getItem("soundboard.source") || "myinstants";
+} catch {}
+
+function setSource(source) {
+  online.source = source;
+  try {
+    localStorage.setItem("soundboard.source", source);
+  } catch {}
+  document.querySelectorAll("#online-source button").forEach((b) => b.classList.toggle("active", b.dataset.source === source));
+  $("#online-credit").textContent = CREDITS[source];
+  stopOnlinePreview();
+  results.replaceChildren();
+  moreBtn.hidden = true;
+  if (source === "freesound" && !state.config.settings.freesound_key) {
+    const msg = document.createElement("div");
+    msg.className = "empty-msg";
+    msg.append("Pour chercher sur Freesound, il faut une clé gratuite. ");
+    const link = document.createElement("a");
+    link.href = "#";
+    link.textContent = "Comment l'obtenir ?";
+    link.addEventListener("click", (e) => {
+      e.preventDefault();
+      dlgOnline.close();
+      openSettings();
+      formSettings.freesound_key.focus();
+    });
+    msg.append(link);
+    results.append(msg);
+    return;
+  }
+  if (online.query) {
+    online.page = 1;
+    searchOnline();
+  }
+}
+document.querySelectorAll("#online-source button").forEach((b) => b.addEventListener("click", () => setSource(b.dataset.source)));
 
 $("#btn-online").addEventListener("click", () => {
+  setSource(online.source);
   dlgOnline.showModal();
   onlineForm.q.focus();
   onlineForm.q.select();
@@ -587,7 +777,7 @@ async function searchOnline() {
   results.append(loading);
   let items = [];
   try {
-    items = await invoke("search_online", { query: online.query, page: online.page });
+    items = await invoke("search_online", { source: online.source, query: online.query, page: online.page });
   } catch (e) {
     loading.textContent = String(e);
     return;
@@ -653,4 +843,5 @@ function stopOnlinePreview() {
 (async () => {
   render(await invoke("get_state"));
   if (!state.config.settings.setup_done) openWizard();
+  checkUpdate();
 })();

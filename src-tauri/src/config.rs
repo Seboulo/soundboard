@@ -21,6 +21,12 @@ pub struct Sound {
     /// Durée et niveau, calculés à l'import (sert à égaliser les volumes).
     #[serde(default)]
     pub analysis: Option<Analysis>,
+    /// Onglet dans lequel le son est rangé.
+    #[serde(default)]
+    pub category: Option<String>,
+    /// Rejoue le son en boucle jusqu'à ce qu'on l'arrête.
+    #[serde(default)]
+    pub looping: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -48,6 +54,17 @@ impl Sound {
             _ => 1.0,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceEffect {
+    #[default]
+    None,
+    Robot,
+    High,
+    Low,
+    Echo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +97,13 @@ pub struct Settings {
     pub voice_gate: bool,
     /// Probabilité de voix (0–1) en dessous de laquelle le micro est coupé.
     pub gate_threshold: f32,
+    /// Raccourci qui coupe / rallume ton micro (les sons passent toujours).
+    pub mute_hotkey: Option<String>,
+    /// Raccourci qui joue un son au hasard.
+    pub random_hotkey: Option<String>,
+    pub voice_effect: VoiceEffect,
+    /// Clé personnelle de l'API Freesound (gratuite), pour la recherche en ligne.
+    pub freesound_key: Option<String>,
 }
 
 impl Default for Settings {
@@ -101,6 +125,10 @@ impl Default for Settings {
             noise_suppression: true,
             voice_gate: true,
             gate_threshold: 0.6,
+            mute_hotkey: None,
+            random_hotkey: None,
+            voice_effect: VoiceEffect::None,
+            freesound_key: None,
         }
     }
 }
