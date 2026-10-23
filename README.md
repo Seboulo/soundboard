@@ -59,6 +59,12 @@ Astuce raccourcis : le pavé numérique ou F13–F24 évitent les conflits avec 
 
 Config et sons sont stockés dans `%APPDATA%\com.sebastien.soundboard\`.
 
+## Désinstallation
+
+**Paramètres Windows → Applications → Applications installées → Soundboard → Désinstaller.** Pour effacer aussi tes sons et réglages, supprime ensuite le dossier `%APPDATA%\com.sebastien.soundboard\`.
+
+*Uninstall: Windows Settings → Apps → Installed apps → Soundboard → Uninstall. To also remove sounds and settings, delete `%APPDATA%\com.sebastien.soundboard\`.*
+
 ## Développement
 
 Prérequis : [Rust](https://rustup.rs), Node.js 22, et sous Windows les outils de build C++ de Visual Studio.
@@ -88,3 +94,32 @@ git push origin main
 ```
 
 (Pousser un tag `vX.Y.Z` marche aussi.)
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+Team roles:
+
+- Committers and reviewers: [Seboulo](https://github.com/Seboulo)
+- Approvers: [Seboulo](https://github.com/Seboulo)
+
+Every release is built by GitHub Actions from this repository, and each signing request is approved manually.
+
+## Privacy policy
+
+This program does not collect or send personal data. It only contacts the services listed below.
+
+At startup, the app asks the GitHub API for the latest release number, to show a notice when an update exists. Nothing about the user is sent.
+
+Only when the user acts:
+
+- Searching MyInstants or Freesound: the search words are sent to those sites.
+- Adding a sound from a YouTube link: yt-dlp is downloaded from its official GitHub releases on first use, then contacts YouTube.
+- Phone control, when enabled: a page served on the local network only, protected by a secret code.
+
+No account, analytics or telemetry. Settings and sounds stay on the user's computer.
+
+## License
+
+[MIT](LICENSE)

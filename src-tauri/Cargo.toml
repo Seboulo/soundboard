@@ -3,6 +3,7 @@ name = "soundboard"
 version = "0.9.1"
 description = "Soundboard pour Discord : joue des sons dans ton micro via un câble audio virtuel"
 authors = ["Sébastien"]
+license = "MIT"
 homepage = "https://github.com/Seboulo/soundboard"
 repository = "https://github.com/Seboulo/soundboard"
 edition = "2021"

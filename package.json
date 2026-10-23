@@ -2,6 +2,7 @@
   "name": "soundboard",
   "private": true,
   "version": "0.9.1",
+  "license": "MIT",
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
