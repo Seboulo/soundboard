@@ -786,12 +786,31 @@ sizeInput.addEventListener("input", () => {
 
 const LINK_RE = /^https?:\/\/\S+$/i;
 
+const YOUTUBE_RE = /^https?:\/\/((www|m|music)\.)?(youtube\.com|youtu\.be)\//i;
+
 async function addFromLink(url) {
+  if (YOUTUBE_RE.test(url)) return addFromYoutube(url);
   toast("Téléchargement du son…");
   const res = await call("add_from_url", { url });
   if (res) toast("Son ajouté depuis le lien");
   return !!res;
 }
+
+// Les vidéos sont longues : on ouvre la découpe juste après l'ajout.
+async function addFromYoutube(url) {
+  toast("Récupération du son sur YouTube…");
+  const res = await call("add_from_youtube", { url });
+  if (!res) return false;
+  render(res.snapshot);
+  toast("Son ajouté : garde le passage qui t'intéresse avec la découpe");
+  const sound = state.config.sounds.find((s) => s.id === res.id);
+  if (sound) {
+    dlgOnline.close();
+    openSoundDialog(sound);
+  }
+  return true;
+}
+listen("youtube-status", ({ payload }) => toast(payload));
 
 // Ctrl+V d'un lien n'importe où dans la fenêtre (hors champ de texte).
 document.addEventListener("paste", (e) => {
@@ -808,7 +827,13 @@ $("#link-form").addEventListener("submit", async (e) => {
   const input = $("#link-form").link;
   const url = input.value.trim();
   if (!LINK_RE.test(url)) return toast("Colle un lien qui commence par http:// ou https://", true);
-  if (await addFromLink(url)) input.value = "";
+  const btn = $("#link-form button");
+  btn.disabled = true;
+  btn.textContent = "…";
+  const ok = await addFromLink(url);
+  btn.disabled = false;
+  btn.textContent = "Ajouter";
+  if (ok) input.value = "";
 });
 
 // ---------- Nouvelle version ----------

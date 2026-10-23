@@ -37,7 +37,7 @@ Les bruits de clavier, de souris et de fond sont filtrés par l'app elle-même, 
 - **Favoris** : clique sur ☆ sur un pad pour l'épingler en haut de la grille.
 - **🕘 Récents** : onglet avec les 12 derniers sons joués.
 - **Taille** : curseur à côté des onglets pour agrandir ou réduire les pads.
-- **Ajouter par lien** : copie un lien direct vers un son (.mp3, .wav…) puis Ctrl+V dans la fenêtre, ou colle-le dans « 🔎 En ligne ».
+- **Ajouter par lien** : copie un lien YouTube ou un lien direct vers un son (.mp3, .wav…) puis Ctrl+V dans la fenêtre, ou colle-le dans « 🔎 En ligne ». Pour YouTube, l'app télécharge [yt-dlp](https://github.com/yt-dlp/yt-dlp) la première fois (empreinte vérifiée) puis ouvre la découpe. Respecte les droits des auteurs des vidéos.
 - **Ne jamais être coupé** : option d'un son (musique de fond) pour qu'il continue quand un autre démarre.
 - **Réorganiser** : glisse un pad sur un autre.
 - **Tout arrêter** : bouton « Stop » ou touche **Pause** par défaut.

@@ -4,6 +4,7 @@ mod config;
 mod denoise;
 mod effects;
 mod online;
+mod youtube;
 
 use audio::{AudioEvent, AudioHandle, DeviceList, PlayOutcome, PlayRequest};
 use config::{Config, Settings, Sound};
@@ -48,6 +49,8 @@ struct AppState {
     /// Problèmes à montrer dans l'interface (raccourci déjà pris, sortie absente…).
     warnings: Mutex<Vec<String>>,
     mic_muted: AtomicBool,
+    /// Un seul téléchargement YouTube à la fois.
+    youtube_busy: AtomicBool,
     /// Dernier son tiré au hasard, pour ne pas retomber dessus deux fois de suite.
     last_random: Mutex<Option<String>>,
 }
@@ -592,6 +595,60 @@ async fn add_from_url(app: AppHandle, url: String) -> Result<Snapshot, String> {
     Ok(state.snapshot())
 }
 
+#[derive(Serialize)]
+struct AddedSound {
+    id: String,
+    snapshot: Snapshot,
+}
+
+/// Ajoute l'audio d'une vidéo YouTube (yt-dlp est installé au premier usage).
+#[tauri::command]
+async fn add_from_youtube(app: AppHandle, url: String) -> Result<AddedSound, String> {
+    let state = app.state::<AppState>();
+    if state.youtube_busy.swap(true, Ordering::SeqCst) {
+        return Err("un téléchargement YouTube est déjà en cours".into());
+    }
+    let res = youtube_import(&app, url.trim().to_string()).await;
+    state.youtube_busy.store(false, Ordering::SeqCst);
+    res
+}
+
+async fn youtube_import(app: &AppHandle, url: String) -> Result<AddedSound, String> {
+    if !youtube::is_youtube(&url) {
+        return Err("ce n'est pas un lien YouTube".into());
+    }
+    let state = app.state::<AppState>();
+    let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
+    let tools_dir = data_dir.join("tools");
+    let status = |msg: &str| {
+        let _ = app.emit("youtube-status", msg);
+    };
+    let exe = youtube::ensure(&tools_dir, status).await?;
+    status("Récupération du son sur YouTube…");
+    let work_dir = data_dir.join("youtube-tmp");
+    let (data, title) = tauri::async_runtime::spawn_blocking(move || {
+        youtube::update_if_stale(&exe);
+        youtube::download_audio(&exe, &url, &work_dir)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let index = state.config.lock().unwrap().sounds.len();
+    let sounds_dir = state.sounds_dir.clone();
+    let sound = tauri::async_runtime::spawn_blocking(move || store_sound(&data, "m4a", title, &sounds_dir, index))
+        .await
+        .map_err(|e| e.to_string())??;
+    let id = sound.id.clone();
+    {
+        let mut config = state.config.lock().unwrap();
+        config.sounds.push(sound);
+        state.save(&config)?;
+    }
+    Ok(AddedSound {
+        id,
+        snapshot: state.snapshot(),
+    })
+}
+
 #[tauri::command]
 fn stop_all(state: State<AppState>) {
     state.audio.stop_all();
@@ -966,6 +1023,7 @@ pub fn run() {
                 hotkeys: Mutex::new(HashMap::new()),
                 warnings: Mutex::new(Vec::new()),
                 mic_muted: AtomicBool::new(false),
+                youtube_busy: AtomicBool::new(false),
                 last_random: Mutex::new(None),
             };
             apply_audio(&state, config.settings.clone());
@@ -1010,6 +1068,7 @@ pub fn run() {
             set_mic_muted,
             toggle_favorite,
             add_from_url,
+            add_from_youtube,
             play_random,
             set_meter,
             check_update,
