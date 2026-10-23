@@ -176,9 +176,10 @@ impl Iterator for AudioFile {
 
 impl Source for AudioFile {
     fn current_frame_len(&self) -> Option<usize> {
-        // Le format peut changer d'un bloc à l'autre : rodio relit alors
-        // canaux et fréquence à la fin du bloc en cours.
-        Some(self.buffer.len().saturating_sub(self.pos).max(1))
+        // Un même fichier garde sa fréquence et ses canaux du début à la fin.
+        // Annoncer des blocs ferait repartir de zéro le rééchantillonnage de
+        // rodio à chaque paquet, avec un petit clic à chaque fois (grésillement).
+        None
     }
 
     fn channels(&self) -> u16 {

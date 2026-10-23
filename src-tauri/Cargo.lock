@@ -4104,7 +4104,7 @@ dependencies = [
 
 [[package]]
 name = "soundboard"
-version = "0.9.2"
+version = "0.9.3"
 dependencies = [
  "local-ip-address",
  "nnnoiseless",

@@ -213,14 +213,20 @@ fn find_input(name: Option<&str>) -> Option<cpal::Device> {
 struct Output {
     _stream: OutputStream,
     handle: OutputStreamHandle,
+    /// Fréquence de la sortie : les sons y sont convertis avant rodio.
+    rate: u32,
 }
 
 impl Output {
     fn open(device: &cpal::Device) -> Result<Self, String> {
-        let (stream, handle) = OutputStream::try_from_device(device).map_err(|e| e.to_string())?;
+        let config = device.default_output_config().map_err(|e| e.to_string())?;
+        let rate = config.sample_rate().0;
+        let (stream, handle) =
+            OutputStream::try_from_device_config(device, config).map_err(|e| e.to_string())?;
         Ok(Self {
             _stream: stream,
             handle,
+            rate,
         })
     }
 }
@@ -412,12 +418,13 @@ impl Engine {
 
         let sink = Sink::try_new(&virt.handle).map_err(|e| e.to_string())?;
         sink.set_volume(if self.mic_muted { 0.0 } else { self.settings.mic_volume });
-        sink.append(MicSource {
+        let mic = MicSource {
             buffer,
             local: VecDeque::new(),
             channels: 1,
             sample_rate: denoise::RATE,
-        });
+        };
+        sink.append(Resample::new(mic.convert_samples::<i16>(), virt.rate));
 
         self.mic_stream = Some(stream);
         self.mic_sink = Some(sink);
@@ -507,7 +514,7 @@ impl Engine {
             let Some(output) = output else { continue };
             let sink = Sink::try_new(&output.handle).map_err(|e| e.to_string())?;
             sink.set_volume(out_volume);
-            let source = open_source(&req)?;
+            let source = open_source(&req, output.rate)?;
             match &fade_target {
                 Some(target) => sink.append(Fader::new(source, target.clone())),
                 None => sink.append(source),
@@ -561,7 +568,7 @@ impl Engine {
     }
 }
 
-fn open_source(req: &PlayRequest) -> Result<Box<dyn Source<Item = i16> + Send>, String> {
+fn open_source(req: &PlayRequest, rate: u32) -> Result<Box<dyn Source<Item = i16> + Send>, String> {
     let decoder = AudioFile::open(&req.path)?;
     let length = match req.end_ms {
         Some(end) => Duration::from_millis(end.saturating_sub(req.start_ms)),
@@ -574,9 +581,110 @@ fn open_source(req: &PlayRequest) -> Result<Box<dyn Source<Item = i16> + Send>, 
         .amplify(req.gain);
     if req.looping {
         // Gardé en mémoire pour pouvoir le rejouer sans relire le fichier.
-        Ok(Box::new(source.buffered().repeat_infinite()))
+        Ok(Box::new(Resample::new(source.buffered().repeat_infinite(), rate)))
     } else {
-        Ok(Box::new(source))
+        Ok(Box::new(Resample::new(source, rate)))
+    }
+}
+
+/// Convertit un son à la fréquence de la sortie, d'un seul tenant.
+///
+/// rodio sait le faire, mais il recommence sa conversion à chaque bloc du
+/// fichier (ou tous les 512 échantillons dans un `Sink`), ce qui laisse un
+/// petit clic à chaque raccord : le son grésille. Une fois à la bonne
+/// fréquence, rodio n'y touche plus.
+struct Resample<S> {
+    inner: S,
+    channels: usize,
+    rate: u32,
+    /// Avancée dans le son d'origine pour chaque échantillon produit.
+    step: f64,
+    /// Position entre `current` et `next` (0 à 1).
+    pos: f64,
+    current: Vec<f32>,
+    next: Vec<f32>,
+    frame: Vec<i16>,
+    frame_pos: usize,
+}
+
+impl<S: Source<Item = i16>> Resample<S> {
+    fn new(inner: S, rate: u32) -> Self {
+        let channels = inner.channels().max(1) as usize;
+        let step = inner.sample_rate().max(1) as f64 / rate.max(1) as f64;
+        let mut this = Self {
+            inner,
+            channels,
+            rate,
+            step,
+            pos: 0.0,
+            current: Vec::with_capacity(channels),
+            next: Vec::with_capacity(channels),
+            frame: Vec::with_capacity(channels),
+            frame_pos: 0,
+        };
+        if step != 1.0 {
+            this.current = this.read_frame();
+            this.next = this.read_frame();
+        }
+        this
+    }
+
+    fn read_frame(&mut self) -> Vec<f32> {
+        let frame: Vec<f32> = (&mut self.inner).take(self.channels).map(f32::from).collect();
+        if frame.len() == self.channels {
+            frame
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+impl<S: Source<Item = i16>> Iterator for Resample<S> {
+    type Item = i16;
+
+    fn next(&mut self) -> Option<i16> {
+        if self.step == 1.0 {
+            return self.inner.next();
+        }
+        if self.frame_pos >= self.frame.len() {
+            if self.next.is_empty() {
+                return None;
+            }
+            let t = self.pos as f32;
+            self.frame.clear();
+            for (a, b) in self.current.iter().zip(&self.next) {
+                self.frame.push((a + (b - a) * t).round() as i16);
+            }
+            self.frame_pos = 0;
+            self.pos += self.step;
+            while self.pos >= 1.0 && !self.next.is_empty() {
+                self.pos -= 1.0;
+                self.current = std::mem::take(&mut self.next);
+                self.next = self.read_frame();
+            }
+        }
+        let sample = self.frame[self.frame_pos];
+        self.frame_pos += 1;
+        Some(sample)
+    }
+}
+
+impl<S: Source<Item = i16>> Source for Resample<S> {
+    fn current_frame_len(&self) -> Option<usize> {
+        None
+    }
+    fn channels(&self) -> u16 {
+        self.channels as u16
+    }
+    fn sample_rate(&self) -> u32 {
+        if self.step == 1.0 {
+            self.inner.sample_rate()
+        } else {
+            self.rate
+        }
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
     }
 }
 
