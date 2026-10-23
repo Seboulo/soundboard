@@ -122,8 +122,12 @@ function enterSaves(dialog) {
 
 // ---------- Rendu ----------
 
+const { emit } = window.__TAURI__.event;
+
 function render(snapshot) {
   state = snapshot;
+  // L'overlay en jeu recharge sa liste.
+  emit("sounds-changed").catch(() => {});
   renderStatus();
   renderMic();
   renderWarnings();
@@ -586,7 +590,8 @@ $('[data-action="delete"]', dlgSound).addEventListener("click", () => {
 
 const dlgSettings = $("#dlg-settings");
 const formSettings = $("form", dlgSettings);
-for (const k of ["stop_hotkey", "mute_hotkey", "random_hotkey"]) setupHotkeyInput(formSettings[k]);
+const SETTINGS_HOTKEYS = ["stop_hotkey", "mute_hotkey", "random_hotkey", "overlay_hotkey"];
+for (const k of SETTINGS_HOTKEYS) setupHotkeyInput(formSettings[k]);
 bindRangeLabels(formSettings);
 enterSaves(dlgSettings);
 
@@ -607,7 +612,10 @@ function openSettings() {
   formSettings.normalize.checked = s.normalize;
   formSettings.launch_at_startup.checked = s.launch_at_startup;
   formSettings.close_to_tray.checked = s.close_to_tray;
-  for (const k of ["stop_hotkey", "mute_hotkey", "random_hotkey"]) setHotkeyInput(formSettings[k], s[k]);
+  for (const k of SETTINGS_HOTKEYS) setHotkeyInput(formSettings[k], s[k]);
+  formSettings.phone_enabled.checked = s.phone_enabled;
+  formSettings.phone_port.value = s.phone_port;
+  renderPhoneInfo();
   formSettings.voice_effect.value = s.voice_effect ?? "none";
   formSettings.freesound_key.value = s.freesound_key ?? "";
   dlgSettings.returnValue = "";
@@ -648,6 +656,39 @@ listen("mic-level", ({ payload: m }) => {
       : "○ Micro fermé (pas de voix détectée)";
 });
 
+// QR code de la page du téléphone (seulement quand c'est activé et enregistré).
+async function renderPhoneInfo() {
+  const box = $("#phone-info");
+  box.hidden = true;
+  if (!state.config.settings.phone_enabled) return;
+  let info = null;
+  try {
+    info = await invoke("get_phone_info");
+  } catch (e) {
+    toast(String(e), true);
+  }
+  if (!info) return;
+  // SVG produit par l'app elle-même (bibliothèque qrcode).
+  $("#phone-qr").innerHTML = info.qr_svg;
+  $("#phone-url").textContent = info.url;
+  box.hidden = false;
+}
+
+formSettings.phone_enabled.addEventListener("change", () => {
+  if (formSettings.phone_enabled.checked && !state.config.settings.phone_enabled) {
+    $("#phone-info").hidden = true;
+    toast("Clique sur « Enregistrer » : le QR code s'affichera en rouvrant les réglages");
+  }
+});
+
+$('[data-action="phone-token"]', dlgSettings).addEventListener("click", async () => {
+  const res = await call("regenerate_phone_token");
+  if (res) {
+    renderPhoneInfo();
+    toast("Nouveau code : rescanne le QR code sur ton téléphone");
+  }
+});
+
 $('[data-action="freesound-key"]', dlgSettings).addEventListener("click", (e) => {
   e.preventDefault();
   call("open_freesound_key_page");
@@ -674,6 +715,9 @@ dlgSettings.addEventListener("close", () => {
     close_to_tray: f.close_to_tray.checked,
     stop_hotkey: f.stop_hotkey.dataset.hotkey || null,
     mute_hotkey: f.mute_hotkey.dataset.hotkey || null,
+    overlay_hotkey: f.overlay_hotkey.dataset.hotkey || null,
+    phone_enabled: f.phone_enabled.checked,
+    phone_port: Math.min(65535, Math.max(1024, Number(f.phone_port.value) || 7878)),
     random_hotkey: f.random_hotkey.dataset.hotkey || null,
     voice_effect: f.voice_effect.value,
     freesound_key: f.freesound_key.value.trim() || null,
@@ -784,6 +828,7 @@ applyTheme();
 $("#btn-add").addEventListener("click", () => call("pick_sounds"));
 $("#btn-stop").addEventListener("click", () => call("stop_all"));
 $("#btn-settings").addEventListener("click", openSettings);
+$("#btn-overlay").addEventListener("click", () => call("toggle_overlay"));
 $("#cable-status").addEventListener("click", () =>
   state.devices.vb_cable ? openSettings() : openWizard()
 );

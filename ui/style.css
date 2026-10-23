@@ -124,7 +124,7 @@ input[type="checkbox"] { width: auto; }
   font-weight: 700;
   letter-spacing: -.2px;
 }
-.topbar #search { width: 160px; min-width: 80px; flex-shrink: 1; }
+.topbar #search { width: 130px; min-width: 70px; flex-shrink: 1; }
 .topbar button, .pill { white-space: nowrap; flex-shrink: 0; }
 
 .pill {
@@ -541,3 +541,29 @@ dialog::backdrop { background: rgba(16, 24, 40, .35); backdrop-filter: blur(2px)
 .tabbar .size { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); }
 .tabbar .size input { width: 90px; padding: 0; border: 0; background: transparent; }
 .link-row input { font-size: 13px; }
+
+/* Téléphone */
+.phone-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.phone-info { display: flex; gap: 14px; align-items: flex-start; }
+.phone-qr { width: 150px; flex-shrink: 0; background: #fff; border-radius: 8px; padding: 4px; }
+.phone-qr svg { display: block; width: 100%; height: auto; }
+.phone-text { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.phone-text p { margin: 0; }
+.phone-text code { word-break: break-all; font-size: 12px; user-select: all; }
+.phone-text button { align-self: flex-start; font-size: 12px; padding: 5px 10px; }
+.form label.phone-port { flex-direction: row; align-items: center; gap: 8px; font-size: 12px; }
+.form label.phone-port input { width: 90px; padding: 4px 6px; }
+
+/* Fenêtre étroite : on garde tous les boutons sur une ligne. */
+.topbar button.icon { padding: 4px 8px; }
+@media (max-width: 1040px) {
+  .topbar h1 { display: none; }
+}

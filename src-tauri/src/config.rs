@@ -113,6 +113,13 @@ pub struct Settings {
     pub voice_effect: VoiceEffect,
     /// Clé personnelle de l'API Freesound (gratuite), pour la recherche en ligne.
     pub freesound_key: Option<String>,
+    /// Affiche ou cache l'overlay en jeu.
+    pub overlay_hotkey: Option<String>,
+    /// Page web sur le réseau local pour jouer les sons depuis un téléphone.
+    pub phone_enabled: bool,
+    pub phone_port: u16,
+    /// Code secret dans l'adresse de la page du téléphone.
+    pub phone_token: String,
 }
 
 impl Default for Settings {
@@ -138,6 +145,10 @@ impl Default for Settings {
             random_hotkey: None,
             voice_effect: VoiceEffect::None,
             freesound_key: None,
+            overlay_hotkey: None,
+            phone_enabled: false,
+            phone_port: 7878,
+            phone_token: String::new(),
         }
     }
 }

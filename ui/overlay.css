@@ -1,0 +1,38 @@
+/* Overlay en jeu : fenêtre sans bord, toujours au-dessus, fond transparent. */
+html, body.overlay { background: transparent; height: 100%; overflow: hidden; }
+.ov-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--bg) 90%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+}
+.ov-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  cursor: move;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 85%, transparent);
+}
+.ov-title { font-size: 16px; padding: 0 4px; }
+.ov-head select { flex: 1; min-width: 0; padding: 4px 6px; font-size: 13px; cursor: pointer; }
+.ov-btn { padding: 3px 9px; font-size: 13px; box-shadow: none; }
+.ov-grid {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
+  align-content: start;
+  gap: 8px;
+  padding: 8px;
+}
+.ov-grid .pad { padding: 6px 4px; gap: 4px; border-radius: 14px; }
+.ov-grid .pad .icon { width: 34px; height: 34px; font-size: 16px; border-radius: 10px; }
+.ov-grid .pad .icon.emoji { font-size: 20px; }
+.ov-grid .pad .name { font-size: 11.5px; -webkit-line-clamp: 2; }
+.ov-grid .pad:hover { transform: none; box-shadow: none; }
+.ov-empty { padding: 16px; text-align: center; color: var(--muted); font-size: 13px; }

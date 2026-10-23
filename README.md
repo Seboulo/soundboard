@@ -39,6 +39,8 @@ Les bruits de clavier, de souris et de fond sont filtrés par l'app elle-même, 
 - **Taille** : curseur à côté des onglets pour agrandir ou réduire les pads.
 - **Ajouter par lien** : copie un lien YouTube ou un lien direct vers un son (.mp3, .wav…) puis Ctrl+V dans la fenêtre, ou colle-le dans « 🔎 En ligne ». Pour YouTube, l'app télécharge [yt-dlp](https://github.com/yt-dlp/yt-dlp) la première fois (empreinte vérifiée) puis ouvre la découpe. Respecte les droits des auteurs des vidéos.
 - **Ne jamais être coupé** : option d'un son (musique de fond) pour qu'il continue quand un autre démarre.
+- **🎮 Overlay en jeu** : une petite fenêtre toujours au-dessus du jeu avec tes favoris (ou un onglet). Bouton 🎮, raccourci dans les réglages ou menu près de l'horloge. Marche en fenêtré et « plein écran fenêtré », pas en plein écran exclusif.
+- **📱 Téléphone** : coche l'option dans les réglages, enregistre, rouvre les réglages et scanne le QR code (téléphone sur le même Wi-Fi). Autorise l'app sur les « réseaux privés » quand Windows le demande.
 - **Réorganiser** : glisse un pad sur un autre.
 - **Tout arrêter** : bouton « Stop » ou touche **Pause** par défaut.
 

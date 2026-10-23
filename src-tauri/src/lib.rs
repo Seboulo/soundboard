@@ -5,6 +5,7 @@ mod decoder;
 mod denoise;
 mod effects;
 mod online;
+mod phone;
 mod youtube;
 
 use audio::{AudioEvent, AudioHandle, DeviceList, PlayOutcome, PlayRequest};
@@ -20,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_autostart::ManagerExt as AutostartExt;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -39,6 +40,7 @@ enum HotkeyAction {
     StopAll,
     ToggleMute,
     Random,
+    ToggleOverlay,
 }
 
 struct AppState {
@@ -50,6 +52,10 @@ struct AppState {
     /// Problèmes à montrer dans l'interface (raccourci déjà pris, sortie absente…).
     warnings: Mutex<Vec<String>>,
     mic_muted: AtomicBool,
+    /// Serveur de la page du téléphone, quand il est activé.
+    phone: Mutex<Option<phone::PhoneServer>>,
+    /// Sons en cours (pour la page du téléphone).
+    playing_ids: Mutex<Vec<String>>,
     /// Un seul téléchargement YouTube à la fois.
     youtube_busy: AtomicBool,
     /// Dernier son tiré au hasard, pour ne pas retomber dessus deux fois de suite.
@@ -92,6 +98,100 @@ impl AppState {
 const WARN_AUDIO: &str = "Audio : ";
 const WARN_HOTKEY: &str = "Raccourci : ";
 const WARN_STARTUP: &str = "Démarrage : ";
+const WARN_PHONE: &str = "Téléphone : ";
+const OVERLAY: &str = "overlay";
+
+/// Affiche l'overlay en jeu (créé à la première demande) ou le cache.
+fn toggle_overlay_window(app: &AppHandle) -> Result<bool, String> {
+    if let Some(w) = app.get_webview_window(OVERLAY) {
+        let visible = w.is_visible().unwrap_or(false);
+        if visible {
+            w.hide().map_err(|e| e.to_string())?;
+        } else {
+            w.show().map_err(|e| e.to_string())?;
+        }
+        return Ok(!visible);
+    }
+    let (w, h) = (300.0, 460.0);
+    let mut builder = WebviewWindowBuilder::new(app, OVERLAY, WebviewUrl::App("overlay.html".into()))
+        .title("Soundboard — overlay")
+        .inner_size(w, h)
+        .min_inner_size(200.0, 160.0)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        // Cliquer sur l'overlay ne retire pas le focus au jeu.
+        .focusable(false)
+        .focused(false);
+    // En haut à droite de l'écran principal.
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let scale = monitor.scale_factor();
+        let size = monitor.size().to_logical::<f64>(scale);
+        builder = builder.position(size.width - w - 24.0, 80.0);
+    }
+    builder.build().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// Démarre, redémarre ou arrête la page du téléphone selon les réglages.
+fn apply_phone(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    // Arrête l'ancien serveur avant d'en relancer un sur le même port.
+    *state.phone.lock().unwrap() = None;
+    let settings = state.config.lock().unwrap().settings.clone();
+    if !settings.phone_enabled {
+        state.set_warnings(WARN_PHONE, vec![]);
+        return;
+    }
+    let handle = app.clone();
+    let handler: phone::Handler = std::sync::Arc::new(move |req| phone_request(&handle, req));
+    let res = phone::PhoneServer::start(settings.phone_port, settings.phone_token.clone(), handler);
+    match res {
+        Ok(server) => {
+            *state.phone.lock().unwrap() = Some(server);
+            state.set_warnings(WARN_PHONE, vec![]);
+        }
+        Err(e) => state.set_warnings(WARN_PHONE, vec![e]),
+    }
+}
+
+fn phone_request(app: &AppHandle, req: phone::Request) -> Result<serde_json::Value, String> {
+    let state = app.state::<AppState>();
+    match req {
+        phone::Request::State => {
+            let config = state.config.lock().unwrap();
+            let sounds: Vec<_> = config
+                .sounds
+                .iter()
+                .map(|s| {
+                    serde_json::json!({
+                        "id": s.id, "name": s.name, "emoji": s.emoji, "color": s.color,
+                        "category": s.category, "favorite": s.favorite,
+                    })
+                })
+                .collect();
+            let playing = state.playing_ids.lock().unwrap().clone();
+            Ok(serde_json::json!({ "sounds": sounds, "playing": playing }))
+        }
+        phone::Request::Play(id) => {
+            let sound = find_sound(&state, &id)?;
+            state.audio.toggle(play_request(&state, &sound))?;
+            let _ = app.emit("sound-triggered", &sound.id);
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        phone::Request::Stop => {
+            state.audio.stop_all();
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        phone::Request::Random(category) => {
+            let sound = pick_random(&state, category.as_deref()).ok_or("aucun son")?;
+            state.audio.toggle(play_request(&state, &sound))?;
+            let _ = app.emit("sound-triggered", &sound.id);
+            Ok(serde_json::json!({ "id": sound.id }))
+        }
+    }
+}
 const MINIMIZED_ARG: &str = "--minimized";
 
 fn find_sound(state: &AppState, id: &str) -> Result<Sound, String> {
@@ -201,6 +301,7 @@ fn register_hotkeys(app: &AppHandle) {
         (&config.settings.stop_hotkey, HotkeyAction::StopAll, "Tout arrêter"),
         (&config.settings.mute_hotkey, HotkeyAction::ToggleMute, "Couper le micro"),
         (&config.settings.random_hotkey, HotkeyAction::Random, "Son au hasard"),
+        (&config.settings.overlay_hotkey, HotkeyAction::ToggleOverlay, "Overlay en jeu"),
     ] {
         if let Some(h) = hotkey.clone().filter(|h| !h.is_empty()) {
             entries.push((h, action, label.into()));
@@ -257,6 +358,9 @@ fn on_hotkey(app: &AppHandle, shortcut: &Shortcut) {
         Some(HotkeyAction::ToggleMute) => {
             let muted = !state.mic_muted.load(Ordering::Relaxed);
             set_muted(app, muted);
+        }
+        Some(HotkeyAction::ToggleOverlay) => {
+            let _ = toggle_overlay_window(app);
         }
         Some(HotkeyAction::Random) => {
             if let Some(sound) = pick_random(&state, None) {
@@ -475,11 +579,24 @@ fn move_sound(state: State<AppState>, id: String, to: usize) -> Result<Snapshot,
 }
 
 #[tauri::command]
-fn update_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> Result<Snapshot, String> {
+fn update_settings(app: AppHandle, state: State<AppState>, mut settings: Settings) -> Result<Snapshot, String> {
+    let phone_changed;
     {
         let mut config = state.config.lock().unwrap();
+        // Le code du téléphone ne se change que par « Nouveau code ».
+        settings.phone_token = config.settings.phone_token.clone();
+        if settings.phone_enabled && settings.phone_token.is_empty() {
+            settings.phone_token = phone::new_token();
+        }
+        settings.phone_port = settings.phone_port.max(1024);
+        let old = &config.settings;
+        phone_changed = (old.phone_enabled, old.phone_port, &old.phone_token)
+            != (settings.phone_enabled, settings.phone_port, &settings.phone_token);
         config.settings = settings.clone();
         state.save(&config)?;
+    }
+    if phone_changed {
+        apply_phone(&app);
     }
     let autostart = settings.launch_at_startup;
     apply_audio(&state, settings);
@@ -655,6 +772,41 @@ async fn youtube_import(app: &AppHandle, url: String) -> Result<AddedSound, Stri
         id,
         snapshot: state.snapshot(),
     })
+}
+
+#[tauri::command]
+fn toggle_overlay(app: AppHandle) -> Result<bool, String> {
+    toggle_overlay_window(&app)
+}
+
+#[derive(Serialize)]
+struct PhoneInfo {
+    url: String,
+    qr_svg: String,
+}
+
+#[tauri::command]
+fn get_phone_info(state: State<AppState>) -> Result<Option<PhoneInfo>, String> {
+    let settings = state.config.lock().unwrap().settings.clone();
+    if !settings.phone_enabled || settings.phone_token.is_empty() {
+        return Ok(None);
+    }
+    let url = phone::page_url(settings.phone_port, &settings.phone_token)
+        .ok_or("adresse du PC sur le réseau introuvable (es-tu connecté en Wi-Fi ou en câble ?)")?;
+    let qr_svg = phone::qr_svg(&url)?;
+    Ok(Some(PhoneInfo { url, qr_svg }))
+}
+
+/// Change le code secret : les anciens liens du téléphone ne marchent plus.
+#[tauri::command]
+fn regenerate_phone_token(app: AppHandle, state: State<AppState>) -> Result<Snapshot, String> {
+    {
+        let mut config = state.config.lock().unwrap();
+        config.settings.phone_token = phone::new_token();
+        state.save(&config)?;
+    }
+    apply_phone(&app);
+    Ok(state.snapshot())
 }
 
 #[tauri::command]
@@ -950,14 +1102,18 @@ fn open_vb_cable_page(app: AppHandle) -> Result<(), String> {
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Ouvrir la soundboard", true, None::<&str>)?;
     let stop = MenuItem::with_id(app, "stop", "Tout arrêter", true, None::<&str>)?;
+    let overlay = MenuItem::with_id(app, "overlay", "Overlay en jeu", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quitter", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &stop, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &overlay, &stop, &quit])?;
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("Soundboard")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_window(app),
+            "overlay" => {
+                let _ = toggle_overlay_window(app);
+            }
             "stop" => {
                 app.state::<AppState>().audio.stop_all();
             }
@@ -1016,6 +1172,13 @@ pub fn run() {
             let handle = app.handle().clone();
             let audio = AudioHandle::spawn(move |event| match event {
                 AudioEvent::Playing(status) => {
+                    if let Some(state) = handle.try_state::<AppState>() {
+                        *state.playing_ids.lock().unwrap() = status
+                            .iter()
+                            .filter(|s| s.id != audio::PREVIEW_ID)
+                            .map(|s| s.id.clone())
+                            .collect();
+                    }
                     let _ = handle.emit("playing", status);
                 }
                 AudioEvent::Mic(level) => {
@@ -1032,6 +1195,8 @@ pub fn run() {
                 warnings: Mutex::new(Vec::new()),
                 mic_muted: AtomicBool::new(false),
                 youtube_busy: AtomicBool::new(false),
+                phone: Mutex::new(None),
+                playing_ids: Mutex::new(Vec::new()),
                 last_random: Mutex::new(None),
             };
             apply_audio(&state, config.settings.clone());
@@ -1040,6 +1205,7 @@ pub fn run() {
             apply_autostart(app.handle(), config.settings.launch_at_startup);
             analyze_missing(app.handle().clone());
             build_tray(app.handle())?;
+            apply_phone(app.handle());
 
             // Lancé avec Windows : on reste discret près de l'horloge.
             if !std::env::args().any(|a| a == MINIMIZED_ARG) {
@@ -1049,11 +1215,20 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
+                // L'overlay se cache simplement : il garde sa place.
+                if window.label() == OVERLAY {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    return;
+                }
                 let state = window.state::<AppState>();
                 let to_tray = state.config.lock().unwrap().settings.close_to_tray;
                 if to_tray {
                     api.prevent_close();
                     let _ = window.hide();
+                } else {
+                    // Sinon l'overlay garderait l'app ouverte.
+                    window.app_handle().exit(0);
                 }
             }
         })
@@ -1074,6 +1249,9 @@ pub fn run() {
             stop_all,
             open_vb_cable_page,
             open_freesound_key_page,
+            toggle_overlay,
+            get_phone_info,
+            regenerate_phone_token,
             set_mic_muted,
             toggle_favorite,
             add_from_url,

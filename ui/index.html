@@ -16,6 +16,7 @@
     <button id="btn-online" type="button"title="Chercher des sons sur internet">🔎 En ligne</button>
     <button id="btn-add" type="button" class="primary"title="Ajouter des fichiers audio">+ Ajouter</button>
     <button id="btn-stop" type="button" class="danger" title="Tout arrêter">■ Stop</button>
+    <button id="btn-overlay" type="button" class="icon" title="Overlay en jeu : tes sons toujours au-dessus du jeu">🎮</button>
     <button id="btn-theme" type="button" class="icon"></button>
     <button id="btn-settings" type="button" class="icon" title="Réglages">⚙</button>
   </header>
@@ -156,6 +157,23 @@
       <label>Raccourci « Son au hasard »
         <input name="random_hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche">
       </label>
+      <label>Raccourci « Afficher / cacher l'overlay en jeu »
+        <input name="overlay_hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche">
+      </label>
+      <p class="hint">L'overlay s'affiche par-dessus les jeux en mode fenêtré ou « plein écran fenêtré » (pas en plein écran exclusif). Cliquer dessus ne fait pas perdre le focus au jeu.</p>
+      <div class="phone-box">
+        <label class="check"><input name="phone_enabled" type="checkbox"> 📱 Jouer les sons depuis mon téléphone (même Wi-Fi que le PC)</label>
+        <div id="phone-info" class="phone-info" hidden>
+          <div id="phone-qr" class="phone-qr"></div>
+          <div class="phone-text">
+            <p>Scanne ce QR code avec l'appareil photo de ton téléphone, ou ouvre :</p>
+            <code id="phone-url"></code>
+            <p class="hint">Au premier lancement, Windows demande d'autoriser l'app sur le réseau : accepte pour les « réseaux privés ». Garde ce lien pour toi : il permet de jouer tes sons.</p>
+            <button type="button" data-action="phone-token">Nouveau code (invalide l'ancien lien)</button>
+          </div>
+        </div>
+        <label class="phone-port">Port <input name="phone_port" type="number" min="1024" max="65535"></label>
+      </div>
       <label>Clé Freesound (pour chercher sur freesound.org)
         <input name="freesound_key" autocomplete="off" spellcheck="false" placeholder="Colle ta clé ici">
       </label>

@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f4f5f7">
+  <title>Soundboard</title>
+  <style>
+    :root {
+      --bg: #f4f5f7; --panel: #fff; --border: #e2e4e9; --text: #1c1e23; --muted: #6b7280;
+      --accent: #4f46e5; --danger: #e5484d; --pad-base: #fff; --ink-base: #1c1e23;
+      --tint-amount: 20%; --ink-amount: 45%; --chip: rgba(255, 255, 255, .7);
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #16171b; --panel: #202127; --border: #33353d; --text: #ececf1; --muted: #9a9fab;
+        --accent: #7c83f5; --pad-base: #202127; --ink-base: #fff; --tint-amount: 20%;
+        --ink-amount: 55%; --chip: rgba(0, 0, 0, .22); color-scheme: dark;
+      }
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; user-select: none;
+      padding-bottom: calc(84px + env(safe-area-inset-bottom));
+    }
+    header {
+      position: sticky; top: 0; z-index: 2; padding: 12px 16px 8px;
+      background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px);
+    }
+    h1 { margin: 0 0 8px; font-size: 18px; display: flex; align-items: center; gap: 8px; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #16a34a; }
+    .dot.off { background: var(--danger); }
+    .tabs { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+    .tabs::-webkit-scrollbar { display: none; }
+    .tab {
+      flex-shrink: 0; border: 1px solid var(--border); background: var(--panel); color: var(--muted);
+      border-radius: 999px; padding: 6px 13px; font: inherit; font-size: 14px;
+    }
+    .tab.active { background: var(--text); color: var(--panel); border-color: var(--text); }
+    main {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+      gap: 10px; padding: 8px 16px;
+    }
+    .pad {
+      --c: var(--accent);
+      --ink: color-mix(in srgb, var(--c) var(--ink-amount), var(--ink-base));
+      aspect-ratio: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 6px; padding: 8px; border-radius: 18px; font: inherit; text-align: center;
+      background: color-mix(in srgb, var(--c) var(--tint-amount), var(--pad-base));
+      border: 1px solid color-mix(in srgb, var(--c) 28%, var(--pad-base));
+      color: var(--ink); transition: transform .1s;
+    }
+    .pad:active { transform: scale(.94); }
+    .pad.playing {
+      background: color-mix(in srgb, var(--c) calc(var(--tint-amount) + 14%), var(--pad-base));
+      border-color: var(--c);
+    }
+    .icon {
+      width: 44px; height: 44px; border-radius: 13px; display: grid; place-items: center;
+      background: var(--chip); font-size: 24px; font-weight: 700;
+    }
+    .name {
+      font-size: 13px; font-weight: 650; line-height: 1.2; max-width: 100%; overflow: hidden;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    }
+    .empty { grid-column: 1 / -1; text-align: center; color: var(--muted); padding: 40px 0; }
+    footer {
+      position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 10px;
+      padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+      background: color-mix(in srgb, var(--bg) 90%, transparent); backdrop-filter: blur(10px);
+      border-top: 1px solid var(--border);
+    }
+    footer button {
+      flex: 1; border: 1px solid var(--border); border-radius: 14px; padding: 14px; font: inherit;
+      font-weight: 600; background: var(--panel); color: var(--text);
+    }
+    footer .stop { background: var(--danger); border-color: var(--danger); color: #fff; }
+    .error {
+      position: fixed; left: 16px; right: 16px; bottom: calc(84px + env(safe-area-inset-bottom));
+      background: var(--panel); border: 1px solid var(--danger); border-radius: 12px; padding: 10px 12px;
+      font-size: 14px;
+    }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1><span class="dot" id="dot"></span>Soundboard</h1>
+    <nav class="tabs" id="tabs"></nav>
+  </header>
+  <main id="grid"></main>
+  <div class="error" id="error" hidden></div>
+  <footer>
+    <button type="button" id="random">🎲 Au hasard</button>
+    <button type="button" class="stop" id="stop">■ Stop</button>
+  </footer>
+
+  <script>
+    "use strict";
+    const token = new URLSearchParams(location.search).get("t") || "";
+    const FAV = "\u0000fav";
+    let sounds = [];
+    let playing = new Set();
+    let tab = null;
+    try { tab = localStorage.getItem("tab"); } catch {}
+
+    const $ = (id) => document.getElementById(id);
+
+    function api(path, params = {}, method = "GET") {
+      const q = new URLSearchParams({ t: token, ...params });
+      return fetch(`${path}?${q}`, { method, cache: "no-store" }).then(async (r) => {
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body.error || `erreur ${r.status}`);
+        return body;
+      });
+    }
+
+    let errorTimer = 0;
+    function showError(msg) {
+      const el = $("error");
+      el.textContent = msg;
+      el.hidden = false;
+      clearTimeout(errorTimer);
+      errorTimer = setTimeout(() => (el.hidden = true), 4000);
+    }
+
+    function setTab(value) {
+      tab = value;
+      try { value ? localStorage.setItem("tab", value) : localStorage.removeItem("tab"); } catch {}
+      render();
+    }
+
+    function render() {
+      const cats = [...new Set(sounds.map((s) => s.category).filter(Boolean))].sort((a, b) => a.localeCompare(b, "fr"));
+      const hasFav = sounds.some((s) => s.favorite);
+      if (tab && tab !== FAV && !cats.includes(tab)) tab = null;
+      if (tab === FAV && !hasFav) tab = null;
+      const tabs = [["Tous", null], ...(hasFav ? [["⭐ Favoris", FAV]] : []), ...cats.map((c) => [c, c])];
+      $("tabs").replaceChildren(...tabs.map(([label, value]) => {
+        const b = document.createElement("button");
+        b.className = "tab" + (tab === value ? " active" : "");
+        b.textContent = label;
+        b.onclick = () => setTab(value);
+        return b;
+      }));
+
+      let list = sounds.filter((s) => !tab || (tab === FAV ? s.favorite : s.category === tab));
+      list = [...list.filter((s) => s.favorite), ...list.filter((s) => !s.favorite)];
+      if (!list.length) {
+        const p = document.createElement("p");
+        p.className = "empty";
+        p.textContent = "Aucun son ici.";
+        $("grid").replaceChildren(p);
+        return;
+      }
+      $("grid").replaceChildren(...list.map((s) => {
+        const b = document.createElement("button");
+        b.className = "pad" + (playing.has(s.id) ? " playing" : "");
+        b.style.setProperty("--c", s.color);
+        const icon = document.createElement("span");
+        icon.className = "icon";
+        icon.textContent = s.emoji || [...s.name.trim()][0]?.toUpperCase() || "♪";
+        const name = document.createElement("span");
+        name.className = "name";
+        name.textContent = s.name;
+        b.append(icon, name);
+        b.onclick = () => {
+          if (navigator.vibrate) navigator.vibrate(15);
+          api("/api/play", { id: s.id }, "POST").then(refresh, (e) => showError(e.message));
+        };
+        return b;
+      }));
+    }
+
+    let last = "";
+    async function refresh() {
+      try {
+        const state = await api("/api/state");
+        $("dot").classList.remove("off");
+        const key = JSON.stringify(state);
+        if (key === last) return;
+        last = key;
+        sounds = state.sounds;
+        playing = new Set(state.playing);
+        render();
+      } catch (e) {
+        $("dot").classList.add("off");
+      }
+    }
+
+    $("stop").onclick = () => api("/api/stop", {}, "POST").then(refresh, (e) => showError(e.message));
+    $("random").onclick = () => {
+      const cat = tab && tab !== FAV ? tab : "";
+      api("/api/random", { cat }, "POST").then(refresh, (e) => showError(e.message));
+    };
+
+    refresh();
+    setInterval(refresh, 1500);
+  </script>
+</body>
+</html>

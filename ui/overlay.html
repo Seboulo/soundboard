@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Soundboard — overlay</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="overlay.css">
+</head>
+<body class="overlay">
+  <div class="ov-panel">
+    <header class="ov-head" data-tauri-drag-region>
+      <span class="ov-title" data-tauri-drag-region>🔊</span>
+      <select id="ov-tab" title="Onglet affiché"></select>
+      <button type="button" id="ov-stop" class="ov-btn danger" title="Tout arrêter">■</button>
+      <button type="button" id="ov-close" class="ov-btn" title="Cacher l'overlay">✕</button>
+    </header>
+    <div id="ov-grid" class="ov-grid"></div>
+    <p id="ov-empty" class="ov-empty" hidden></p>
+  </div>
+  <script src="overlay.js"></script>
+</body>
+</html>
