@@ -1,7 +1,10 @@
 [package]
 name = "soundboard"
-version = "0.9.0"
+version = "0.9.1"
 description = "Soundboard pour Discord : joue des sons dans ton micro via un câble audio virtuel"
+authors = ["Sébastien"]
+homepage = "https://github.com/Seboulo/soundboard"
+repository = "https://github.com/Seboulo/soundboard"
 edition = "2021"
 
 [lib]
@@ -35,5 +38,6 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 [profile.release]
 codegen-units = 1
 lto = true
-opt-level = "s"
+# Vitesse plutôt que taille : le micro est filtré en temps réel.
+opt-level = 3
 strip = true

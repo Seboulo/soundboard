@@ -595,7 +595,15 @@ for (const k of SETTINGS_HOTKEYS) setupHotkeyInput(formSettings[k]);
 bindRangeLabels(formSettings);
 enterSaves(dlgSettings);
 
-function openSettings() {
+/** Relit les périphériques audio (lent sous Windows, donc seulement ici). */
+async function refreshDevices() {
+  try {
+    render(await invoke("refresh_devices"));
+  } catch {}
+}
+
+async function openSettings() {
+  await refreshDevices();
   const s = state.config.settings;
   const d = state.devices;
   fillSelect(formSettings.monitor_device, d.outputs, s.monitor_device, `Par défaut (${d.default_output ?? "aucun"})`);
@@ -764,7 +772,8 @@ function renderWizardCable() {
     : "VB-Cable n'est pas encore détecté sur ce PC.";
 }
 
-function openWizard() {
+async function openWizard() {
+  await refreshDevices();
   showStep(0);
   dlgWizard.showModal();
 }
@@ -778,7 +787,7 @@ dlgWizard.querySelectorAll("[data-next]").forEach((b) => b.addEventListener("cli
 dlgWizard.querySelectorAll("[data-prev]").forEach((b) => b.addEventListener("click", () => showStep(step - 1)));
 $('[data-action="open-vb"]', dlgWizard).addEventListener("click", () => call("open_vb_cable_page"));
 $('[data-action="recheck"]', dlgWizard).addEventListener("click", async () => {
-  render(await invoke("get_state"));
+  await refreshDevices();
   renderWizardCable();
 });
 $('[data-action="finish"]', dlgWizard).addEventListener("click", async () => {
@@ -1030,8 +1039,7 @@ function setSource(source) {
     link.addEventListener("click", (e) => {
       e.preventDefault();
       dlgOnline.close();
-      openSettings();
-      formSettings.freesound_key.focus();
+      openSettings().then(() => formSettings.freesound_key.focus());
     });
     msg.append(link);
     results.append(msg);

@@ -155,7 +155,7 @@ fn wait<T>(rx: Receiver<Result<T, String>>) -> Result<T, String> {
         .unwrap_or_else(|_| Err("le moteur audio ne répond pas".into()))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DeviceList {
     pub outputs: Vec<String>,
     pub inputs: Vec<String>,
@@ -567,8 +567,9 @@ fn open_source(req: &PlayRequest) -> Result<Box<dyn Source<Item = i16> + Send>, 
         Some(end) => Duration::from_millis(end.saturating_sub(req.start_ms)),
         None => Duration::from_secs(24 * 3600),
     };
+    let mut decoder = decoder;
+    decoder.seek_ms(req.start_ms);
     let source = decoder
-        .skip_duration(Duration::from_millis(req.start_ms))
         .take_duration(length)
         .amplify(req.gain);
     if req.looping {

@@ -52,6 +52,11 @@ struct AppState {
     /// Problèmes à montrer dans l'interface (raccourci déjà pris, sortie absente…).
     warnings: Mutex<Vec<String>>,
     mic_muted: AtomicBool,
+    /// Liste des périphériques audio. Les énumérer prend du temps sous
+    /// Windows : on la garde et on ne la relit qu'à la demande.
+    devices: Mutex<DeviceList>,
+    /// Formes d'onde déjà calculées (décoder un long son prend du temps).
+    waveforms: Mutex<HashMap<String, Vec<f32>>>,
     /// Serveur de la page du téléphone, quand il est activé.
     phone: Mutex<Option<phone::PhoneServer>>,
     /// Sons en cours (pour la page du téléphone).
@@ -80,7 +85,7 @@ impl AppState {
     fn snapshot(&self) -> Snapshot {
         Snapshot {
             config: self.config.lock().unwrap().clone(),
-            devices: audio::list_devices(),
+            devices: self.devices.lock().unwrap().clone(),
             warnings: self.warnings.lock().unwrap().clone(),
             vb_cable_url: VB_CABLE_URL,
             mic_muted: self.mic_muted.load(Ordering::Relaxed),
@@ -476,6 +481,17 @@ fn get_state(state: State<AppState>) -> Snapshot {
     state.snapshot()
 }
 
+/// Relit la liste des périphériques (réglages, assistant, nouveau casque…).
+#[tauri::command]
+async fn refresh_devices(app: AppHandle) -> Result<Snapshot, String> {
+    let devices = tauri::async_runtime::spawn_blocking(audio::list_devices)
+        .await
+        .map_err(|e| e.to_string())?;
+    let state = app.state::<AppState>();
+    *state.devices.lock().unwrap() = devices;
+    Ok(state.snapshot())
+}
+
 #[tauri::command]
 fn add_sounds(app: AppHandle, state: State<AppState>, paths: Vec<String>) -> Result<Snapshot, String> {
     let mut errors = Vec::new();
@@ -639,10 +655,16 @@ fn stop_preview(state: State<AppState>) {
 
 #[tauri::command]
 async fn get_waveform(app: AppHandle, id: String) -> Result<Vec<f32>, String> {
-    let sound = find_sound(&app.state::<AppState>(), &id)?;
-    tauri::async_runtime::spawn_blocking(move || analysis::waveform(&sound.path, 600))
+    let state = app.state::<AppState>();
+    if let Some(peaks) = state.waveforms.lock().unwrap().get(&id) {
+        return Ok(peaks.clone());
+    }
+    let sound = find_sound(&state, &id)?;
+    let peaks = tauri::async_runtime::spawn_blocking(move || analysis::waveform(&sound.path, 600))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())??;
+    state.waveforms.lock().unwrap().insert(id, peaks.clone());
+    Ok(peaks)
 }
 
 #[tauri::command]
@@ -1163,10 +1185,11 @@ pub fn run() {
             let config_path = app.path().app_config_dir()?.join("config.json");
             let sounds_dir = app.path().app_data_dir()?.join("sounds");
             let mut config = Config::load(&config_path);
+            let devices = audio::list_devices();
 
             // Premier lancement : si VB-Cable est déjà installé, on le choisit d'office.
             if config.settings.virtual_device.is_none() {
-                config.settings.virtual_device = audio::list_devices().vb_cable;
+                config.settings.virtual_device = devices.vb_cable.clone();
             }
 
             let handle = app.handle().clone();
@@ -1196,6 +1219,8 @@ pub fn run() {
                 mic_muted: AtomicBool::new(false),
                 youtube_busy: AtomicBool::new(false),
                 phone: Mutex::new(None),
+                devices: Mutex::new(devices),
+                waveforms: Mutex::new(HashMap::new()),
                 playing_ids: Mutex::new(Vec::new()),
                 last_random: Mutex::new(None),
             };
@@ -1234,6 +1259,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_state,
+            refresh_devices,
             add_sounds,
             pick_sounds,
             update_sound,

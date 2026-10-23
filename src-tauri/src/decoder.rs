@@ -11,10 +11,11 @@ use std::time::Duration;
 use symphonia::core::audio::{SampleBuffer, SignalSpec};
 use symphonia::core::codecs::{Decoder, DecoderOptions, CODEC_TYPE_NULL};
 use symphonia::core::errors::Error;
-use symphonia::core::formats::{FormatOptions, FormatReader};
+use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
+use symphonia::core::units::Time;
 
 /// Nombre de paquets illisibles tolérés d'affilée avant d'abandonner.
 const MAX_DECODE_ERRORS: usize = 20;
@@ -78,6 +79,49 @@ impl AudioFile {
             return Err("fichier audio vide ou illisible".into());
         }
         Ok(file)
+    }
+
+    /// Saute directement à `ms` au lieu de décoder tout le début (utile pour
+    /// une découpe loin dans un long son, comme une vidéo YouTube).
+    pub fn seek_ms(&mut self, ms: u64) {
+        if ms == 0 {
+            return;
+        }
+        let time = Time::new(ms / 1000, (ms % 1000) as f64 / 1000.0);
+        let seeked = self.format.seek(
+            SeekMode::Accurate,
+            SeekTo::Time {
+                time,
+                track_id: Some(self.track_id),
+            },
+        );
+        let Ok(seeked) = seeked else {
+            // Format sans saut possible : on décodera depuis le début.
+            let _ = self.skip_samples(ms);
+            return;
+        };
+        self.decoder.reset();
+        self.buffer.clear();
+        self.pos = 0;
+        if !self.refill() {
+            return;
+        }
+        // Le saut tombe au début d'un paquet : on jette ce qui précède `ms`.
+        let frames = seeked.required_ts.saturating_sub(seeked.actual_ts);
+        let samples = frames as usize * self.channels() as usize;
+        for _ in 0..samples {
+            if self.next().is_none() {
+                break;
+            }
+        }
+    }
+
+    fn skip_samples(&mut self, ms: u64) -> Option<()> {
+        let per_ms = self.sample_rate() as u64 * self.channels() as u64 / 1000;
+        for _ in 0..ms * per_ms.max(1) {
+            self.next()?;
+        }
+        Some(())
     }
 
     /// Décode le paquet suivant de la piste. Faux à la fin du fichier.
