@@ -457,7 +457,19 @@ function drawTrim() {
     ctx.fillRect(hx - 9, 0, 18, 14);
     ctx.fillRect(hx - 9, h - 14, 18, 14);
   }
+  const now = typeof playheadMs === "function" ? playheadMs() : null;
+  if (now !== null) {
+    const px = x(now);
+    ctx.fillStyle = css.getPropertyValue("--accent");
+    ctx.fillRect(px - 2, 0, 4, h);
+    ctx.beginPath();
+    ctx.moveTo(px - 10, 0);
+    ctx.lineTo(px + 10, 0);
+    ctx.lineTo(px, 14);
+    ctx.fill();
+  }
   $("#trim-info").textContent =
+    (now !== null ? `▶ ${fmtTime(now)}  ·  ` : "") +
     `${fmtTime(trim.start)} → ${fmtTime(trim.end)}  (durée ${fmtTime(trim.end - trim.start)})`;
 }
 
@@ -493,8 +505,19 @@ $('[data-action="reset-trim"]', dlgSound).addEventListener("click", () => {
   drawTrim();
 });
 
-$('[data-action="preview"]', dlgSound).addEventListener("click", () => {
+const PREVIEW_ID = "__preview";
+const previewBtn = $('[data-action="preview"]', dlgSound);
+// Curseur de lecture : le moteur donne l'avancement ~10 fois par seconde,
+// on l'interpole entre deux mises à jour pour un mouvement fluide.
+const playhead = { from: 0, elapsed: 0, at: 0, active: false, frame: 0 };
+
+previewBtn.addEventListener("click", () => {
   if (!editing) return;
+  if (playhead.active) {
+    invoke("stop_preview");
+    return;
+  }
+  playhead.from = trim.start;
   call("preview_sound", {
     id: editing.id,
     startMs: trim.start,
@@ -503,12 +526,39 @@ $('[data-action="preview"]', dlgSound).addEventListener("click", () => {
   });
 });
 
+function updatePlayhead(status) {
+  const p = status.find((s) => s.id === PREVIEW_ID);
+  const wasActive = playhead.active;
+  playhead.active = !!p && dlgSound.open;
+  previewBtn.textContent = playhead.active ? "■ Arrêter" : "▶ Écouter";
+  if (!playhead.active) {
+    cancelAnimationFrame(playhead.frame);
+    if (wasActive) drawTrim();
+    return;
+  }
+  playhead.elapsed = p.elapsed_ms;
+  playhead.at = performance.now();
+  if (!wasActive) animatePlayhead();
+}
+
+function playheadMs() {
+  if (!playhead.active) return null;
+  const ms = playhead.from + playhead.elapsed + (performance.now() - playhead.at);
+  return Math.min(ms, trim.end);
+}
+
+function animatePlayhead() {
+  drawTrim();
+  if (playhead.active) playhead.frame = requestAnimationFrame(animatePlayhead);
+}
+
 function trimValues() {
   if (!trim.duration) return { start_ms: editing.start_ms ?? 0, end_ms: editing.end_ms ?? null };
   return { start_ms: trim.start, end_ms: trim.end >= trim.duration ? null : trim.end };
 }
 
 dlgSound.addEventListener("close", () => {
+  if (playhead.active) invoke("stop_preview");
   if (dlgSound.returnValue !== "save" || !editing) return;
   call("update_sound", {
     sound: {
@@ -872,7 +922,8 @@ listen("sound-triggered", (event) => flash(event.payload));
 listen("playing", (event) => {
   const before = new Set(playing.map((p) => p.id));
   playing = event.payload ?? [];
-  playing.filter((p) => !before.has(p.id)).forEach((p) => remember(p.id));
+  updatePlayhead(playing);
+  playing.filter((p) => !before.has(p.id) && p.id !== PREVIEW_ID).forEach((p) => remember(p.id));
   renderPlaying();
 });
 // Analyse des anciens sons terminée en arrière-plan.

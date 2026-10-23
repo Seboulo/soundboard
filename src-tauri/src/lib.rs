@@ -1,6 +1,7 @@
 mod analysis;
 mod audio;
 mod config;
+mod decoder;
 mod denoise;
 mod effects;
 mod online;
@@ -509,7 +510,14 @@ fn preview_sound(
     sound.volume = volume;
     let mut req = play_request(&state, &sound);
     req.id = audio::PREVIEW_ID.into();
+    // Une seule lecture pour suivre le curseur, même pour un son en boucle.
+    req.looping = false;
     state.audio.preview(req)
+}
+
+#[tauri::command]
+fn stop_preview(state: State<AppState>) {
+    state.audio.stop_preview();
 }
 
 #[tauri::command]
@@ -1059,6 +1067,7 @@ pub fn run() {
             update_settings,
             play_sound,
             preview_sound,
+            stop_preview,
             get_waveform,
             search_online,
             add_online,

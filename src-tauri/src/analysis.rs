@@ -2,14 +2,12 @@
 //! dessiner sa forme d'onde dans l'éditeur.
 
 use crate::config::Analysis;
-use rodio::{Decoder, Source};
-use std::fs::File;
-use std::io::BufReader;
+use crate::decoder::AudioFile;
+use rodio::Source;
 use std::path::Path;
 
-fn decode(path: &Path) -> Result<Decoder<BufReader<File>>, String> {
-    let file = File::open(path).map_err(|e| format!("fichier illisible : {e}"))?;
-    Decoder::new(BufReader::new(file)).map_err(|e| format!("format audio non reconnu : {e}"))
+fn decode(path: &Path) -> Result<AudioFile, String> {
+    AudioFile::open(path)
 }
 
 pub fn analyze(path: &Path) -> Result<Analysis, String> {

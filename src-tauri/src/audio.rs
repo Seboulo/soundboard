@@ -12,11 +12,10 @@ use crate::config::Settings;
 use crate::denoise::{self, MicFilters, MicLevel, MicMeter, MicProcessor};
 use rodio::cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rodio::cpal::{self, SampleFormat};
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
+use crate::decoder::AudioFile;
+use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
 use serde::Serialize;
 use std::collections::VecDeque;
-use std::fs::File;
-use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -81,6 +80,7 @@ enum Command {
     Toggle(PlayRequest, Option<PlayReply>),
     Preview(PlayRequest, Reply),
     StopAll,
+    StopPreview,
     SetMicMuted(bool),
 }
 
@@ -137,6 +137,10 @@ impl AudioHandle {
 
     pub fn stop_all(&self) {
         let _ = self.send(Command::StopAll);
+    }
+
+    pub fn stop_preview(&self) {
+        let _ = self.send(Command::StopPreview);
     }
 
     fn send(&self, cmd: Command) -> Result<(), String> {
@@ -445,6 +449,9 @@ impl Engine {
                 let _ = reply.send(res);
             }
             Command::StopAll => self.stop_all(),
+            Command::StopPreview => {
+                self.stop(PREVIEW_ID);
+            }
             Command::SetMicMuted(muted) => {
                 self.mic_muted = muted;
                 if let Some(sink) = &self.mic_sink {
@@ -457,7 +464,7 @@ impl Engine {
     fn status(&self) -> Vec<PlayingStatus> {
         self.playing
             .iter()
-            .filter(|p| p.id != PREVIEW_ID && p.stopping.is_none())
+            .filter(|p| p.stopping.is_none())
             .map(|p| PlayingStatus {
                 id: p.id.clone(),
                 elapsed_ms: p.started.elapsed().as_millis() as u64,
@@ -555,9 +562,7 @@ impl Engine {
 }
 
 fn open_source(req: &PlayRequest) -> Result<Box<dyn Source<Item = i16> + Send>, String> {
-    let file = File::open(&req.path).map_err(|e| format!("fichier illisible : {e}"))?;
-    let decoder =
-        Decoder::new(BufReader::new(file)).map_err(|e| format!("format audio non reconnu : {e}"))?;
+    let decoder = AudioFile::open(&req.path)?;
     let length = match req.end_ms {
         Some(end) => Duration::from_millis(end.saturating_sub(req.start_ms)),
         None => Duration::from_secs(24 * 3600),
