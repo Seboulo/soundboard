@@ -26,6 +26,7 @@ use tauri_plugin_autostart::ManagerExt as AutostartExt;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_opener::OpenerExt;
+use tauri_plugin_updater::UpdaterExt;
 
 const AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "ogg", "flac", "m4a", "aac"];
 const COLORS: &[&str] = &[
@@ -869,6 +870,27 @@ async fn check_update() -> Result<Option<UpdateInfo>, String> {
     online::check_update().await
 }
 
+/// Télécharge la nouvelle version, l'installe par-dessus et relance l'app.
+/// La mise à jour est vérifiée avec la clé publique de `tauri.conf.json` :
+/// seule une version signée par le projet est acceptée.
+#[tauri::command]
+async fn install_update(app: AppHandle) -> Result<(), String> {
+    let update = app
+        .updater()
+        .map_err(|e| e.to_string())?
+        .check()
+        .await
+        .map_err(|e| format!("vérification impossible : {e}"))?
+        .ok_or("cette version ne peut pas s'installer toute seule, télécharge-la depuis la page")?;
+    let state = app.state::<AppState>();
+    state.audio.stop_all();
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| format!("mise à jour impossible : {e}"))?;
+    app.restart();
+}
+
 #[tauri::command]
 fn open_release_page(app: AppHandle, url: String) -> Result<(), String> {
     // On n'ouvre que les pages de versions du projet.
@@ -1171,6 +1193,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![MINIMIZED_ARG]),
         ))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(
@@ -1286,6 +1309,7 @@ pub fn run() {
             play_random,
             set_meter,
             check_update,
+            install_update,
             open_release_page,
             export_pack,
             import_pack,

@@ -31,6 +31,26 @@ jobs:
 
       - run: npm ci
 
+      # Clé qui signe les mises à jour en un clic (secret du dépôt). Sans
+      # elle, on construit quand même l'installeur, sans mise à jour intégrée.
+      - name: Clé de signature des mises à jour
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then
+            {
+              echo "TAURI_SIGNING_PRIVATE_KEY<<EOF_KEY"
+              echo "$KEY"
+              echo "EOF_KEY"
+              echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD="
+              echo "BUILD_ARGS="
+            } >> "$GITHUB_ENV"
+          else
+            echo "::warning::Secret TAURI_SIGNING_PRIVATE_KEY absent : pas de mise à jour en un clic pour cette version."
+            echo 'BUILD_ARGS=--config {"bundle":{"createUpdaterArtifacts":false}}' >> "$GITHUB_ENV"
+          fi
+
       # Sur un tag vX.Y.Z, ou un commit de main dont le message contient
       # [release] : crée la release GitHub vX.Y.Z (version de tauri.conf.json).
       - name: Build et release
@@ -45,11 +65,13 @@ jobs:
             Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le.
             Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
           releaseDraft: false
+          args: ${{ env.BUILD_ARGS }}
 
       # Sinon : simple build, installeur disponible dans les artefacts du run.
       - name: Build
         if: env.RELEASE != 'true'
-        run: npm run build
+        shell: bash
+        run: npm run build -- $BUILD_ARGS
 
       - name: Installeur en artefact
         if: env.RELEASE != 'true'

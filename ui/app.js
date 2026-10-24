@@ -951,9 +951,23 @@ async function checkUpdate() {
     return; // Pas de connexion : on réessaiera au prochain lancement.
   }
   if (!info) return;
-  $("span", banner).textContent = `Une nouvelle version (${info.version}) est disponible. Tes sons et réglages sont gardés quand tu l'installes.`;
+  $("span", banner).textContent = `Une nouvelle version (${info.version}) est disponible. Tes sons et réglages sont gardés.`;
   banner.hidden = false;
   $('[data-action="download"]', banner).onclick = () => call("open_release_page", { url: info.url });
+  const install = $('[data-action="install"]', banner);
+  install.onclick = async () => {
+    install.disabled = true;
+    install.textContent = "Mise à jour…";
+    $("span", banner).textContent = `Téléchargement de la version ${info.version}, l'app va redémarrer toute seule.`;
+    try {
+      await invoke("install_update");
+    } catch (e) {
+      // Version publiée sans mise à jour intégrée, ou pas de connexion.
+      install.disabled = false;
+      install.textContent = "Mettre à jour";
+      $("span", banner).textContent = `Mise à jour impossible : ${e}`;
+    }
+  };
 }
 $('[data-action="dismiss"]', banner).addEventListener("click", () => (banner.hidden = true));
 
