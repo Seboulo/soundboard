@@ -147,6 +147,7 @@ fn phone_request(app: &AppHandle, req: phone::Request) -> Result<serde_json::Val
         }
         phone::Request::Play(id) => {
             let sound = find_sound(&state, &id)?;
+            note_play(&state, &sound);
             state.audio.toggle(play_request(&state, &sound))?;
             let _ = app.emit("sound-triggered", &sound.id);
             Ok(serde_json::json!({ "ok": true }))
@@ -157,6 +158,7 @@ fn phone_request(app: &AppHandle, req: phone::Request) -> Result<serde_json::Val
         }
         phone::Request::Random(category) => {
             let sound = pick_random(&state, category.as_deref()).ok_or("aucun son")?;
+            note_play(&state, &sound);
             state.audio.toggle(play_request(&state, &sound))?;
             let _ = app.emit("sound-triggered", &sound.id);
             Ok(serde_json::json!({ "id": sound.id }))
@@ -175,6 +177,27 @@ fn find_sound(state: &AppState, id: &str) -> Result<Sound, String> {
         .find(|s| s.id == id)
         .cloned()
         .ok_or_else(|| "son introuvable".into())
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Compte une lecture pour les statistiques (pas quand le clic arrête le son).
+fn note_play(state: &AppState, sound: &Sound) {
+    if state.playing_ids.lock().unwrap().contains(&sound.id) {
+        return;
+    }
+    let mut config = state.config.lock().unwrap();
+    if let Some(s) = config.sounds.iter_mut().find(|s| s.id == sound.id) {
+        s.plays += 1;
+        s.played_ms += sound.play_duration_ms().unwrap_or(0);
+        s.last_played = now_secs();
+        let _ = state.save(&config);
+    }
 }
 
 fn play_request(state: &AppState, sound: &Sound) -> PlayRequest {
@@ -321,6 +344,7 @@ fn on_hotkey(app: &AppHandle, shortcut: &Shortcut) {
                 .find(|s| s.id == id)
                 .cloned();
             if let Some(sound) = sound {
+                note_play(&state, &sound);
                 state.audio.toggle_detached(play_request(&state, &sound));
                 let _ = app.emit("sound-triggered", &sound.id);
             }
@@ -335,6 +359,7 @@ fn on_hotkey(app: &AppHandle, shortcut: &Shortcut) {
         }
         Some(HotkeyAction::Random) => {
             if let Some(sound) = pick_random(&state, None) {
+                note_play(&state, &sound);
                 state.audio.toggle_detached(play_request(&state, &sound));
                 let _ = app.emit("sound-triggered", &sound.id);
             }
@@ -426,12 +451,12 @@ fn store_sound(
         emoji: None,
         favorite: false,
         keep_playing: false,
-        added_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
+        added_at: now_secs(),
         image: None,
         image_still: None,
+        plays: 0,
+        played_ms: 0,
+        last_played: 0,
     })
 }
 
@@ -712,6 +737,255 @@ fn open_giphy_key_page(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Reprend les compteurs de lectures gardés par l'interface avant la 0.12.
+#[tauri::command]
+fn import_play_counts(state: State<AppState>, counts: HashMap<String, u32>) -> Result<Snapshot, String> {
+    {
+        let mut config = state.config.lock().unwrap();
+        for s in config.sounds.iter_mut() {
+            if let Some(&n) = counts.get(&s.id) {
+                if s.plays == 0 {
+                    s.plays = n;
+                    s.played_ms = s.play_duration_ms().unwrap_or(0) * n as u64;
+                }
+            }
+        }
+        state.save(&config)?;
+    }
+    Ok(state.snapshot())
+}
+
+#[tauri::command]
+fn reset_stats(state: State<AppState>) -> Result<Snapshot, String> {
+    {
+        let mut config = state.config.lock().unwrap();
+        for s in config.sounds.iter_mut() {
+            s.plays = 0;
+            s.played_ms = 0;
+            s.last_played = 0;
+        }
+        state.save(&config)?;
+    }
+    Ok(state.snapshot())
+}
+
+#[tauri::command]
+fn listen_cable(state: State<AppState>, on: bool) -> Result<(), String> {
+    state.audio.listen_cable(on)
+}
+
+#[derive(Serialize)]
+struct Check {
+    /// "ok", "warn", "error" ou "info".
+    status: &'static str,
+    title: String,
+    detail: String,
+    /// Bouton proposé : "vbcable", "settings:<onglet>", "wizard" ou "listen".
+    action: Option<&'static str>,
+}
+
+fn check(status: &'static str, title: impl Into<String>, detail: impl Into<String>, action: Option<&'static str>) -> Check {
+    Check { status, title: title.into(), detail: detail.into(), action }
+}
+
+/// Est-ce que Discord tourne ? (Windows seulement.)
+fn discord_running() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let out = std::process::Command::new("tasklist")
+            .args(["/FO", "CSV", "/NH"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .ok()?;
+        let list = String::from_utf8_lossy(&out.stdout).to_lowercase();
+        Some(["\"discord.exe\"", "\"discordptb.exe\"", "\"discordcanary.exe\""].iter().any(|n| list.contains(n)))
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// Vérifie tout ce qui peut empêcher les sons ou la voix d'arriver dans
+/// Discord, et dit quoi faire.
+#[tauri::command]
+async fn run_diagnostics(app: AppHandle) -> Result<Vec<Check>, String> {
+    let state = app.state::<AppState>();
+    *state.devices.lock().unwrap() = audio::list_devices();
+    let devices = state.devices.lock().unwrap().clone();
+    let config = state.config.lock().unwrap().clone();
+    let settings = &config.settings;
+    let warnings = state.warnings.lock().unwrap().clone();
+    let warned = |kind: &str| -> Vec<String> {
+        warnings.iter().filter_map(|w| w.strip_prefix(kind).map(String::from)).collect()
+    };
+    let mut checks = Vec::new();
+
+    // Câble virtuel.
+    match &devices.vb_cable {
+        Some(_) => checks.push(check("ok", "VB-Cable est installé", "Le câble virtuel qui envoie les sons dans Discord est bien là.", None)),
+        None => checks.push(check(
+            "error",
+            "VB-Cable n'est pas installé",
+            "Sans lui, les sons ne peuvent pas arriver dans Discord. Installe-le puis redémarre le PC.",
+            Some("vbcable"),
+        )),
+    }
+    let audio_errors = warned(WARN_AUDIO);
+    match &settings.virtual_device {
+        None => checks.push(check(
+            "error",
+            "Aucune sortie vers Discord",
+            "Choisis « CABLE Input » comme sortie vers Discord dans les réglages.",
+            Some("settings:sound"),
+        )),
+        Some(name) if audio_errors.is_empty() => {
+            checks.push(check("ok", "Sortie vers Discord", format!("Les sons partent dans « {name} »."), None))
+        }
+        Some(_) => checks.push(check("error", "Problème de sortie audio", audio_errors.join(" ; "), Some("settings:sound"))),
+    }
+
+    // Formats des deux côtés du câble : s'ils diffèrent, Windows convertit
+    // en continu et ça peut grésiller.
+    let cable_in = settings.virtual_device.as_deref().and_then(|n| audio::output_format(Some(n)));
+    let cable_out = audio::cable_capture_format();
+    if let (Some(a), Some(b)) = (cable_in, cable_out) {
+        if a.rate != b.rate {
+            checks.push(check(
+                "warn",
+                "Les deux côtés du câble n'ont pas la même fréquence",
+                format!(
+                    "CABLE Input est à {} Hz et CABLE Output à {} Hz : ça peut grésiller. Dans Windows (Paramètres du son → Plus de paramètres de son), règle les deux sur 48000 Hz dans l'onglet Avancé.",
+                    a.rate, b.rate
+                ),
+                None,
+            ));
+        } else if a.rate != 48_000 {
+            checks.push(check(
+                "info",
+                format!("Le câble tourne à {} Hz", a.rate),
+                "Discord travaille en 48000 Hz : régler CABLE Input et CABLE Output sur 48000 Hz (Paramètres du son → Plus de paramètres de son → Avancé) évite une conversion de plus.",
+                None,
+            ));
+        } else {
+            checks.push(check("ok", "Format du câble", "48000 Hz des deux côtés, comme Discord.", None));
+        }
+    }
+    match audio::output_format(settings.monitor_device.as_deref()) {
+        Some(f) => checks.push(check("ok", "Casque", format!("{} Hz, {} canaux.", f.rate, f.channels), None)),
+        None => checks.push(check("error", "Casque introuvable", "Choisis ton casque dans les réglages.", Some("settings:sound"))),
+    }
+
+    // Micro.
+    if !settings.mic_enabled {
+        checks.push(check(
+            "info",
+            "Ta voix n'est pas envoyée par la soundboard",
+            "Si Discord utilise ton vrai micro, il n'entend pas les sons. Pour parler et jouer des sons en même temps, active « Envoyer ma voix » et choisis « CABLE Output » comme micro dans Discord.",
+            Some("settings:mic"),
+        ));
+    } else {
+        let mic_errors = warned(WARN_AUDIO).into_iter().filter(|w| w.contains("micro")).collect::<Vec<_>>();
+        match audio::input_format(settings.mic_device.as_deref()) {
+            Some(_) if mic_errors.is_empty() => checks.push(check("ok", "Micro", "Ta voix part dans le câble avec les sons.", None)),
+            Some(_) => checks.push(check("error", "Problème de micro", mic_errors.join(" ; "), Some("settings:mic"))),
+            None => checks.push(check("error", "Micro introuvable", "Branche ton micro ou choisis-en un autre dans les réglages.", Some("settings:mic"))),
+        }
+        let under = audio::CAPTURE_UNDERRUNS.load(Ordering::Relaxed);
+        let over = audio::CAPTURE_OVERFLOWS.load(Ordering::Relaxed);
+        if under + over > 20 {
+            checks.push(check(
+                "warn",
+                "Ta voix a eu des micro-coupures",
+                format!(
+                    "{} coupures depuis le lancement : le micro et le câble ne vont pas tout à fait à la même vitesse. Mets le micro et le câble sur la même fréquence (48000 Hz) dans Windows.",
+                    under + over
+                ),
+                None,
+            ));
+        }
+        if settings.strong_denoise && settings.noise_suppression && std::thread::available_parallelism().map_or(4, |n| n.get()) < 4 {
+            checks.push(check(
+                "info",
+                "Processeur modeste",
+                "Si ta voix hache, passe la réduction de bruit sur « Légère ».",
+                Some("settings:mic"),
+            ));
+        }
+    }
+
+    // Discord.
+    match discord_running() {
+        Some(true) => checks.push(check("ok", "Discord est lancé", "", None)),
+        Some(false) => checks.push(check("warn", "Discord n'est pas lancé", "Lance Discord pour tester.", None)),
+        None => {}
+    }
+    checks.push(check(
+        "info",
+        "Dans Discord (Paramètres → Voix et vidéo)",
+        "Périphérique d'entrée : « CABLE Output ». Suppression du bruit : aucune (la soundboard s'en charge, Krisp couperait les sons). Annulation d'écho et contrôle automatique du gain : désactivés. Mode de saisie : détection de la voix, sensibilité réglée à la main assez bas.",
+        None,
+    ));
+
+    // Volume.
+    if !settings.normalize {
+        checks.push(check(
+            "warn",
+            "Égalisation désactivée",
+            "Certains sons risquent d'être beaucoup plus forts que d'autres.",
+            Some("settings:sound"),
+        ));
+    }
+    if settings.master_volume > 1.0 {
+        checks.push(check(
+            "warn",
+            "Volume vers Discord au-dessus de 100 %",
+            "Les sons risquent de couvrir les voix ; garde-le à 100 % ou moins.",
+            Some("settings:sound"),
+        ));
+    }
+
+    // Raccourcis.
+    let hotkey_errors = warned(WARN_HOTKEY);
+    if hotkey_errors.is_empty() {
+        checks.push(check("ok", "Raccourcis", "Tous les raccourcis sont actifs.", None));
+    } else {
+        checks.push(check("warn", "Raccourcis indisponibles", hotkey_errors.join(" ; "), None));
+    }
+
+    // Fichiers des sons.
+    let missing: Vec<&str> = config.sounds.iter().filter(|s| !s.path.exists()).map(|s| s.name.as_str()).collect();
+    if missing.is_empty() {
+        checks.push(check("ok", "Fichiers des sons", format!("{} sons, tous présents.", config.sounds.len()), None));
+    } else {
+        checks.push(check(
+            "error",
+            format!("{} son(s) introuvable(s)", missing.len()),
+            format!("Fichier supprimé ou déplacé : {}. Supprime-les et ajoute-les à nouveau.", missing.join(", ")),
+            None,
+        ));
+    }
+
+    if settings.phone_enabled {
+        let phone_errors = warned(WARN_PHONE);
+        if phone_errors.is_empty() {
+            checks.push(check("ok", "Page du téléphone", "Le serveur du téléphone tourne.", None));
+        } else {
+            checks.push(check("warn", "Page du téléphone", phone_errors.join(" ; "), Some("settings:remote")));
+        }
+    }
+
+    checks.push(check(
+        "info",
+        "Tester comme tes potes l'entendent",
+        "« Écouter le câble » te fait entendre exactement ce qui part dans Discord (sons et voix), le temps de jouer un son.",
+        Some("listen"),
+    ));
+    Ok(checks)
+}
+
 #[tauri::command]
 fn move_sound(state: State<AppState>, id: String, to: usize) -> Result<Snapshot, String> {
     {
@@ -757,6 +1031,7 @@ fn update_settings(app: AppHandle, state: State<AppState>, mut settings: Setting
 #[tauri::command]
 fn play_sound(state: State<AppState>, id: String) -> Result<PlayOutcome, String> {
     let sound = find_sound(&state, &id)?;
+    note_play(&state, &sound);
     state.audio.toggle(play_request(&state, &sound))
 }
 
@@ -981,6 +1256,7 @@ fn play_random(state: State<AppState>, category: Option<String>) -> Result<Optio
     let Some(sound) = pick_random(&state, category.as_deref()) else {
         return Ok(None);
     };
+    note_play(&state, &sound);
     state.audio.toggle(play_request(&state, &sound))?;
     Ok(Some(sound.id))
 }
@@ -1419,6 +1695,10 @@ pub fn run() {
             pick_sound_image,
             clear_sound_image,
             auto_images,
+            import_play_counts,
+            reset_stats,
+            listen_cable,
+            run_diagnostics,
             get_phone_info,
             regenerate_phone_token,
             set_mic_muted,

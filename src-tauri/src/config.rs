@@ -46,6 +46,14 @@ pub struct Sound {
     /// Version fixe de l'image, affichée quand le son ne joue pas.
     #[serde(default)]
     pub image_still: Option<PathBuf>,
+    /// Statistiques : nombre de lectures, temps joué, dernière lecture
+    /// (secondes depuis 1970, 0 si jamais joué).
+    #[serde(default)]
+    pub plays: u32,
+    #[serde(default)]
+    pub played_ms: u64,
+    #[serde(default)]
+    pub last_played: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

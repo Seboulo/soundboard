@@ -16,6 +16,7 @@
     <button id="btn-online" type="button"title="Chercher des sons sur internet">🔎 En ligne</button>
     <button id="btn-add" type="button" class="primary"title="Ajouter des fichiers audio">+ Ajouter</button>
     <button id="btn-stop" type="button" class="danger" title="Tout arrêter">■ Stop</button>
+    <button id="btn-stats" type="button" class="icon" title="Statistiques">📊</button>
     <button id="btn-theme" type="button" class="icon"></button>
     <button id="btn-settings" type="button" class="icon" title="Réglages">⚙</button>
   </header>
@@ -27,7 +28,10 @@
     <button type="button" class="primary" data-action="install">Mettre à jour</button>
     <button type="button" class="icon" data-action="dismiss" title="Plus tard">✕</button>
   </div>
-  <div id="warnings" class="warnings" hidden></div>
+  <div id="warnings" class="warnings" hidden>
+    <span data-text></span>
+    <button type="button" data-action="diagnose">🩺 Diagnostic</button>
+  </div>
 
   <nav class="tabbar">
     <div id="tabs" class="tabs"></div>
@@ -53,6 +57,9 @@
 
   <main>
     <div id="grid" class="grid"></div>
+    <div id="search-empty" class="empty" hidden>
+      <p>Aucun son ne correspond à ta recherche.</p>
+    </div>
     <div id="recent-empty" class="empty" hidden>
       <p class="big">Aucun son joué pour l'instant</p>
       <p>Les 12 derniers sons que tu joues apparaîtront ici.</p>
@@ -125,8 +132,8 @@
         <label>Couleur <input name="color" type="color"></label>
       </div>
       <datalist id="categories"></datalist>
-      <label class="check"><input name="looping" type="checkbox"> Jouer en boucle, avec un fondu au début et à la fin (clique à nouveau sur le son pour l'arrêter)</label>
-      <label class="check"><input name="keep_playing" type="checkbox"> Ne jamais être coupé par les autres sons (pratique pour une musique de fond)</label>
+      <label class="set-row"><span class="txt"><b>Jouer en boucle</b><small>Avec un fondu au début et à la fin. Clique à nouveau sur le son pour l'arrêter.</small></span><input name="looping" type="checkbox" class="switch"></label>
+      <label class="set-row"><span class="txt"><b>Ne jamais être coupé par les autres sons</b><small>Pratique pour une musique de fond.</small></span><input name="keep_playing" type="checkbox" class="switch"></label>
       <div class="actions">
         <button type="button" class="danger" data-action="delete">Supprimer</button>
         <div class="spacer"></div>
@@ -158,6 +165,9 @@
           <label class="set-field">Sortie vers Discord (câble virtuel)
             <select name="virtual_device"></select>
           </label>
+          </div>
+          <div class="set-card">
+            <div class="set-row"><span class="txt"><b>🎧 Écouter comme Discord</b><small>Entends ce qui part vraiment dans le câble pour vérifier volume et grésillements.</small></span><button type="button" data-action="listen-settings">Écouter le câble</button></div>
           </div>
           <h3>Volume</h3>
           <div class="set-card">
@@ -267,6 +277,7 @@
           </div>
           <h3>Aide</h3>
           <div class="set-card">
+            <div class="set-row"><span class="txt"><b>Diagnostic</b><small>Vérifie VB-Cable, le micro, Discord et les raccourcis, et te dit quoi régler.</small></span><button type="button" data-action="diagnose-settings">🩺 Lancer</button></div>
             <div class="set-row"><span class="txt"><b>Assistant de configuration</b><small>VB-Cable, réglages de Discord, test du micro.</small></span><button type="button" data-action="wizard">Revoir l'assistant</button></div>
           </div>
         </section>
@@ -307,6 +318,43 @@
         <div class="spacer"></div>
         <button type="button" id="online-more" hidden>Plus de résultats</button>
         <button type="button" data-action="close">Fermer</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Diagnostic -->
+  <dialog id="dlg-diag" class="wide">
+    <div class="form">
+      <h2>🩺 Diagnostic</h2>
+      <p class="hint">Tout ce qui peut empêcher tes sons ou ta voix d'arriver dans Discord, et quoi faire.</p>
+      <div id="diag-list" class="checks"></div>
+      <div class="listen-box">
+        <div class="txt"><b>🎧 Écouter comme Discord</b><small>Tu entends exactement ce qui part dans le câble (sons et voix). Joue un son pour vérifier le volume et l'absence de grésillement.</small></div>
+        <button type="button" data-action="listen">Écouter le câble</button>
+      </div>
+      <div class="actions">
+        <button type="button" data-action="rerun">Relancer</button>
+        <div class="spacer"></div>
+        <button type="button" class="primary" data-action="close">Fermer</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Statistiques -->
+  <dialog id="dlg-stats" class="wide">
+    <div class="form">
+      <h2>📊 Statistiques</h2>
+      <div id="stats-tiles" class="stat-tiles"></div>
+      <h3 class="stats-h">Les plus joués</h3>
+      <div id="stats-top" class="stats-top"></div>
+      <h3 class="stats-h">Jamais joués <span id="stats-never-count" class="muted"></span></h3>
+      <div id="stats-never" class="stats-chips"></div>
+      <h3 class="stats-h">Par onglet</h3>
+      <div id="stats-cats" class="stats-top"></div>
+      <div class="actions">
+        <button type="button" data-action="reset">Remettre à zéro</button>
+        <div class="spacer"></div>
+        <button type="button" class="primary" data-action="close">Fermer</button>
       </div>
     </div>
   </dialog>

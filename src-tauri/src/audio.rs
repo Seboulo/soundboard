@@ -18,13 +18,15 @@ use serde::Serialize;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 /// Morceau du nom du périphérique de sortie de VB-Audio Virtual Cable.
 pub const VB_CABLE_OUTPUT: &str = "CABLE Input";
+/// Côté enregistrement du câble : ce que Discord prend comme micro.
+pub const VB_CABLE_CAPTURE: &str = "CABLE Output";
 
 
 type Reply = Sender<Result<(), String>>;
@@ -82,6 +84,8 @@ enum Command {
     StopAll,
     StopPreview,
     SetMicMuted(bool),
+    /// Fait entendre dans le casque ce qui sort du câble (ce que Discord reçoit).
+    ListenCable(bool, Reply),
 }
 
 #[derive(Clone)]
@@ -139,6 +143,12 @@ impl AudioHandle {
         let _ = self.send(Command::StopAll);
     }
 
+    pub fn listen_cable(&self, on: bool) -> Result<(), String> {
+        let (reply, rx) = mpsc::channel();
+        self.send(Command::ListenCable(on, reply))?;
+        wait(rx)
+    }
+
     pub fn stop_preview(&self) {
         let _ = self.send(Command::StopPreview);
     }
@@ -186,6 +196,33 @@ pub fn list_devices() -> DeviceList {
         inputs,
         vb_cable,
     }
+}
+
+/// Fréquence et canaux d'un périphérique tels que Windows les règle.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct DeviceFormat {
+    pub rate: u32,
+    pub channels: u16,
+}
+
+pub fn output_format(name: Option<&str>) -> Option<DeviceFormat> {
+    let c = find_output(name)?.default_output_config().ok()?;
+    Some(DeviceFormat { rate: c.sample_rate().0, channels: c.channels() })
+}
+
+pub fn input_format(name: Option<&str>) -> Option<DeviceFormat> {
+    let c = find_input(name)?.default_input_config().ok()?;
+    Some(DeviceFormat { rate: c.sample_rate().0, channels: c.channels() })
+}
+
+/// Côté enregistrement du câble (« CABLE Output »).
+pub fn cable_capture_format() -> Option<DeviceFormat> {
+    let device = cpal::default_host()
+        .input_devices()
+        .ok()?
+        .find(|d| d.name().is_ok_and(|n| n.contains(VB_CABLE_CAPTURE)))?;
+    let c = device.default_input_config().ok()?;
+    Some(DeviceFormat { rate: c.sample_rate().0, channels: c.channels() })
 }
 
 fn find_output(name: Option<&str>) -> Option<cpal::Device> {
@@ -260,6 +297,10 @@ struct Engine {
     mic_muted: bool,
     meter: Arc<MicMeter>,
     playing: Vec<Playing>,
+    /// Écoute du câble en cours : les sons ne passent plus directement par
+    /// le casque, on entend seulement ce qui sort du câble.
+    cable_stream: Option<cpal::Stream>,
+    cable_sink: Option<Sink>,
 }
 
 fn run(rx: Receiver<Command>, meter_on: Arc<AtomicBool>, on_event: impl Fn(AudioEvent)) {
@@ -292,6 +333,8 @@ fn run(rx: Receiver<Command>, meter_on: Arc<AtomicBool>, on_event: impl Fn(Audio
 impl Engine {
     fn configure(&mut self, settings: Settings) -> Result<(), String> {
         self.stop_all();
+        self.cable_sink = None;
+        self.cable_stream = None;
         self.mic_sink = None;
         self.mic_stream = None;
         self.monitor = None;
@@ -333,10 +376,41 @@ impl Engine {
         }
     }
 
+    fn listen_cable(&mut self, on: bool) -> Result<(), String> {
+        self.cable_sink = None;
+        self.cable_stream = None;
+        if !on {
+            return Ok(());
+        }
+        let monitor = self.monitor.as_ref().ok_or("casque introuvable")?;
+        let device = cpal::default_host()
+            .input_devices()
+            .map_err(|e| e.to_string())?
+            .find(|d| d.name().is_ok_and(|n| n.contains(VB_CABLE_CAPTURE)))
+            .ok_or("« CABLE Output » introuvable : VB-Cable est-il installé ?")?;
+        let supported = device.default_input_config().map_err(|e| e.to_string())?;
+        let channels = supported.channels();
+        let rate = supported.sample_rate().0;
+        let format = supported.sample_format();
+        let config: cpal::StreamConfig = supported.into();
+        let max_len = (rate as usize * channels as usize) / 5;
+        let buffer = Arc::new(Mutex::new(VecDeque::with_capacity(max_len * 2)));
+        let filter: CaptureFilter = Box::new(|samples| samples.collect());
+        let stream = open_capture(&device, &config, format, buffer.clone(), max_len, filter)?;
+        stream.play().map_err(|e| e.to_string())?;
+        let sink = Sink::try_new(&monitor.handle).map_err(|e| e.to_string())?;
+        sink.set_volume(self.settings.monitor_volume);
+        let source = MicSource::new(buffer, channels, rate).convert_samples::<i16>();
+        sink.append(Resample::new(source, monitor.rate));
+        self.cable_stream = Some(stream);
+        self.cable_sink = Some(sink);
+        Ok(())
+    }
+
     fn start_mic(&mut self) -> Result<(), String> {
         let virt = self.virt.as_ref().ok_or("pas de câble virtuel")?;
         let device = find_input(self.settings.mic_device.as_deref()).ok_or("micro introuvable")?;
-        if device.name().is_ok_and(|n| n.contains("CABLE Output")) {
+        if device.name().is_ok_and(|n| n.contains(VB_CABLE_CAPTURE)) {
             // Le câble renverrait dans lui-même : larsen garanti.
             return Err("le micro choisi est le câble virtuel, choisis ton vrai micro".into());
         }
@@ -357,74 +431,19 @@ impl Engine {
         // micro et du câble dérivent.
         let max_len = denoise::RATE as usize / 10;
         let buffer = Arc::new(Mutex::new(VecDeque::<f32>::with_capacity(max_len * 2)));
-        let new_filter = || {
-            let mut processor = MicProcessor::new(
-                channels,
-                sample_rate,
-                filters,
-                self.settings.voice_effect,
-                self.meter.clone(),
-            );
-            move |samples: &mut dyn Iterator<Item = f32>| -> Vec<f32> {
-                let mut out = Vec::new();
-                processor.process(samples, &mut out);
-                out
-            }
-        };
-
-        let err_fn = |e| eprintln!("erreur micro : {e}");
-        let stream = match format {
-            SampleFormat::F32 => {
-                let buf = buffer.clone();
-                let mut filter = new_filter();
-                device.build_input_stream(
-                    &config,
-                    move |data: &[f32], _: &_| {
-                        push(&buf, filter(&mut data.iter().copied()), max_len)
-                    },
-                    err_fn,
-                    None,
-                )
-            }
-            SampleFormat::I16 => {
-                let buf = buffer.clone();
-                let mut filter = new_filter();
-                device.build_input_stream(
-                    &config,
-                    move |data: &[i16], _: &_| {
-                        let mut it = data.iter().map(|s| *s as f32 / 32768.0);
-                        push(&buf, filter(&mut it), max_len)
-                    },
-                    err_fn,
-                    None,
-                )
-            }
-            SampleFormat::U16 => {
-                let buf = buffer.clone();
-                let mut filter = new_filter();
-                device.build_input_stream(
-                    &config,
-                    move |data: &[u16], _: &_| {
-                        let mut it = data.iter().map(|s| (*s as f32 - 32768.0) / 32768.0);
-                        push(&buf, filter(&mut it), max_len)
-                    },
-                    err_fn,
-                    None,
-                )
-            }
-            other => return Err(format!("format de micro non géré : {other:?}")),
-        }
-        .map_err(|e| e.to_string())?;
+        let mut processor =
+            MicProcessor::new(channels, sample_rate, filters, self.settings.voice_effect, self.meter.clone());
+        let filter: CaptureFilter = Box::new(move |samples| {
+            let mut out = Vec::new();
+            processor.process(samples, &mut out);
+            out
+        });
+        let stream = open_capture(&device, &config, format, buffer.clone(), max_len, filter)?;
         stream.play().map_err(|e| e.to_string())?;
 
         let sink = Sink::try_new(&virt.handle).map_err(|e| e.to_string())?;
         sink.set_volume(if self.mic_muted { 0.0 } else { self.settings.mic_volume });
-        let mic = MicSource {
-            buffer,
-            local: VecDeque::new(),
-            channels: 1,
-            sample_rate: denoise::RATE,
-        };
+        let mic = MicSource::new(buffer, 1, denoise::RATE);
         sink.append(Resample::new(mic.convert_samples::<i16>(), virt.rate));
 
         self.mic_stream = Some(stream);
@@ -457,6 +476,9 @@ impl Engine {
                 let _ = reply.send(res);
             }
             Command::StopAll => self.stop_all(),
+            Command::ListenCable(on, reply) => {
+                let _ = reply.send(self.listen_cable(on));
+            }
             Command::StopPreview => {
                 self.stop(PREVIEW_ID);
             }
@@ -502,7 +524,11 @@ impl Engine {
     }
 
     fn start(&mut self, req: PlayRequest, monitor_only: bool) -> Result<(), String> {
-        let mut targets = vec![(&self.monitor, self.settings.monitor_volume)];
+        let mut targets = Vec::new();
+        // Pendant l'écoute du câble, le son arrive déjà au casque par là.
+        if self.cable_sink.is_none() || monitor_only {
+            targets.push((&self.monitor, self.settings.monitor_volume));
+        }
         if !monitor_only {
             targets.push((&self.virt, self.settings.master_volume));
         }
@@ -811,41 +837,134 @@ impl<S: Source<Item = i16>> Source for Fader<S> {
     }
 }
 
+/// Coupures du son capté depuis le lancement (micro ou écoute du câble) :
+/// tampon vide (le son manque) ou trop plein (on a jeté du son). Chacune
+/// s'entend comme un petit clic : le diagnostic les affiche.
+pub static CAPTURE_UNDERRUNS: AtomicU64 = AtomicU64::new(0);
+pub static CAPTURE_OVERFLOWS: AtomicU64 = AtomicU64::new(0);
+
 fn push(buf: &Mutex<VecDeque<f32>>, samples: Vec<f32>, max_len: usize) {
     let Ok(mut buf) = buf.lock() else { return };
     buf.extend(samples);
     if buf.len() > max_len {
-        let excess = buf.len() - max_len;
+        // On revient à mi-hauteur d'un coup : un seul raccord au lieu d'en
+        // refaire un à chaque paquet quand les horloges dérivent.
+        let excess = buf.len() - max_len / 2;
         buf.drain(..excess);
+        CAPTURE_OVERFLOWS.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+type CaptureFilter = Box<dyn FnMut(&mut dyn Iterator<Item = f32>) -> Vec<f32> + Send>;
+
+/// Ouvre un périphérique d'entrée et range ce qu'il capte (passé par
+/// `filter`) dans `buffer`.
+fn open_capture(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    format: SampleFormat,
+    buffer: Arc<Mutex<VecDeque<f32>>>,
+    max_len: usize,
+    mut filter: CaptureFilter,
+) -> Result<cpal::Stream, String> {
+    let err_fn = |e| eprintln!("erreur de capture : {e}");
+    match format {
+        SampleFormat::F32 => device.build_input_stream(
+            config,
+            move |data: &[f32], _: &_| push(&buffer, filter(&mut data.iter().copied()), max_len),
+            err_fn,
+            None,
+        ),
+        SampleFormat::I16 => device.build_input_stream(
+            config,
+            move |data: &[i16], _: &_| {
+                let mut it = data.iter().map(|s| *s as f32 / 32768.0);
+                push(&buffer, filter(&mut it), max_len)
+            },
+            err_fn,
+            None,
+        ),
+        SampleFormat::U16 => device.build_input_stream(
+            config,
+            move |data: &[u16], _: &_| {
+                let mut it = data.iter().map(|s| (*s as f32 - 32768.0) / 32768.0);
+                push(&buffer, filter(&mut it), max_len)
+            },
+            err_fn,
+            None,
+        ),
+        other => return Err(format!("format non géré : {other:?}")),
+    }
+    .map_err(|e| e.to_string())
 }
 
 /// Source rodio infinie qui lit les échantillons du micro. rodio s'occupe
 /// de convertir la fréquence et le nombre de canaux vers ceux du câble.
+///
+/// Il attend d'avoir 20 ms d'avance avant de jouer : un micro qui livre par
+/// paquets irréguliers ne crée plus de trous. Si le son manque quand même,
+/// le dernier échantillon s'éteint en douceur au lieu de tomber d'un coup à
+/// zéro (ce qui faisait un clic).
 struct MicSource {
     buffer: Arc<Mutex<VecDeque<f32>>>,
     local: VecDeque<f32>,
     channels: u16,
     sample_rate: u32,
+    primed: bool,
+    /// Dernière trame jouée, qui s'éteint pendant un manque.
+    last: Vec<f32>,
+    channel: usize,
+}
+
+impl MicSource {
+    fn new(buffer: Arc<Mutex<VecDeque<f32>>>, channels: u16, sample_rate: u32) -> Self {
+        Self {
+            buffer,
+            local: VecDeque::new(),
+            channels: channels.max(1),
+            sample_rate,
+            primed: false,
+            last: vec![0.0; channels.max(1) as usize],
+            channel: 0,
+        }
+    }
 }
 
 impl Iterator for MicSource {
     type Item = f32;
 
     fn next(&mut self) -> Option<f32> {
+        let ch = self.channels as usize;
         if self.local.is_empty() {
             // On récupère par paquets pour ne pas verrouiller à chaque échantillon.
             if let Ok(mut buf) = self.buffer.lock() {
-                let n = buf.len() - buf.len() % self.channels as usize;
-                self.local.extend(buf.drain(..n));
+                let prime = (self.sample_rate as usize * ch / 50).max(ch);
+                if self.primed || buf.len() >= prime {
+                    let n = buf.len() - buf.len() % ch;
+                    self.local.extend(buf.drain(..n));
+                }
             }
             if self.local.is_empty() {
-                // Rien de capté : un court silence, aligné sur les canaux.
-                self.local
-                    .extend(std::iter::repeat_n(0.0, 64 * self.channels as usize));
+                if self.primed {
+                    CAPTURE_UNDERRUNS.fetch_add(1, Ordering::Relaxed);
+                    self.primed = false;
+                }
+                // Court silence aligné sur les canaux, en partant du dernier
+                // échantillon qui décroît.
+                for _ in 0..64 {
+                    for v in self.last.iter_mut() {
+                        *v *= 0.9;
+                        self.local.push_back(*v);
+                    }
+                }
+            } else {
+                self.primed = true;
             }
         }
-        self.local.pop_front()
+        let v = self.local.pop_front()?;
+        self.last[self.channel] = v;
+        self.channel = (self.channel + 1) % ch;
+        Some(v)
     }
 }
 

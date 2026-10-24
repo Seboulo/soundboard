@@ -166,19 +166,25 @@ try {
   recent = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
 } catch {}
 
-// Nombre de lectures de chaque son, pour le tri « les plus joués ».
+// Avant la 0.12, les lectures étaient comptées ici : on les confie au
+// moteur une seule fois, qui les garde désormais avec les sons.
 const PLAYS_KEY = "soundboard.plays";
-let plays = {};
-try {
-  plays = JSON.parse(localStorage.getItem(PLAYS_KEY) || "{}");
-} catch {}
+async function migratePlayCounts() {
+  let counts = null;
+  try {
+    counts = JSON.parse(localStorage.getItem(PLAYS_KEY) || "null");
+  } catch {}
+  if (!counts || !Object.keys(counts).length) return;
+  try {
+    render(await invoke("import_play_counts", { counts }));
+    localStorage.removeItem(PLAYS_KEY);
+  } catch {}
+}
 
 function remember(id) {
   recent = [id, ...recent.filter((r) => r !== id)].slice(0, 12);
-  plays[id] = (plays[id] || 0) + 1;
   try {
     localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
-    localStorage.setItem(PLAYS_KEY, JSON.stringify(plays));
   } catch {}
   if (currentTab === RECENT_TAB) renderGrid();
 }
@@ -224,14 +230,17 @@ function renderStatus() {
 
 function renderWarnings() {
   const el = $("#warnings");
-  el.textContent = state.warnings.join("\n");
+  $("[data-text]", el).textContent = state.warnings.join("\n");
   el.hidden = state.warnings.length === 0;
 }
 
+const fold = (text) => text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
 function renderGrid() {
   const grid = $("#grid");
-  const q = $("#search").value.trim().toLowerCase();
-  const matches = (s) => !q || s.name.toLowerCase().includes(q);
+  const q = fold($("#search").value.trim());
+  // Sans accents ni majuscules, dans le nom ou l'onglet.
+  const matches = (s) => !q || fold(s.name).includes(q) || fold(s.category || "").includes(q);
   let sounds;
   if (currentTab === RECENT_TAB) {
     const byId = new Map(state.config.sounds.map((s) => [s.id, s]));
@@ -244,7 +253,8 @@ function renderGrid() {
   if (viewMode === "list" && pads.length) pads.unshift(listHeader());
   grid.replaceChildren(...pads);
   $("#empty").hidden = state.config.sounds.length > 0;
-  $("#recent-empty").hidden = !(currentTab === RECENT_TAB && sounds.length === 0 && state.config.sounds.length > 0);
+  $("#recent-empty").hidden = !(currentTab === RECENT_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
+  $("#search-empty").hidden = !(q && sounds.length === 0 && state.config.sounds.length > 0);
   renderPlaying();
 }
 
@@ -388,7 +398,7 @@ function sortSounds(list) {
     manual: mine,
     favorites: (a, b) => b.favorite - a.favorite || mine(a, b),
     name: (a, b) => a.name.localeCompare(b.name, "fr", { sensitivity: "base", numeric: true }),
-    plays: (a, b) => (plays[b.id] || 0) - (plays[a.id] || 0) || mine(a, b),
+    plays: (a, b) => (b.plays || 0) - (a.plays || 0) || mine(a, b),
     // Les sons d'avant la 0.11 n'ont pas de date : les derniers de la liste
     // sont les plus récents.
     added: (a, b) => (b.added_at || 0) - (a.added_at || 0) || mine(b, a),
@@ -1022,6 +1032,10 @@ $('[data-action="phone-token"]', dlgSettings).addEventListener("click", async ()
   }
 });
 
+$('[data-action="diagnose-settings"]', dlgSettings).addEventListener("click", openDiagnostics);
+$('[data-action="listen-settings"]', dlgSettings).addEventListener("click", () => setListening(!listening));
+dlgSettings.addEventListener("close", () => listening && !dlgDiag.open && setListening(false));
+
 $('[data-action="giphy-key"]', dlgSettings).addEventListener("click", (e) => {
   e.preventDefault();
   call("open_giphy_key_page");
@@ -1183,15 +1197,225 @@ $("#btn-theme").addEventListener("click", () => {
 });
 applyTheme();
 
+// ---------- Diagnostic ----------
+
+const dlgDiag = $("#dlg-diag");
+const DIAG_ICONS = { ok: "✓", warn: "!", error: "✕", info: "i" };
+let listening = false;
+
+async function setListening(on) {
+  try {
+    await invoke("listen_cable", { on });
+    listening = on;
+  } catch (e) {
+    listening = false;
+    toast(String(e), true);
+  }
+  for (const b of $$('[data-action="listen"], [data-action="listen-settings"]')) {
+    b.textContent = listening ? "■ Arrêter l'écoute" : "Écouter le câble";
+    b.classList.toggle("primary", listening);
+  }
+}
+
+async function runDiagnostics() {
+  const list = $("#diag-list");
+  list.replaceChildren();
+  list.textContent = "Vérification…";
+  let checks = [];
+  try {
+    checks = await invoke("run_diagnostics");
+    render(await invoke("get_state"));
+  } catch (e) {
+    list.textContent = String(e);
+    return;
+  }
+  // Les problèmes d'abord.
+  const order = { error: 0, warn: 1, info: 2, ok: 3 };
+  checks.sort((a, b) => order[a.status] - order[b.status]);
+  list.textContent = "";
+  for (const c of checks) {
+    if (c.action === "listen") continue;
+    const row = document.createElement("div");
+    row.className = "check " + c.status;
+    const icon = document.createElement("span");
+    icon.className = "check-icon";
+    icon.textContent = DIAG_ICONS[c.status] ?? "•";
+    const txt = document.createElement("div");
+    txt.className = "txt";
+    const b = document.createElement("b");
+    b.textContent = c.title;
+    txt.append(b);
+    if (c.detail) {
+      const small = document.createElement("small");
+      small.textContent = c.detail;
+      txt.append(small);
+    }
+    row.append(icon, txt);
+    const fix = diagAction(c.action);
+    if (fix) row.append(fix);
+    list.append(row);
+  }
+  const problems = checks.filter((c) => c.status === "error" || c.status === "warn").length;
+  $("h2", dlgDiag).textContent = problems ? `🩺 Diagnostic : ${problems} point${problems > 1 ? "s" : ""} à régler` : "🩺 Diagnostic : tout est bon";
+}
+
+function diagAction(action) {
+  if (!action) return null;
+  const b = document.createElement("button");
+  b.type = "button";
+  if (action === "vbcable") {
+    b.textContent = "Installer";
+    b.addEventListener("click", () => call("open_vb_cable_page"));
+  } else if (action === "wizard") {
+    b.textContent = "Assistant";
+    b.addEventListener("click", () => {
+      dlgDiag.close();
+      openWizard();
+    });
+  } else if (action.startsWith("settings:")) {
+    b.textContent = "Régler";
+    b.addEventListener("click", () => {
+      dlgDiag.close();
+      openSettings();
+      showSettingsTab(action.slice(9));
+    });
+  } else {
+    return null;
+  }
+  return b;
+}
+
+function openDiagnostics() {
+  if (dlgSettings.open) dlgSettings.close();
+  dlgDiag.showModal();
+  runDiagnostics();
+}
+
+$('[data-action="rerun"]', dlgDiag).addEventListener("click", runDiagnostics);
+$('[data-action="close"]', dlgDiag).addEventListener("click", () => dlgDiag.close());
+$('[data-action="listen"]', dlgDiag).addEventListener("click", () => setListening(!listening));
+dlgDiag.addEventListener("close", () => listening && setListening(false));
+
+// ---------- Statistiques ----------
+
+const dlgStats = $("#dlg-stats");
+
+function formatLong(ms) {
+  const min = Math.round(ms / 60000);
+  if (ms < 60000) return `${Math.round(ms / 1000)} s`;
+  if (min < 60) return `${min} min`;
+  return `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, "0")}`;
+}
+
+function statBars(box, rows, unit) {
+  box.replaceChildren();
+  const max = Math.max(1, ...rows.map((r) => r.value));
+  for (const r of rows) {
+    const row = document.createElement("div");
+    row.className = "stat-row";
+    row.style.setProperty("--pad-color", r.color || "var(--accent)");
+    const name = document.createElement("span");
+    name.className = "stat-name";
+    name.textContent = r.label;
+    const bar = document.createElement("span");
+    bar.className = "stat-bar";
+    const fill = document.createElement("i");
+    fill.style.width = (r.value / max) * 100 + "%";
+    bar.append(fill);
+    const value = document.createElement("span");
+    value.className = "stat-value";
+    value.textContent = `${r.value} ${unit}`;
+    row.append(name, bar, value);
+    box.append(row);
+  }
+  if (!rows.length) box.textContent = "Joue quelques sons pour voir apparaître ton classement.";
+}
+
+function renderStats() {
+  const sounds = state.config.sounds;
+  const total = sounds.reduce((n, s) => n + (s.plays || 0), 0);
+  const time = sounds.reduce((n, s) => n + (s.played_ms || 0), 0);
+  const top = [...sounds].filter((s) => s.plays).sort((a, b) => b.plays - a.plays);
+  const never = sounds.filter((s) => !s.plays);
+  const tiles = [
+    ["Sons", sounds.length],
+    ["Lectures", total],
+    ["Temps joué", formatLong(time)],
+    ["Préféré", top[0] ? top[0].name : "—"],
+  ];
+  $("#stats-tiles").replaceChildren(
+    ...tiles.map(([label, value]) => {
+      const t = document.createElement("div");
+      t.className = "stat-tile";
+      const v = document.createElement("b");
+      v.textContent = value;
+      const l = document.createElement("span");
+      l.textContent = label;
+      t.append(v, l);
+      return t;
+    })
+  );
+  statBars($("#stats-top"), top.slice(0, 10).map((s) => ({ label: s.name, value: s.plays, color: s.color })), "×");
+  $("#stats-never-count").textContent = never.length ? `(${never.length})` : "";
+  const chips = $("#stats-never");
+  chips.replaceChildren(
+    ...never.map((s) => {
+      const c = document.createElement("button");
+      c.type = "button";
+      c.className = "chip";
+      c.textContent = s.name;
+      c.title = "Ouvrir la fiche du son (pour l'écouter, le renommer ou le supprimer)";
+      c.addEventListener("click", () => {
+        dlgStats.close();
+        openSoundDialog(s);
+      });
+      return c;
+    })
+  );
+  if (!never.length) chips.textContent = "Tous tes sons ont été joués au moins une fois. 👏";
+  const cats = new Map();
+  for (const s of sounds) {
+    const k = s.category || "Sans onglet";
+    cats.set(k, (cats.get(k) || 0) + (s.plays || 0));
+  }
+  statBars(
+    $("#stats-cats"),
+    [...cats].filter(([, v]) => v).sort((a, b) => b[1] - a[1]).map(([label, value]) => ({ label, value })),
+    "×"
+  );
+}
+
+function openStats() {
+  renderStats();
+  dlgStats.showModal();
+}
+
+$('[data-action="close"]', dlgStats).addEventListener("click", () => dlgStats.close());
+$('[data-action="reset"]', dlgStats).addEventListener("click", async () => {
+  if (!confirm("Remettre toutes les statistiques à zéro ?")) return;
+  try {
+    render(await invoke("reset_stats"));
+    renderStats();
+  } catch (e) {
+    toast(String(e), true);
+  }
+});
+
 // ---------- Barre du haut ----------
 
 $("#btn-add").addEventListener("click", () => call("pick_sounds"));
 $("#btn-stop").addEventListener("click", () => call("stop_all"));
 $("#btn-settings").addEventListener("click", openSettings);
-$("#cable-status").addEventListener("click", () =>
-  state.devices.vb_cable ? openSettings() : openWizard()
-);
+$("#cable-status").addEventListener("click", () => (state.devices.vb_cable ? openDiagnostics() : openWizard()));
+$("#btn-stats").addEventListener("click", openStats);
+$('#warnings [data-action="diagnose"]').addEventListener("click", openDiagnostics);
 $("#search").addEventListener("input", renderGrid);
+$("#search").addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && e.target.value) {
+    e.target.value = "";
+    renderGrid();
+  }
+});
 $("#mic-toggle").addEventListener("click", () => call("set_mic_muted", { muted: !state.mic_muted }));
 listen("mic-muted", ({ payload }) => {
   state.mic_muted = payload;
@@ -1514,5 +1738,6 @@ function stopOnlinePreview() {
 (async () => {
   render(await invoke("get_state"));
   if (!state.config.settings.setup_done) openWizard();
+  migratePlayCounts();
   checkUpdate();
 })();
