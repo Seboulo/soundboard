@@ -4,6 +4,7 @@ mod config;
 mod decoder;
 mod denoise;
 mod effects;
+mod giphy;
 mod online;
 mod phone;
 mod youtube;
@@ -21,7 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_autostart::ManagerExt as AutostartExt;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -41,7 +42,6 @@ enum HotkeyAction {
     StopAll,
     ToggleMute,
     Random,
-    ToggleOverlay,
 }
 
 struct AppState {
@@ -68,7 +68,7 @@ struct AppState {
     last_random: Mutex<Option<String>>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct Snapshot {
     config: Config,
     devices: DeviceList,
@@ -105,41 +105,6 @@ const WARN_AUDIO: &str = "Audio : ";
 const WARN_HOTKEY: &str = "Raccourci : ";
 const WARN_STARTUP: &str = "Démarrage : ";
 const WARN_PHONE: &str = "Téléphone : ";
-const OVERLAY: &str = "overlay";
-
-/// Affiche l'overlay en jeu (créé à la première demande) ou le cache.
-fn toggle_overlay_window(app: &AppHandle) -> Result<bool, String> {
-    if let Some(w) = app.get_webview_window(OVERLAY) {
-        let visible = w.is_visible().unwrap_or(false);
-        if visible {
-            w.hide().map_err(|e| e.to_string())?;
-        } else {
-            w.show().map_err(|e| e.to_string())?;
-        }
-        return Ok(!visible);
-    }
-    let (w, h) = (300.0, 460.0);
-    let mut builder = WebviewWindowBuilder::new(app, OVERLAY, WebviewUrl::App("overlay.html".into()))
-        .title("Soundboard — overlay")
-        .inner_size(w, h)
-        .min_inner_size(200.0, 160.0)
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        // Cliquer sur l'overlay ne retire pas le focus au jeu.
-        .focusable(false)
-        .focused(false);
-    // En haut à droite de l'écran principal.
-    if let Ok(Some(monitor)) = app.primary_monitor() {
-        let scale = monitor.scale_factor();
-        let size = monitor.size().to_logical::<f64>(scale);
-        builder = builder.position(size.width - w - 24.0, 80.0);
-    }
-    builder.build().map_err(|e| e.to_string())?;
-    Ok(true)
-}
-
 /// Démarre, redémarre ou arrête la page du téléphone selon les réglages.
 fn apply_phone(app: &AppHandle) {
     let state = app.state::<AppState>();
@@ -311,7 +276,6 @@ fn register_hotkeys(app: &AppHandle) {
         (&config.settings.stop_hotkey, HotkeyAction::StopAll, "Tout arrêter"),
         (&config.settings.mute_hotkey, HotkeyAction::ToggleMute, "Couper le micro"),
         (&config.settings.random_hotkey, HotkeyAction::Random, "Son au hasard"),
-        (&config.settings.overlay_hotkey, HotkeyAction::ToggleOverlay, "Overlay en jeu"),
     ] {
         if let Some(h) = hotkey.clone().filter(|h| !h.is_empty()) {
             entries.push((h, action, label.into()));
@@ -368,9 +332,6 @@ fn on_hotkey(app: &AppHandle, shortcut: &Shortcut) {
         Some(HotkeyAction::ToggleMute) => {
             let muted = !state.mic_muted.load(Ordering::Relaxed);
             set_muted(app, muted);
-        }
-        Some(HotkeyAction::ToggleOverlay) => {
-            let _ = toggle_overlay_window(app);
         }
         Some(HotkeyAction::Random) => {
             if let Some(sound) = pick_random(&state, None) {
@@ -469,6 +430,8 @@ fn store_sound(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0),
+        image: None,
+        image_still: None,
     })
 }
 
@@ -582,11 +545,171 @@ fn remove_sound(app: AppHandle, state: State<AppState>, id: String) -> Result<Sn
             if sound.path.starts_with(&state.sounds_dir) {
                 let _ = fs::remove_file(&sound.path);
             }
+            remove_image_files(&state, &sound);
         }
         state.save(&config)?;
     }
     register_hotkeys(&app);
     Ok(state.snapshot())
+}
+
+fn images_dir(state: &AppState) -> PathBuf {
+    state.sounds_dir.with_file_name("images")
+}
+
+/// Supprime les fichiers d'image d'un son (seulement ceux rangés par l'app).
+fn remove_image_files(state: &AppState, sound: &Sound) {
+    let dir = images_dir(state);
+    for path in [&sound.image, &sound.image_still].into_iter().flatten() {
+        if path.starts_with(&dir) {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+fn giphy_key(state: &AppState) -> Option<String> {
+    state
+        .config
+        .lock()
+        .unwrap()
+        .settings
+        .giphy_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(String::from)
+}
+
+/// Range les images d'un son et remplace les anciennes.
+fn store_image(
+    state: &AppState,
+    id: &str,
+    anim: (Vec<u8>, &str),
+    still: Option<(Vec<u8>, &str)>,
+) -> Result<(), String> {
+    let dir = images_dir(state);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // Nom unique à chaque fois : l'interface ne garde pas l'ancienne en cache.
+    let stamp = uuid::Uuid::new_v4().simple().to_string();
+    let anim_path = dir.join(format!("{id}-{stamp}.{}", anim.1));
+    fs::write(&anim_path, &anim.0).map_err(|e| e.to_string())?;
+    let still_path = match still {
+        Some((data, ext)) => {
+            let p = dir.join(format!("{id}-{stamp}-still.{ext}"));
+            fs::write(&p, data).map_err(|e| e.to_string())?;
+            p
+        }
+        None => anim_path.clone(),
+    };
+    let mut config = state.config.lock().unwrap();
+    let Some(sound) = config.sounds.iter_mut().find(|s| s.id == id) else {
+        let _ = fs::remove_file(&anim_path);
+        let _ = fs::remove_file(&still_path);
+        return Err("son introuvable".into());
+    };
+    let old = sound.clone();
+    sound.image = Some(anim_path);
+    sound.image_still = Some(still_path);
+    state.save(&config)?;
+    drop(config);
+    remove_image_files(state, &old);
+    Ok(())
+}
+
+#[tauri::command]
+async fn search_images(app: AppHandle, query: String) -> Result<Vec<giphy::GifResult>, String> {
+    let key = giphy_key(&app.state::<AppState>())
+        .ok_or("Ajoute ta clé GIPHY dans les réglages (⚙ → Général) pour chercher des images.")?;
+    giphy::search(query.trim(), &key, 18).await
+}
+
+#[tauri::command]
+async fn set_sound_image(app: AppHandle, id: String, still: String, anim: String) -> Result<Snapshot, String> {
+    let anim_file = giphy::download(&anim).await?;
+    let still_file = if still != anim { Some(giphy::download(&still).await?) } else { None };
+    let state = app.state::<AppState>();
+    store_image(&state, &id, anim_file, still_file)?;
+    Ok(state.snapshot())
+}
+
+/// Image choisie sur le PC (PNG, JPG, GIF ou WebP).
+#[tauri::command]
+async fn pick_sound_image(app: AppHandle, id: String) -> Result<Snapshot, String> {
+    let state = app.state::<AppState>();
+    let file = app
+        .dialog()
+        .file()
+        .set_title("Choisir une image")
+        .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp"])
+        .blocking_pick_file();
+    let Some(path) = file.and_then(|f| f.into_path().ok()) else {
+        return Ok(state.snapshot());
+    };
+    let size = fs::metadata(&path).map_err(|e| e.to_string())?.len();
+    if size > 8 * 1024 * 1024 {
+        return Err("image trop grosse (8 Mo au plus)".into());
+    }
+    let data = fs::read(&path).map_err(|e| e.to_string())?;
+    let ext = giphy::image_ext(&data).ok_or("ce fichier n'est pas une image")?;
+    store_image(&state, &id, (data, ext), None)?;
+    Ok(state.snapshot())
+}
+
+#[tauri::command]
+fn clear_sound_image(state: State<AppState>, id: String) -> Result<Snapshot, String> {
+    let old = {
+        let mut config = state.config.lock().unwrap();
+        let sound = config.sounds.iter_mut().find(|s| s.id == id).ok_or("son introuvable")?;
+        let old = sound.clone();
+        sound.image = None;
+        sound.image_still = None;
+        state.save(&config)?;
+        old
+    };
+    remove_image_files(&state, &old);
+    Ok(state.snapshot())
+}
+
+/// Donne une image GIPHY (la première trouvée avec son nom) aux sons
+/// demandés (ou à tous) qui n'en ont pas. Renvoie le nombre de sons illustrés.
+#[tauri::command]
+async fn auto_images(app: AppHandle, ids: Option<Vec<String>>) -> Result<usize, String> {
+    let state = app.state::<AppState>();
+    let Some(key) = giphy_key(&state) else {
+        return Ok(0);
+    };
+    let todo: Vec<(String, String)> = state
+        .config
+        .lock()
+        .unwrap()
+        .sounds
+        .iter()
+        .filter(|s| s.image.is_none() && ids.as_ref().is_none_or(|ids| ids.contains(&s.id)))
+        .map(|s| (s.id.clone(), s.name.clone()))
+        .collect();
+    let mut done = 0;
+    for (id, name) in todo {
+        let results = giphy::search(&name, &key, 1).await?;
+        let Some(first) = results.into_iter().next() else {
+            continue;
+        };
+        let Ok(anim) = giphy::download(&first.anim).await else {
+            continue;
+        };
+        let still = if first.still != first.anim { giphy::download(&first.still).await.ok() } else { None };
+        if store_image(&state, &id, anim, still).is_ok() {
+            done += 1;
+            let _ = app.emit("snapshot", state.snapshot());
+        }
+    }
+    Ok(done)
+}
+
+#[tauri::command]
+fn open_giphy_key_page(app: AppHandle) -> Result<(), String> {
+    app.opener()
+        .open_url("https://developers.giphy.com/dashboard/?create=true", None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -803,11 +926,6 @@ async fn youtube_import(app: &AppHandle, url: String) -> Result<AddedSound, Stri
         id,
         snapshot: state.snapshot(),
     })
-}
-
-#[tauri::command]
-fn toggle_overlay(app: AppHandle) -> Result<bool, String> {
-    toggle_overlay_window(&app)
 }
 
 #[derive(Serialize)]
@@ -1154,18 +1272,14 @@ fn open_vb_cable_page(app: AppHandle) -> Result<(), String> {
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Ouvrir la soundboard", true, None::<&str>)?;
     let stop = MenuItem::with_id(app, "stop", "Tout arrêter", true, None::<&str>)?;
-    let overlay = MenuItem::with_id(app, "overlay", "Overlay en jeu", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quitter", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &overlay, &stop, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &stop, &quit])?;
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("Soundboard")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_window(app),
-            "overlay" => {
-                let _ = toggle_overlay_window(app);
-            }
             "stop" => {
                 app.state::<AppState>().audio.stop_all();
             }
@@ -1271,19 +1385,12 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // L'overlay se cache simplement : il garde sa place.
-                if window.label() == OVERLAY {
-                    api.prevent_close();
-                    let _ = window.hide();
-                    return;
-                }
                 let state = window.state::<AppState>();
                 let to_tray = state.config.lock().unwrap().settings.close_to_tray;
                 if to_tray {
                     api.prevent_close();
                     let _ = window.hide();
                 } else {
-                    // Sinon l'overlay garderait l'app ouverte.
                     window.app_handle().exit(0);
                 }
             }
@@ -1306,7 +1413,12 @@ pub fn run() {
             stop_all,
             open_vb_cable_page,
             open_freesound_key_page,
-            toggle_overlay,
+            open_giphy_key_page,
+            search_images,
+            set_sound_image,
+            pick_sound_image,
+            clear_sound_image,
+            auto_images,
             get_phone_info,
             regenerate_phone_token,
             set_mic_muted,

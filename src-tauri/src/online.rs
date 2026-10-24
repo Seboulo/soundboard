@@ -25,7 +25,7 @@ pub struct OnlineSound {
     pub url: String,
 }
 
-fn client() -> Result<reqwest::Client, String> {
+pub(crate) fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .user_agent(concat!("Soundboard/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20))

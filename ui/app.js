@@ -123,18 +123,16 @@ function enterSaves(dialog) {
 
 // ---------- Rendu ----------
 
-const { emit } = window.__TAURI__.event;
 
 function render(snapshot) {
   state = snapshot;
-  // L'overlay en jeu recharge sa liste.
-  emit("sounds-changed").catch(() => {});
   renderStatus();
   renderMic();
   renderWarnings();
   renderTabs();
   renderGrid();
   $("#version").textContent = `Soundboard v${state.version}`;
+  fetchMissingImages();
 }
 
 function renderMic() {
@@ -266,12 +264,89 @@ function renderPlaying() {
     if (!pad) return;
     const p = byId.get(id);
     pad.classList.toggle("playing", !!p);
+    const img = $(".icon.image img", pad);
+    const sound = img && soundById(id);
+    if (sound?.image) img.src = fileSrc(p ? sound.image : sound.image_still);
     let ratio = 0;
     if (p && p.duration_ms) {
       ratio = p.looping ? (p.elapsed_ms % p.duration_ms) / p.duration_ms : Math.min(1, p.elapsed_ms / p.duration_ms);
     }
     pad.style.setProperty("--progress", ratio);
   });
+}
+
+// ---------- Images et emojis automatiques ----------
+
+const { convertFileSrc } = window.__TAURI__.core;
+const fileSrc = (path) => convertFileSrc(path);
+const soundById = (id) => state.config.sounds.find((s) => s.id === id);
+
+// Mot du nom du son → emoji, quand le son n'a ni image ni emoji choisi.
+const AUTO_EMOJIS = [
+  [/(chèvre|chevre|goat)/, "🐐"],
+  [/(\bchat\b|\bcats?\b|miaou|meow)/, "🐱"],
+  [/(chien|\bdogs?\b|wouf|woof|bark)/, "🐶"],
+  [/(canard|duck|\bcoin coin)/, "🦆"],
+  [/(vache|\bcow|meuh)/, "🐄"],
+  [/(rire|rigol|laugh|\blol\b|mdr|ptdr|haha|\bxd\b)/, "😂"],
+  [/(bruh|bro+h)/, "😐"],
+  [/(explos|boom|kaboom|bomb|nuke)/, "💥"],
+  [/(\bfeu\b|fire|flamme|burn)/, "🔥"],
+  [/(\bmort|dead|death|\brip\b|skull|crâne|crane)/, "💀"],
+  [/(\bcri\b|\bcris\b|scream|hurle|aaa+h?)/, "😱"],
+  [/(applau|\bclap|bravo)/, "👏"],
+  [/(fête|\bfete|party|victoire|victory|\bwin\b|\bgg\b)/, "🎉"],
+  [/(\bfail|perdu|\blose|loser|\bsad\b|triste|trombone|womp)/, "😢"],
+  [/(sirène|sirene|siren|alarm|alerte|police)/, "🚨"],
+  [/(\bpet\b|fart|prout)/, "💨"],
+  [/(cloche|\bbell|\bding|\bdong)/, "🔔"],
+  [/(tambour|drum|ba dum|rimshot|tss)/, "🥁"],
+  [/(trompette|trumpet|airhorn|klaxon|\bhorn|\bmlg\b)/, "📯"],
+  [/(music|musique|\bsong|chanson|\bbeat|remix)/, "🎵"],
+  [/(\bwow\b|\bomg\b|ohlala|oh la la|surpris)/, "😮"],
+  [/(\bnon\b|\bnope\b|\bno+\b|\bstop\b)/, "🙅"],
+  [/(\boui\b|\byes\b|yeah|\bok\b)/, "👍"],
+  [/(\bsus\b|among us|impost)/, "🔴"],
+  [/(\bvine\b|\bthud\b|bonk)/, "🪨"],
+  [/(clown|honk)/, "🤡"],
+  [/(angry|colère|colere|\brage\b|énervé|enerve)/, "😡"],
+  [/(coeur|cœur|\blove|amour|bisou|kiss)/, "❤️"],
+  [/(argent|money|cash|cha-?ching)/, "💰"],
+  [/(fantôme|fantome|ghost|\bboo\b)/, "👻"],
+  [/(bonjour|hello|salut|coucou)/, "👋"],
+  [/(dodo|sleep|ronfl|snore)/, "😴"],
+  [/(manger|\beat\b|miam|food|pizza)/, "🍕"],
+  [/(voiture|\bcar\b|vroom|drift)/, "🏎️"],
+  [/(pistolet|\bgun|gunshot|\bbang\b)/, "🔫"],
+  [/(épée|\bepee|sword|ninja)/, "⚔️"],
+  [/(bébé|\bbebe|\bbaby)/, "👶"],
+  [/(prière|priere|\bpray|amen|hallelujah|alléluia)/, "🙏"],
+  [/(question|\bhein\b|\bhuh\b|\bquoi\b|\bwhat\b)/, "❓"],
+];
+
+function autoEmoji(name) {
+  const text = ` ${name.toLowerCase()} `;
+  for (const [re, emoji] of AUTO_EMOJIS) if (re.test(text)) return emoji;
+  return null;
+}
+
+// Les sons ajoutés reçoivent une image GIPHY si une clé est réglée (une
+// seule tentative par son et par lancement).
+const imageTried = new Set();
+let autoImageRunning = false;
+async function fetchMissingImages() {
+  if (autoImageRunning || !state.config.settings.giphy_key) return;
+  const ids = state.config.sounds.filter((s) => !s.image && !imageTried.has(s.id)).map((s) => s.id);
+  if (!ids.length) return;
+  ids.forEach((id) => imageTried.add(id));
+  autoImageRunning = true;
+  try {
+    await invoke("auto_images", { ids });
+  } catch (e) {
+    toast(String(e), true);
+  } finally {
+    autoImageRunning = false;
+  }
 }
 
 // ---------- Tri et affichage ----------
@@ -374,9 +449,21 @@ function padElement(sound, index) {
   pad.style.setProperty("--pad-color", sound.color);
 
   const icon = document.createElement("span");
-  icon.className = "icon" + (sound.emoji ? " emoji" : "");
-  // Sans emoji : l'initiale du son dans une pastille de sa couleur.
-  icon.textContent = sound.emoji || [...sound.name.trim()][0]?.toUpperCase() || "♪";
+  const emoji = sound.emoji || autoEmoji(sound.name);
+  if (sound.image_still) {
+    // Image fixe au repos, animée pendant que le son joue (voir renderPlaying).
+    icon.className = "icon image";
+    const img = document.createElement("img");
+    img.alt = "";
+    img.draggable = false;
+    img.loading = "lazy";
+    img.src = fileSrc(sound.image_still);
+    icon.append(img);
+  } else {
+    icon.className = "icon" + (emoji ? " emoji" : "");
+    // Sans emoji : l'initiale du son dans une pastille de sa couleur.
+    icon.textContent = emoji || [...sound.name.trim()][0]?.toUpperCase() || "♪";
+  }
   const eq = document.createElement("span");
   eq.className = "eq";
   eq.append(...[0, 1, 2, 3].map(() => document.createElement("i")));
@@ -503,10 +590,94 @@ function openSoundDialog(sound) {
   formSound.keep_playing.checked = !!sound.keep_playing;
   formSound.emoji.value = sound.emoji ?? "";
   renderEmojiPicks();
+  renderImagePreview();
+  $("#image-search").hidden = true;
+  $("#image-results").replaceChildren();
+  $("#image-query").value = sound.name;
   dlgSound.returnValue = "";
   dlgSound.showModal();
   openTrim(sound);
 }
+
+// ---------- Image du son ----------
+
+function renderImagePreview() {
+  const box = $("#image-preview");
+  box.replaceChildren();
+  const current = soundById(editing.id) ?? editing;
+  if (current.image) {
+    const img = document.createElement("img");
+    img.alt = "";
+    img.src = fileSrc(current.image);
+    box.append(img);
+  } else {
+    box.textContent = formSound.emoji.value || autoEmoji(current.name) || "🖼️";
+  }
+  $('[data-action="image-clear"]', dlgSound).disabled = !current.image;
+}
+
+async function imageAction(cmd, args) {
+  const id = editing.id;
+  try {
+    render(await invoke(cmd, { id, ...args }));
+    renderImagePreview();
+  } catch (e) {
+    toast(String(e), true);
+  }
+}
+
+async function searchImages() {
+  const results = $("#image-results");
+  const query = $("#image-query").value.trim() || editing.name;
+  results.replaceChildren();
+  results.textContent = "Recherche…";
+  let found = [];
+  try {
+    found = await invoke("search_images", { query });
+  } catch (e) {
+    results.textContent = String(e);
+    return;
+  }
+  results.textContent = found.length ? "" : "Aucune image trouvée : essaie d'autres mots (en anglais).";
+  for (const r of found) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.title = r.title;
+    const img = document.createElement("img");
+    img.alt = r.title;
+    img.loading = "lazy";
+    img.src = r.anim;
+    b.append(img);
+    b.addEventListener("click", async () => {
+      b.classList.add("busy");
+      await imageAction("set_sound_image", { still: r.still, anim: r.anim });
+      b.classList.remove("busy");
+    });
+    results.append(b);
+  }
+}
+
+$('[data-action="image-search"]', dlgSound).addEventListener("click", () => {
+  const box = $("#image-search");
+  box.hidden = !box.hidden;
+  if (!box.hidden) {
+    if (!state.config.settings.giphy_key) {
+      $("#image-results").textContent = "Ajoute ta clé GIPHY dans les réglages (⚙ → Général) pour chercher des GIF.";
+      return;
+    }
+    searchImages();
+  }
+});
+$('[data-action="image-go"]', dlgSound).addEventListener("click", searchImages);
+$("#image-query").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    e.stopPropagation();
+    searchImages();
+  }
+});
+$('[data-action="image-file"]', dlgSound).addEventListener("click", () => imageAction("pick_sound_image"));
+$('[data-action="image-clear"]', dlgSound).addEventListener("click", () => imageAction("clear_sound_image"));
 
 const EMOJIS = ["😂", "🤣", "😱", "💀", "🔥", "💥", "👏", "🎉", "📯", "🥁", "🎺", "🎵", "🚨", "🐐", "🤡", "👀", "🍆", "💨", "😡", "🙏"];
 
@@ -527,7 +698,10 @@ function renderEmojiPicks() {
     })
   );
 }
-formSound.emoji.addEventListener("input", renderEmojiPicks);
+formSound.emoji.addEventListener("input", () => {
+  renderEmojiPicks();
+  renderImagePreview();
+});
 
 // ---------- Découpe (forme d'onde) ----------
 
@@ -717,7 +891,7 @@ $('[data-action="delete"]', dlgSound).addEventListener("click", () => {
 
 const dlgSettings = $("#dlg-settings");
 const formSettings = $("form", dlgSettings);
-const SETTINGS_HOTKEYS = ["stop_hotkey", "mute_hotkey", "random_hotkey", "overlay_hotkey"];
+const SETTINGS_HOTKEYS = ["stop_hotkey", "mute_hotkey", "random_hotkey"];
 for (const k of SETTINGS_HOTKEYS) setupHotkeyInput(formSettings[k]);
 bindRangeLabels(formSettings);
 enterSaves(dlgSettings);
@@ -754,6 +928,7 @@ async function openSettings() {
   renderPhoneInfo();
   formSettings.voice_effect.value = s.voice_effect ?? "none";
   formSettings.freesound_key.value = s.freesound_key ?? "";
+  formSettings.giphy_key.value = s.giphy_key ?? "";
   updateNormalizeRow();
   dlgSettings.returnValue = "";
   dlgSettings.showModal();
@@ -847,6 +1022,30 @@ $('[data-action="phone-token"]', dlgSettings).addEventListener("click", async ()
   }
 });
 
+$('[data-action="giphy-key"]', dlgSettings).addEventListener("click", (e) => {
+  e.preventDefault();
+  call("open_giphy_key_page");
+});
+
+$('[data-action="auto-images"]', dlgSettings).addEventListener("click", async (e) => {
+  const button = e.currentTarget;
+  if (!state.config.settings.giphy_key) {
+    toast("Colle ta clé GIPHY puis enregistre avant d'illustrer tes sons.", true);
+    return;
+  }
+  button.disabled = true;
+  button.textContent = "Recherche…";
+  try {
+    const n = await invoke("auto_images", { ids: null });
+    toast(n ? `${n} son${n > 1 ? "s" : ""} illustré${n > 1 ? "s" : ""}` : "Tous tes sons ont déjà une image (ou rien n'a été trouvé).");
+  } catch (err) {
+    toast(String(err), true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Illustrer";
+  }
+});
+
 $('[data-action="freesound-key"]', dlgSettings).addEventListener("click", (e) => {
   e.preventDefault();
   call("open_freesound_key_page");
@@ -875,12 +1074,12 @@ dlgSettings.addEventListener("close", () => {
     close_to_tray: f.close_to_tray.checked,
     stop_hotkey: f.stop_hotkey.dataset.hotkey || null,
     mute_hotkey: f.mute_hotkey.dataset.hotkey || null,
-    overlay_hotkey: f.overlay_hotkey.dataset.hotkey || null,
     phone_enabled: f.phone_enabled.checked,
     phone_port: Math.min(65535, Math.max(1024, Number(f.phone_port.value) || 7878)),
     random_hotkey: f.random_hotkey.dataset.hotkey || null,
     voice_effect: f.voice_effect.value,
     freesound_key: f.freesound_key.value.trim() || null,
+    giphy_key: f.giphy_key.value.trim() || null,
   });
 });
 
@@ -989,7 +1188,6 @@ applyTheme();
 $("#btn-add").addEventListener("click", () => call("pick_sounds"));
 $("#btn-stop").addEventListener("click", () => call("stop_all"));
 $("#btn-settings").addEventListener("click", openSettings);
-$("#btn-overlay").addEventListener("click", () => call("toggle_overlay"));
 $("#cable-status").addEventListener("click", () =>
   state.devices.vb_cable ? openSettings() : openWizard()
 );
@@ -1148,6 +1346,8 @@ listen("playing", (event) => {
 });
 // Analyse des anciens sons terminée en arrière-plan.
 listen("state-changed", async () => render(await invoke("get_state")));
+// Une image vient d'être trouvée pour un son.
+listen("snapshot", ({ payload }) => render(payload));
 
 // ---------- Recherche en ligne ----------
 

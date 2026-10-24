@@ -20,7 +20,11 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src https://www.myinstants.com https://cdn.freesound.org"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost https://*.giphy.com; media-src https://www.myinstants.com https://cdn.freesound.org",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA/images/*"]
+      }
     }
   },
   "bundle": {
@@ -47,7 +51,7 @@
     "copyright": "© 2026 Sébastien",
     "category": "Utility",
     "shortDescription": "Soundboard pour Discord",
-    "longDescription": "Joue des sons dans ton micro Discord via VB-Audio Virtual Cable, avec raccourcis globaux, overlay en jeu et contrôle depuis le téléphone.",
+    "longDescription": "Joue des sons dans ton micro Discord via VB-Audio Virtual Cable, avec raccourcis globaux et contrôle depuis le téléphone.",
     "homepage": "https://github.com/Seboulo/soundboard",
     "createUpdaterArtifacts": true
   },

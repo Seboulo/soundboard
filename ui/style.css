@@ -782,3 +782,41 @@ input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2
 .form .set-field:has(> input[type="range"]) { display: grid; grid-template-columns: 1fr auto; row-gap: 6px; }
 .set-field > input[type="range"] { grid-column: 1 / -1; }
 .set-field > .value { font-variant-numeric: tabular-nums; color: var(--muted); }
+
+/* Image du son (GIF GIPHY ou image du PC). */
+.pad .icon.image { padding: 0; overflow: hidden; background: var(--chip); }
+.pad .icon.image img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.grid:not(.list) .pad .icon.image { width: 72px; height: 72px; border-radius: 18px; }
+
+.illus { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-2); }
+.illus-head { display: flex; gap: 14px; align-items: center; }
+.image-preview {
+  width: 84px; height: 84px; flex-shrink: 0;
+  display: grid; place-items: center;
+  border-radius: 14px; overflow: hidden;
+  background: var(--panel); border: 1px solid var(--border);
+  font-size: 36px;
+}
+.image-preview img { width: 100%; height: 100%; object-fit: cover; }
+.illus-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.illus-text .label { font-weight: 600; }
+.illus-text .hint { margin: 0; }
+.illus-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.illus-actions button { font-size: 12px; padding: 5px 10px; }
+.image-search { display: flex; flex-direction: column; gap: 8px; }
+.image-search-bar { display: flex; gap: 6px; }
+.image-search-bar input { flex: 1; }
+.image-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+  gap: 6px;
+  max-height: 228px;
+  overflow-y: auto;
+  font-size: 13px;
+  color: var(--muted);
+}
+.image-results button { padding: 0; height: 92px; overflow: hidden; border-radius: 10px; box-shadow: none; }
+.image-results button:hover { outline: 2px solid var(--accent); }
+.image-results button.busy { opacity: .5; }
+.image-results img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.image-search .powered { font-size: 11px; text-align: right; margin: 0; }

@@ -40,6 +40,12 @@ pub struct Sound {
     /// 0 pour les sons ajoutés avant la 0.11.
     #[serde(default)]
     pub added_at: u64,
+    /// Image du son (GIF animé joué pendant le son, ou image choisie).
+    #[serde(default)]
+    pub image: Option<PathBuf>,
+    /// Version fixe de l'image, affichée quand le son ne joue pas.
+    #[serde(default)]
+    pub image_still: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -156,8 +162,8 @@ pub struct Settings {
     pub voice_effect: VoiceEffect,
     /// Clé personnelle de l'API Freesound (gratuite), pour la recherche en ligne.
     pub freesound_key: Option<String>,
-    /// Affiche ou cache l'overlay en jeu.
-    pub overlay_hotkey: Option<String>,
+    /// Clé GIPHY (gratuite) pour illustrer les sons avec des images de memes.
+    pub giphy_key: Option<String>,
     /// Page web sur le réseau local pour jouer les sons depuis un téléphone.
     pub phone_enabled: bool,
     pub phone_port: u16,
@@ -190,7 +196,7 @@ impl Default for Settings {
             random_hotkey: None,
             voice_effect: VoiceEffect::None,
             freesound_key: None,
-            overlay_hotkey: None,
+            giphy_key: None,
             phone_enabled: false,
             phone_port: 7878,
             phone_token: String::new(),
