@@ -252,10 +252,18 @@ function renderGrid() {
 // Sons en cours, envoyés par le moteur audio ~10 fois par seconde.
 let playing = [];
 
+// Sons affichés comme « en cours » au dernier passage : seuls eux et les
+// nouveaux sons en cours sont mis à jour, pas toute la grille 10 fois par seconde.
+let shownPlaying = new Set();
+
 function renderPlaying() {
   const byId = new Map(playing.map((p) => [p.id, p]));
-  document.querySelectorAll(".pad").forEach((pad) => {
-    const p = byId.get(pad.dataset.id);
+  const ids = new Set([...shownPlaying, ...byId.keys()]);
+  shownPlaying = new Set(byId.keys());
+  ids.forEach((id) => {
+    const pad = document.querySelector(`#grid .pad[data-id="${CSS.escape(id)}"]`);
+    if (!pad) return;
+    const p = byId.get(id);
     pad.classList.toggle("playing", !!p);
     let ratio = 0;
     if (p && p.duration_ms) {
