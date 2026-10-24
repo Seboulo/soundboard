@@ -167,10 +167,19 @@ try {
   recent = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
 } catch {}
 
+// Nombre de lectures de chaque son, pour le tri « les plus joués ».
+const PLAYS_KEY = "soundboard.plays";
+let plays = {};
+try {
+  plays = JSON.parse(localStorage.getItem(PLAYS_KEY) || "{}");
+} catch {}
+
 function remember(id) {
   recent = [id, ...recent.filter((r) => r !== id)].slice(0, 12);
+  plays[id] = (plays[id] || 0) + 1;
   try {
     localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
+    localStorage.setItem(PLAYS_KEY, JSON.stringify(plays));
   } catch {}
   if (currentTab === RECENT_TAB) renderGrid();
 }
@@ -201,7 +210,9 @@ function renderTabs() {
   };
   $("#tabs").replaceChildren(tab("Tous", null), tab("🕘 Récents", RECENT_TAB), ...cats.map((c) => tab(c, c)));
   $("#categories").replaceChildren(...cats.map((c) => new Option(c)));
-  $("#btn-export").textContent = tabCategory() ? `📦 Exporter « ${tabCategory()} »` : "📦 Exporter";
+  $("#btn-export").title = tabCategory()
+    ? `Exporter « ${tabCategory()} » : enregistrer ses sons dans un .zip à partager`
+    : "Exporter : enregistrer tous les sons dans un .zip à partager";
 }
 
 function renderStatus() {
@@ -227,9 +238,7 @@ function renderGrid() {
     const byId = new Map(state.config.sounds.map((s) => [s.id, s]));
     sounds = recent.map((id) => byId.get(id)).filter((s) => s && matches(s));
   } else {
-    sounds = state.config.sounds.filter((s) => (!currentTab || s.category === currentTab) && matches(s));
-    // Favoris en premier, sans changer l'ordre entre eux.
-    sounds = [...sounds.filter((s) => s.favorite), ...sounds.filter((s) => !s.favorite)];
+    sounds = sortSounds(state.config.sounds.filter((s) => (!currentTab || s.category === currentTab) && matches(s)));
   }
   grid.replaceChildren(...sounds.map(padElement));
   $("#empty").hidden = state.config.sounds.length > 0;
@@ -253,6 +262,85 @@ function renderPlaying() {
   });
 }
 
+// ---------- Tri et affichage ----------
+
+let sortMode = "favorites";
+let viewMode = "grid";
+try {
+  sortMode = localStorage.getItem("soundboard.sort") || sortMode;
+  viewMode = localStorage.getItem("soundboard.view") || viewMode;
+} catch {}
+
+/** Durée jouée (découpe comprise) en millisecondes, ou null si inconnue. */
+function playDuration(sound) {
+  const total = sound.analysis?.duration_ms;
+  if (total == null) return null;
+  return Math.max(0, Math.min(sound.end_ms ?? total, total) - sound.start_ms);
+}
+
+function formatDuration(ms) {
+  const s = Math.round(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function hue(color) {
+  const n = parseInt(String(color).slice(1), 16);
+  if (Number.isNaN(n)) return 0;
+  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => v / 255);
+  const max = Math.max(r, g, b);
+  const d = max - Math.min(r, g, b);
+  if (!d) return 0;
+  const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return (h * 60 + 360) % 360;
+}
+
+function sortSounds(list) {
+  const index = new Map(state.config.sounds.map((s, i) => [s.id, i]));
+  const mine = (a, b) => index.get(a.id) - index.get(b.id);
+  const by = {
+    manual: mine,
+    favorites: (a, b) => b.favorite - a.favorite || mine(a, b),
+    name: (a, b) => a.name.localeCompare(b.name, "fr", { sensitivity: "base", numeric: true }),
+    plays: (a, b) => (plays[b.id] || 0) - (plays[a.id] || 0) || mine(a, b),
+    // Les sons d'avant la 0.11 n'ont pas de date : les derniers de la liste
+    // sont les plus récents.
+    added: (a, b) => (b.added_at || 0) - (a.added_at || 0) || mine(b, a),
+    duration: (a, b) => (playDuration(a) ?? Infinity) - (playDuration(b) ?? Infinity) || mine(a, b),
+    color: (a, b) => hue(a.color) - hue(b.color) || mine(a, b),
+  }[sortMode] || mine;
+  return [...list].sort(by);
+}
+
+/** Le glisser-déposer ne sert qu'aux ordres choisis à la main. */
+function canReorder() {
+  return currentTab !== RECENT_TAB && (sortMode === "manual" || sortMode === "favorites");
+}
+
+function applyView() {
+  $("#grid").classList.toggle("list", viewMode === "list");
+  $(".tabbar .size").hidden = viewMode === "list";
+  document.querySelectorAll(".view-toggle button").forEach((b) => b.classList.toggle("on", b.dataset.view === viewMode));
+}
+
+$("#sort").value = sortMode;
+$("#sort").addEventListener("change", (e) => {
+  sortMode = e.target.value;
+  try {
+    localStorage.setItem("soundboard.sort", sortMode);
+  } catch {}
+  renderGrid();
+});
+document.querySelectorAll(".view-toggle button").forEach((b) =>
+  b.addEventListener("click", () => {
+    viewMode = b.dataset.view;
+    try {
+      localStorage.setItem("soundboard.view", viewMode);
+    } catch {}
+    applyView();
+  }),
+);
+applyView();
+
 function padElement(sound) {
   const pad = document.createElement("button");
   pad.type = "button";
@@ -270,6 +358,14 @@ function padElement(sound) {
   const name = document.createElement("span");
   name.className = "name";
   name.textContent = sound.name;
+  // Catégorie et durée, visibles seulement en liste.
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  const duration = playDuration(sound);
+  meta.textContent = [sound.category, duration != null && formatDuration(duration)].filter(Boolean).join(" · ");
+  const label = document.createElement("span");
+  label.className = "label";
+  label.append(name, meta);
   const key = document.createElement("span");
   key.className = "key";
   if (sound.looping) {
@@ -292,7 +388,7 @@ function padElement(sound) {
   fav.title = sound.favorite ? "Retirer des favoris" : "Épingler en haut (favori)";
   const progress = document.createElement("span");
   progress.className = "progress";
-  pad.append(icon, eq, name, key, fav, edit, progress);
+  pad.append(icon, eq, label, key, fav, edit, progress);
 
   pad.addEventListener("click", (e) => {
     if (reorder.justDropped) return;
@@ -315,7 +411,7 @@ function padElement(sound) {
 const reorder = { justDropped: false };
 
 function startReorder(e, pad, sound) {
-  if (e.button !== 0) return;
+  if (e.button !== 0 || !canReorder()) return;
   const x0 = e.clientX;
   const y0 = e.clientY;
   let dragging = false;

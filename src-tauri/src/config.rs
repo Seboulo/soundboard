@@ -36,6 +36,10 @@ pub struct Sound {
     /// Pas coupé quand un autre son démarre.
     #[serde(default)]
     pub keep_playing: bool,
+    /// Date d'ajout (secondes depuis 1970), pour le tri « ajoutés récemment ».
+    /// 0 pour les sons ajoutés avant la 0.11.
+    #[serde(default)]
+    pub added_at: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

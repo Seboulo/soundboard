@@ -311,6 +311,70 @@ main { padding: 16px; }
 }
 .pad.drag-over { outline: 2px dashed var(--c); outline-offset: 2px; }
 
+/* En grille, nom et infos sont posés directement dans le pad. */
+.pad .label { display: contents; }
+.pad .meta { display: none; }
+
+/* Affichage en liste : des lignes compactes, sur une ou plusieurs colonnes. */
+.grid.list {
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 8px;
+}
+.grid.list .pad {
+  aspect-ratio: auto;
+  flex-direction: row;
+  justify-content: flex-start;
+  gap: 12px;
+  min-height: 58px;
+  padding: 8px 10px 8px 9px;
+  text-align: left;
+  border-radius: 14px;
+}
+.grid.list .pad:hover { transform: none; box-shadow: 0 4px 14px color-mix(in srgb, var(--c) 18%, transparent); }
+.grid.list .pad:active { transform: scale(.99); }
+.grid.list .pad .icon { width: 40px; height: 40px; flex-shrink: 0; border-radius: 12px; font-size: 17px; }
+.grid.list .pad .icon.emoji { font-size: 22px; }
+.grid.list .pad .label { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
+.grid.list .pad .name { -webkit-line-clamp: 1; line-clamp: 1; font-size: 14px; }
+.grid.list .pad .meta {
+  display: block;
+  font-size: 12px;
+  color: var(--ink);
+  opacity: .7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.grid.list .pad .eq { position: static; flex-shrink: 0; }
+.grid.list .pad:not(.playing) .eq { display: none; }
+.grid.list .pad .key { position: static; flex-shrink: 0; }
+.grid.list .pad.playing .key::after { content: "■ arrêter"; }
+.grid.list .pad .fav, .grid.list .pad .edit { position: static; flex-shrink: 0; }
+.grid.list .pad .fav.on, .grid.list .pad:hover .fav.on { right: auto; }
+.grid.list .pad .progress { height: 3px; }
+
+/* Tri et choix grille / liste */
+#sort { width: auto; padding: 4px 8px; font-size: 13px; }
+.view-toggle {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.view-toggle button {
+  padding: 3px 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.2;
+}
+.view-toggle button.on { background: var(--accent); color: #fff; }
+
 .empty {
   margin-top: 12vh;
   text-align: center;
@@ -539,7 +603,7 @@ dialog::backdrop { background: rgba(16, 24, 40, .35); backdrop-filter: blur(2px)
 #btn-theme { font-size: 16px; padding: 4px 10px; }
 
 .tabbar .size { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); }
-.tabbar .size input { width: 90px; padding: 0; border: 0; background: transparent; }
+.tabbar .size input { width: 72px; padding: 0; border: 0; background: transparent; }
 .link-row input { font-size: 13px; }
 
 /* Téléphone */

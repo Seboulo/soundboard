@@ -462,6 +462,10 @@ fn store_sound(
         emoji: None,
         favorite: false,
         keep_playing: false,
+        added_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
     })
 }
 

@@ -33,10 +33,23 @@
   <nav class="tabbar">
     <div id="tabs" class="tabs"></div>
     <div class="spacer"></div>
-    <label class="size" title="Taille des pads">Taille <input id="pad-size" type="range" min="100" max="220" step="10"></label>
+    <select id="sort" title="Ordre des sons">
+      <option value="favorites">★ Favoris en premier</option>
+      <option value="manual">Mon ordre</option>
+      <option value="name">Nom (A → Z)</option>
+      <option value="plays">Les plus joués</option>
+      <option value="added">Ajoutés récemment</option>
+      <option value="duration">Les plus courts</option>
+      <option value="color">Par couleur</option>
+    </select>
+    <div class="view-toggle" role="group" aria-label="Affichage">
+      <button type="button" data-view="grid" title="Affichage en grille">▦</button>
+      <button type="button" data-view="list" title="Affichage en liste">☰</button>
+    </div>
+    <label class="size" title="Taille des pads"><input id="pad-size" type="range" min="100" max="220" step="10"></label>
     <button id="btn-random" type="button" title="Jouer un son au hasard de cet onglet">🎲 Au hasard</button>
-    <button id="btn-export" type="button" title="Enregistrer les sons de cet onglet dans un .zip à partager">📦 Exporter</button>
-    <button id="btn-import" type="button" title="Ajouter les sons d'un pack .zip">📥 Importer un pack</button>
+    <button id="btn-export" type="button" class="icon" title="Exporter : enregistrer les sons de cet onglet dans un .zip à partager">📦</button>
+    <button id="btn-import" type="button" class="icon" title="Importer : ajouter les sons d'un pack .zip">📥</button>
   </nav>
 
   <main>
