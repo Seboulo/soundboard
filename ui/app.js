@@ -240,7 +240,10 @@ function renderGrid() {
   } else {
     sounds = sortSounds(state.config.sounds.filter((s) => (!currentTab || s.category === currentTab) && matches(s)));
   }
-  grid.replaceChildren(...sounds.map(padElement));
+  const pads = sounds.map(padElement);
+  // En liste, une ligne d'en-tête comme une playlist.
+  if (viewMode === "list" && pads.length) pads.unshift(listHeader());
+  grid.replaceChildren(...pads);
   $("#empty").hidden = state.config.sounds.length > 0;
   $("#recent-empty").hidden = !(currentTab === RECENT_TAB && sounds.length === 0 && state.config.sounds.length > 0);
   renderPlaying();
@@ -337,11 +340,24 @@ document.querySelectorAll(".view-toggle button").forEach((b) =>
       localStorage.setItem("soundboard.view", viewMode);
     } catch {}
     applyView();
+    renderGrid();
   }),
 );
 applyView();
 
-function padElement(sound) {
+function listHeader() {
+  const head = document.createElement("div");
+  head.className = "list-head";
+  for (const [cls, text] of [["num", "#"], ["title", "Titre"], ["key", "Raccourci"], ["dur", "⏱"], ["tools", ""]]) {
+    const cell = document.createElement("span");
+    cell.className = cls;
+    cell.textContent = text;
+    head.append(cell);
+  }
+  return head;
+}
+
+function padElement(sound, index) {
   const pad = document.createElement("button");
   pad.type = "button";
   pad.className = "pad";
@@ -358,14 +374,20 @@ function padElement(sound) {
   const name = document.createElement("span");
   name.className = "name";
   name.textContent = sound.name;
-  // Catégorie et durée, visibles seulement en liste.
+  // Numéro, catégorie et durée : visibles seulement en liste.
+  const num = document.createElement("span");
+  num.className = "num";
+  num.textContent = index + 1;
   const meta = document.createElement("span");
   meta.className = "meta";
-  const duration = playDuration(sound);
-  meta.textContent = [sound.category, duration != null && formatDuration(duration)].filter(Boolean).join(" · ");
+  meta.textContent = sound.category || "";
   const label = document.createElement("span");
   label.className = "label";
   label.append(name, meta);
+  const dur = document.createElement("span");
+  dur.className = "dur";
+  const duration = playDuration(sound);
+  dur.textContent = duration != null ? formatDuration(duration) : "";
   const key = document.createElement("span");
   key.className = "key";
   if (sound.looping) {
@@ -388,7 +410,7 @@ function padElement(sound) {
   fav.title = sound.favorite ? "Retirer des favoris" : "Épingler en haut (favori)";
   const progress = document.createElement("span");
   progress.className = "progress";
-  pad.append(icon, eq, label, key, fav, edit, progress);
+  pad.append(num, eq, icon, label, key, dur, fav, edit, progress);
 
   pad.addEventListener("click", (e) => {
     if (reorder.justDropped) return;

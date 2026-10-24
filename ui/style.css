@@ -313,46 +313,83 @@ main { padding: 16px; }
 
 /* En grille, nom et infos sont posés directement dans le pad. */
 .pad .label { display: contents; }
-.pad .meta { display: none; }
+.pad .meta, .pad .num, .pad .dur { display: none; }
 
-/* Affichage en liste : des lignes compactes, sur une ou plusieurs colonnes. */
-.grid.list {
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 8px;
-}
-.grid.list .pad {
-  aspect-ratio: auto;
+/* Affichage en liste : les sons les uns sous les autres, comme une playlist. */
+.grid.list { display: flex; flex-direction: column; gap: 2px; }
+.list-head, .grid.list .pad {
+  display: flex;
   flex-direction: row;
   justify-content: flex-start;
-  gap: 12px;
-  min-height: 58px;
-  padding: 8px 10px 8px 9px;
-  text-align: left;
-  border-radius: 14px;
+  align-items: center;
+  gap: 14px;
+  padding: 0 12px;
 }
-.grid.list .pad:hover { transform: none; box-shadow: 0 4px 14px color-mix(in srgb, var(--c) 18%, transparent); }
-.grid.list .pad:active { transform: scale(.99); }
-.grid.list .pad .icon { width: 40px; height: 40px; flex-shrink: 0; border-radius: 12px; font-size: 17px; }
+.list-head {
+  height: 34px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.list-head .title { flex: 1; padding-left: 54px; }
+.list-head .num, .grid.list .pad .num, .grid.list .pad .eq { width: 22px; flex-shrink: 0; justify-content: center; text-align: center; }
+.list-head .key, .grid.list .pad .key { width: 170px; flex-shrink: 0; }
+.list-head .dur, .grid.list .pad .dur { width: 44px; flex-shrink: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.list-head .tools { width: 66px; flex-shrink: 0; }
+.grid.list .pad {
+  aspect-ratio: auto;
+  min-height: 56px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+}
+.grid.list .pad:hover {
+  transform: none;
+  box-shadow: none;
+  background: color-mix(in srgb, var(--c) 14%, transparent);
+}
+.grid.list .pad:active { transform: none; background: color-mix(in srgb, var(--c) 22%, transparent); }
+.grid.list .pad.playing { background: color-mix(in srgb, var(--c) 18%, transparent); }
+.grid.list .pad .num { display: block; font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.grid.list .pad.playing .num { display: none; }
+.grid.list .pad .eq { position: static; display: none; height: 16px; }
+.grid.list .pad.playing .eq { display: flex; }
+.grid.list .pad .eq i { background: var(--c); }
+.grid.list .pad .icon {
+  width: 40px; height: 40px; flex-shrink: 0; border-radius: 10px; font-size: 17px;
+  background: var(--tint);
+}
 .grid.list .pad .icon.emoji { font-size: 22px; }
 .grid.list .pad .label { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
-.grid.list .pad .name { -webkit-line-clamp: 1; line-clamp: 1; font-size: 14px; }
+.grid.list .pad .name { -webkit-line-clamp: 1; line-clamp: 1; font-size: 15px; color: var(--text); }
+.grid.list .pad.playing .name { color: var(--ink); }
 .grid.list .pad .meta {
   display: block;
-  font-size: 12px;
-  color: var(--ink);
-  opacity: .7;
+  min-height: 1.2em;
+  font-size: 13px;
+  color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   pointer-events: none;
 }
-.grid.list .pad .eq { position: static; flex-shrink: 0; }
-.grid.list .pad:not(.playing) .eq { display: none; }
-.grid.list .pad .key { position: static; flex-shrink: 0; }
-.grid.list .pad.playing .key::after { content: "■ arrêter"; }
-.grid.list .pad .fav, .grid.list .pad .edit { position: static; flex-shrink: 0; }
-.grid.list .pad .fav.on, .grid.list .pad:hover .fav.on { right: auto; }
-.grid.list .pad .progress { height: 3px; }
+.grid.list .pad .key { position: static; justify-content: flex-start; color: var(--muted); }
+.grid.list .pad .key kbd { background: var(--chip-neutral, color-mix(in srgb, var(--muted) 14%, transparent)); color: var(--text); }
+.grid.list .pad.playing .key::after { content: "■ arrêter"; color: var(--ink); }
+.grid.list .pad .dur { display: block; font-size: 13px; color: var(--muted); pointer-events: none; }
+.grid.list .pad .fav, .grid.list .pad .edit { position: static; flex-shrink: 0; color: var(--muted); background: transparent; }
+.grid.list .pad .fav.on, .grid.list .pad:hover .fav.on { right: auto; color: #f5a524; background: transparent; }
+.grid.list .pad .fav:hover, .grid.list .pad .edit:hover { background: var(--panel); color: var(--text); }
+.grid.list .pad .progress { height: 2px; left: 12px; width: calc(var(--progress, 0) * (100% - 24px)); border-radius: 2px; }
+
+/* Fenêtre étroite : on garde l'essentiel. */
+@media (max-width: 760px) {
+  .list-head .key, .grid.list .pad .key { display: none; }
+}
 
 /* Tri et choix grille / liste */
 #sort { width: auto; padding: 4px 8px; font-size: 13px; }
