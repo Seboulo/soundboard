@@ -347,6 +347,7 @@ impl Engine {
         let config: cpal::StreamConfig = supported.into();
         let filters = MicFilters {
             denoise: self.settings.noise_suppression,
+            strong: self.settings.strong_denoise,
             gate: self.settings.voice_gate,
             gate_threshold: self.settings.gate_threshold.clamp(0.0, 1.0),
         };

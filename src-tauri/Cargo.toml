@@ -26,6 +26,9 @@ tauri-plugin-updater = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 regex = "1"
 nnnoiseless = { version = "0.5", default-features = false }
+# Réduction de bruit forte (DeepFilterNet 3, modèle intégré à l'exe).
+deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet", tag = "v0.5.6", default-features = false, features = ["tract", "default-model"] }
+ndarray = "0.15"
 symphonia = { version = "0.5", features = ["all"] }
 rodio = { version = "0.19", default-features = false, features = ["symphonia-all"] }
 serde = { version = "1", features = ["derive"] }

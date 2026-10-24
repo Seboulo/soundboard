@@ -51,6 +51,14 @@ pub struct Analysis {
     /// 0 pour les sons analysés avant la 0.9.4 : recalculé au lancement.
     #[serde(default)]
     pub loudness: f32,
+    /// Volume ressenti (EBU R128, en LUFS) : moyenne, pic sur 400 ms et pic
+    /// sur 3 s. 0 pour les sons analysés avant la 0.12 : recalculé au lancement.
+    #[serde(default)]
+    pub lufs: f32,
+    #[serde(default)]
+    pub max_momentary: f32,
+    #[serde(default)]
+    pub max_short: f32,
 }
 
 impl Sound {
@@ -61,19 +69,33 @@ impl Sound {
         Some(end.saturating_sub(self.start_ms))
     }
 
-    /// Gain qui amène le son à un niveau moyen commun sans saturer.
+    /// Gain qui amène le son à un volume ressenti commun sans saturer.
     ///
-    /// Le niveau visé (environ -23 dB) est celui d'une voix normale dans
-    /// Discord : un son ne doit pas couvrir les gens qui parlent.
+    /// Le volume est mesuré comme à la télé (EBU R128, en LUFS) et visé un
+    /// peu sous une voix dans Discord : -27 LUFS en moyenne, sans dépasser
+    /// -22 LUFS sur 3 s ni -19 LUFS sur 400 ms. Ces deux plafonds calment
+    /// les cris et explosions qui partent d'un coup après un début calme.
     pub fn normalize_gain(&self) -> f32 {
-        const TARGET: f32 = 0.07;
+        const TARGET_LUFS: f32 = -27.0;
+        const MAX_SHORT: f32 = -22.0;
+        const MAX_MOMENTARY: f32 = -19.0;
+        // Marge sous 0 dBFS pour les pics entre deux échantillons.
+        const PEAK_CEILING: f32 = 0.89;
         match self.analysis {
             Some(a) if a.peak > 0.0001 => {
-                let level = if a.loudness > 0.0001 { a.loudness } else { a.rms };
-                if level <= 0.0001 {
-                    return 1.0;
-                }
-                (TARGET / level).min(0.98 / a.peak).clamp(0.05, 2.0)
+                let gain = if a.lufs < 0.0 {
+                    let db = (TARGET_LUFS - a.lufs)
+                        .min(MAX_SHORT - a.max_short)
+                        .min(MAX_MOMENTARY - a.max_momentary);
+                    10f32.powf(db / 20.0)
+                } else {
+                    let level = if a.loudness > 0.0001 { a.loudness } else { a.rms };
+                    if level <= 0.0001 {
+                        return 1.0;
+                    }
+                    0.045 / level
+                };
+                gain.min(PEAK_CEILING / a.peak).clamp(0.03, 2.0)
             }
             _ => 1.0,
         }
@@ -117,6 +139,8 @@ pub struct Settings {
     pub close_to_tray: bool,
     /// Enlève clavier, souris et bruits de fond du micro (pas des sons).
     pub noise_suppression: bool,
+    /// Réduction de bruit par IA (DeepFilterNet) plutôt que RNNoise.
+    pub strong_denoise: bool,
     /// Coupe le micro quand tu ne parles pas.
     pub voice_gate: bool,
     /// Probabilité de voix (0–1) en dessous de laquelle le micro est coupé.
@@ -154,6 +178,7 @@ impl Default for Settings {
             launch_at_startup: false,
             close_to_tray: true,
             noise_suppression: true,
+            strong_denoise: true,
             voice_gate: true,
             gate_threshold: 0.6,
             mute_hotkey: None,
