@@ -247,7 +247,8 @@ fn apply_autostart(app: &AppHandle, enabled: bool) {
     app.state::<AppState>().set_warnings(WARN_STARTUP, warnings);
 }
 
-/// Calcule durée et niveau des sons importés avant cette version.
+/// Calcule durée et niveau des sons importés avant cette version (ou
+/// analysés avant le calcul du niveau sans les silences).
 fn analyze_missing(app: AppHandle) {
     std::thread::spawn(move || {
         let state = app.state::<AppState>();
@@ -257,7 +258,7 @@ fn analyze_missing(app: AppHandle) {
             .unwrap()
             .sounds
             .iter()
-            .filter(|s| s.analysis.is_none())
+            .filter(|s| s.analysis.is_none_or(|a| a.loudness <= 0.0))
             .map(|s| (s.id.clone(), s.path.clone()))
             .collect();
         if todo.is_empty() {

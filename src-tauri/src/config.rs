@@ -43,6 +43,10 @@ pub struct Analysis {
     pub duration_ms: u64,
     pub peak: f32,
     pub rms: f32,
+    /// Niveau moyen des passages audibles seulement (silences ignorés).
+    /// 0 pour les sons analysés avant la 0.9.4 : recalculé au lancement.
+    #[serde(default)]
+    pub loudness: f32,
 }
 
 impl Sound {
@@ -54,11 +58,18 @@ impl Sound {
     }
 
     /// Gain qui amène le son à un niveau moyen commun sans saturer.
+    ///
+    /// Le niveau visé (environ -23 dB) est celui d'une voix normale dans
+    /// Discord : un son ne doit pas couvrir les gens qui parlent.
     pub fn normalize_gain(&self) -> f32 {
-        const TARGET_RMS: f32 = 0.12;
+        const TARGET: f32 = 0.07;
         match self.analysis {
-            Some(a) if a.rms > 0.0001 && a.peak > 0.0001 => {
-                (TARGET_RMS / a.rms).min(0.98 / a.peak).clamp(0.1, 4.0)
+            Some(a) if a.peak > 0.0001 => {
+                let level = if a.loudness > 0.0001 { a.loudness } else { a.rms };
+                if level <= 0.0001 {
+                    return 1.0;
+                }
+                (TARGET / level).min(0.98 / a.peak).clamp(0.05, 2.0)
             }
             _ => 1.0,
         }
