@@ -71,29 +71,31 @@ impl Sound {
 
     /// Gain qui amène le son à un volume ressenti commun sans saturer.
     ///
-    /// Le volume est mesuré comme à la télé (EBU R128, en LUFS) et visé un
-    /// peu sous une voix dans Discord : -27 LUFS en moyenne, sans dépasser
-    /// -22 LUFS sur 3 s ni -19 LUFS sur 400 ms. Ces deux plafonds calment
-    /// les cris et explosions qui partent d'un coup après un début calme.
-    pub fn normalize_gain(&self) -> f32 {
-        const TARGET_LUFS: f32 = -27.0;
-        const MAX_SHORT: f32 = -22.0;
-        const MAX_MOMENTARY: f32 = -19.0;
+    /// Le volume est mesuré comme à la télé (EBU R128, en LUFS) et visé
+    /// sous une voix dans Discord : `target` LUFS en moyenne (-28 par
+    /// défaut), sans dépasser `target + 5` sur 3 s ni `target + 8` sur
+    /// 400 ms. Ces deux plafonds calment les cris et explosions qui partent
+    /// d'un coup après un début calme.
+    pub fn normalize_gain(&self, target: f32) -> f32 {
+        let target_lufs = target.clamp(-40.0, -14.0);
+        let max_short = target_lufs + 5.0;
+        let max_momentary = target_lufs + 8.0;
         // Marge sous 0 dBFS pour les pics entre deux échantillons.
         const PEAK_CEILING: f32 = 0.89;
         match self.analysis {
             Some(a) if a.peak > 0.0001 => {
                 let gain = if a.lufs < 0.0 {
-                    let db = (TARGET_LUFS - a.lufs)
-                        .min(MAX_SHORT - a.max_short)
-                        .min(MAX_MOMENTARY - a.max_momentary);
+                    let db = (target_lufs - a.lufs)
+                        .min(max_short - a.max_short)
+                        .min(max_momentary - a.max_momentary);
                     10f32.powf(db / 20.0)
                 } else {
                     let level = if a.loudness > 0.0001 { a.loudness } else { a.rms };
                     if level <= 0.0001 {
                         return 1.0;
                     }
-                    0.045 / level
+                    // Ancienne mesure : RMS ≈ LUFS pour un son moyen.
+                    10f32.powf((target_lufs + 0.7) / 20.0) / level
                 };
                 gain.min(PEAK_CEILING / a.peak).clamp(0.03, 2.0)
             }
@@ -134,6 +136,8 @@ pub struct Settings {
     pub setup_done: bool,
     /// Égalise le volume des sons entre eux.
     pub normalize: bool,
+    /// Volume ressenti visé par l'égalisation, en LUFS (-31, -28 ou -25).
+    pub loudness_target: f32,
     pub launch_at_startup: bool,
     /// Fermer la fenêtre garde l'app près de l'horloge (les raccourcis restent actifs).
     pub close_to_tray: bool,
@@ -175,6 +179,7 @@ impl Default for Settings {
             stop_hotkey: Some("Pause".into()),
             setup_done: false,
             normalize: true,
+            loudness_target: -28.0,
             launch_at_startup: false,
             close_to_tray: true,
             noise_suppression: true,

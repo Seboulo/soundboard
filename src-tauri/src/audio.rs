@@ -577,14 +577,86 @@ fn open_source(req: &PlayRequest, rate: u32) -> Result<Box<dyn Source<Item = i16
     };
     let mut decoder = decoder;
     decoder.seek_ms(req.start_ms);
-    let source = decoder
-        .take_duration(length)
-        .amplify(req.gain);
+    let source = Leveler::new(decoder.take_duration(length), req.gain);
     if req.looping {
         // Gardé en mémoire pour pouvoir le rejouer sans relire le fichier.
         Ok(Box::new(Resample::new(source.buffered().repeat_infinite(), rate)))
     } else {
         Ok(Box::new(Resample::new(source, rate)))
+    }
+}
+
+/// Applique le gain du son puis aplatit ce qui dépasse encore.
+///
+/// L'égalisation règle un seul gain par son ; ici, un compresseur doux
+/// (3:1 au-dessus de -18 dBFS) calme les cris au milieu d'un son, et un
+/// limiteur empêche tout pic de dépasser -5 dBFS. Les deux sont en
+/// flottant : plus de saturation quand le volume du son est poussé.
+struct Leveler<S> {
+    inner: S,
+    gain: f32,
+    /// Enveloppe des pics (suit vite la montée, redescend en 50 ms).
+    env: f32,
+    /// Réduction du compresseur, lissée (attaque 2 ms, relâche 200 ms).
+    reduce: f32,
+    env_release: f32,
+    attack: f32,
+    release: f32,
+}
+
+const COMP_THRESHOLD: f32 = 0.126;
+const COMP_RATIO: f32 = 3.0;
+const LIMIT_CEILING: f32 = 0.56;
+
+impl<S: Source<Item = i16>> Leveler<S> {
+    fn new(inner: S, gain: f32) -> Self {
+        let per_second = inner.sample_rate().max(1) as f32 * inner.channels().max(1) as f32;
+        let coef = |seconds: f32| (-1.0 / (per_second * seconds)).exp();
+        Self {
+            inner,
+            gain,
+            env: 0.0,
+            reduce: 1.0,
+            env_release: coef(0.05),
+            attack: coef(0.002),
+            release: coef(0.2),
+        }
+    }
+}
+
+impl<S: Source<Item = i16>> Iterator for Leveler<S> {
+    type Item = i16;
+
+    fn next(&mut self) -> Option<i16> {
+        let x = self.inner.next()? as f32 / 32768.0 * self.gain;
+        let level = x.abs();
+        self.env = if level > self.env { level } else { level + (self.env - level) * self.env_release };
+        let wanted = if self.env > COMP_THRESHOLD {
+            (self.env / COMP_THRESHOLD).powf(1.0 / COMP_RATIO - 1.0)
+        } else {
+            1.0
+        };
+        let coef = if wanted < self.reduce { self.attack } else { self.release };
+        self.reduce = wanted + (self.reduce - wanted) * coef;
+        // Le limiteur agit tout de suite, sans attendre l'attaque.
+        let reduce = self.reduce.min(LIMIT_CEILING / self.env.max(1e-6));
+        let y = (x * reduce).clamp(-1.0, 1.0);
+        Some((y * 32767.0) as i16)
+    }
+}
+
+impl<S: Source<Item = i16>> Source for Leveler<S> {
+    fn current_frame_len(&self) -> Option<usize> {
+        self.inner.current_frame_len()
+    }
+    fn channels(&self) -> u16 {
+        self.inner.channels()
+    }
+    fn sample_rate(&self) -> u32 {
+        self.inner.sample_rate()
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
     }
 }
 

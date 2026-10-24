@@ -213,8 +213,11 @@ fn find_sound(state: &AppState, id: &str) -> Result<Sound, String> {
 }
 
 fn play_request(state: &AppState, sound: &Sound) -> PlayRequest {
-    let normalize = state.config.lock().unwrap().settings.normalize;
-    let gain = if normalize { sound.normalize_gain() } else { 1.0 };
+    let (normalize, target) = {
+        let config = state.config.lock().unwrap();
+        (config.settings.normalize, config.settings.loudness_target)
+    };
+    let gain = if normalize { sound.normalize_gain(target) } else { 1.0 };
     PlayRequest {
         id: sound.id.clone(),
         path: sound.path.clone(),

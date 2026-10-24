@@ -4,6 +4,7 @@ const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 let state = null; // { config, devices, warnings, vb_cable_url }
 
@@ -744,6 +745,7 @@ async function openSettings() {
   }
   formSettings.stop_previous.checked = s.stop_previous;
   formSettings.normalize.checked = s.normalize;
+  formSettings.loudness_target.value = String(nearestTarget(s.loudness_target));
   formSettings.launch_at_startup.checked = s.launch_at_startup;
   formSettings.close_to_tray.checked = s.close_to_tray;
   for (const k of SETTINGS_HOTKEYS) setHotkeyInput(formSettings[k], s[k]);
@@ -752,10 +754,32 @@ async function openSettings() {
   renderPhoneInfo();
   formSettings.voice_effect.value = s.voice_effect ?? "none";
   formSettings.freesound_key.value = s.freesound_key ?? "";
+  updateNormalizeRow();
   dlgSettings.returnValue = "";
   dlgSettings.showModal();
   startMeter();
 }
+
+function nearestTarget(v) {
+  const options = [-31, -28, -25];
+  return options.reduce((best, o) => (Math.abs(o - v) < Math.abs(best - v) ? o : best), -28);
+}
+
+// Onglets des réglages (le dernier ouvert est retenu).
+function showSettingsTab(tab) {
+  for (const b of $$(".set-nav [data-tab]", dlgSettings)) b.classList.toggle("on", b.dataset.tab === tab);
+  for (const p of $$("[data-pane]", dlgSettings)) p.hidden = p.dataset.pane !== tab;
+  try { localStorage.setItem("soundboard.settingsTab", tab); } catch {}
+}
+for (const b of $$(".set-nav [data-tab]", dlgSettings)) {
+  b.addEventListener("click", () => showSettingsTab(b.dataset.tab));
+}
+try { showSettingsTab(localStorage.getItem("soundboard.settingsTab") || "sound"); } catch {}
+// Le volume ne se règle plus quand l'égalisation est coupée.
+function updateNormalizeRow() {
+  formSettings.loudness_target.disabled = !formSettings.normalize.checked;
+}
+formSettings.normalize.addEventListener("change", updateNormalizeRow);
 
 // Indicateur du micro : le moteur envoie le niveau tant que les réglages sont ouverts.
 const meter = $("#mic-meter");
@@ -767,7 +791,7 @@ function startMeter() {
   const s = state.config.settings;
   $("[data-state]", meter).textContent = s.mic_enabled
     ? "Parle pour tester ton micro…"
-    : "Ta voix n'est pas envoyée (case ci-dessus décochée).";
+    : "Ta voix n'est pas envoyée (« Envoyer ma voix » est désactivé).";
   meter.classList.remove("open", "closed");
   invoke("set_meter", { on: true });
 }
@@ -846,6 +870,7 @@ dlgSettings.addEventListener("close", () => {
     monitor_volume: Number(f.monitor_volume.value),
     stop_previous: f.stop_previous.checked,
     normalize: f.normalize.checked,
+    loudness_target: Number(f.loudness_target.value),
     launch_at_startup: f.launch_at_startup.checked,
     close_to_tray: f.close_to_tray.checked,
     stop_hotkey: f.stop_hotkey.dataset.hotkey || null,

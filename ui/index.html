@@ -116,90 +116,139 @@
   </dialog>
 
   <!-- Réglages audio -->
-  <dialog id="dlg-settings">
+  <dialog id="dlg-settings" class="settings">
     <form method="dialog" class="form">
-      <h2>Réglages</h2>
-      <label>Ton casque (là où tu entends les sons)
-        <select name="monitor_device"></select>
-      </label>
-      <label>Sortie vers Discord (câble virtuel)
-        <select name="virtual_device"></select>
-      </label>
-      <label>Ton micro
-        <select name="mic_device"></select>
-      </label>
-      <label class="check"><input name="mic_enabled" type="checkbox"> Envoyer ma voix dans Discord avec les sons</label>
-      <label>Volume de ta voix <span class="value" data-for="mic_volume"></span>
-        <input name="mic_volume" type="range" min="0" max="2" step="0.05">
-      </label>
-      <label>Réduction des bruits de ton micro (clavier, souris, ventilateur…)
-        <select name="denoise_mode">
-          <option value="strong">Forte : IA DeepFilterNet (recommandé)</option>
-          <option value="light">Légère : RNNoise (pour les vieux PC)</option>
-          <option value="off">Désactivée</option>
-        </select>
-      </label>
-      <label class="check"><input name="voice_gate" type="checkbox"> Couper ton micro quand tu ne parles pas</label>
-      <label>Seuil de détection de la voix <span class="value" data-for="gate_threshold"></span>
-        <input name="gate_threshold" type="range" min="0.1" max="0.95" step="0.05">
-      </label>
-      <div class="meter" id="mic-meter">
-        <div class="meter-row"><span>Niveau</span><div class="bar"><div class="fill" data-level></div></div></div>
-        <div class="meter-row"><span>Voix</span><div class="bar"><div class="fill voice" data-voice></div><div class="mark" data-threshold></div></div></div>
-        <div class="meter-state" data-state>Parle pour tester ton micro…</div>
-      </div>
-      <p class="hint">Ces filtres ne touchent que ton micro, jamais les sons de la soundboard. Si le début de tes phrases est coupé, baisse le seuil (le petit trait) ; si des bruits passent encore, monte-le. L'indicateur montre les réglages enregistrés.</p>
-      <label>Effet sur ta voix
-        <select name="voice_effect">
-          <option value="none">Aucun</option>
-          <option value="robot">Robot</option>
-          <option value="high">Voix aiguë</option>
-          <option value="low">Voix grave</option>
-          <option value="echo">Écho</option>
-        </select>
-      </label>
-      <label>Volume des sons dans Discord <span class="value" data-for="master_volume"></span>
-        <input name="master_volume" type="range" min="0" max="1.5" step="0.05">
-      </label>
-      <label>Volume des sons dans ton casque <span class="value" data-for="monitor_volume"></span>
-        <input name="monitor_volume" type="range" min="0" max="1.5" step="0.05">
-      </label>
-      <label class="check"><input name="stop_previous" type="checkbox"> Un nouveau son coupe ceux en cours</label>
-      <label class="check"><input name="normalize" type="checkbox"> Égaliser le volume des sons entre eux</label>
-      <label class="check"><input name="launch_at_startup" type="checkbox"> Lancer au démarrage de Windows (discrètement, près de l'horloge)</label>
-      <label class="check"><input name="close_to_tray" type="checkbox"> Fermer la fenêtre garde l'app près de l'horloge (les raccourcis restent actifs)</label>
-      <label>Raccourci « Tout arrêter »
-        <input name="stop_hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche">
-      </label>
-      <label>Raccourci « Couper / rallumer mon micro » (les sons passent toujours)
-        <input name="mute_hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche">
-      </label>
-      <label>Raccourci « Son au hasard »
-        <input name="random_hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche">
-      </label>
-      <label>Raccourci « Afficher / cacher l'overlay en jeu »
-        <input name="overlay_hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche">
-      </label>
-      <p class="hint">L'overlay s'affiche par-dessus les jeux en mode fenêtré ou « plein écran fenêtré » (pas en plein écran exclusif). Cliquer dessus ne fait pas perdre le focus au jeu.</p>
-      <div class="phone-box">
-        <label class="check"><input name="phone_enabled" type="checkbox"> 📱 Jouer les sons depuis mon téléphone (même Wi-Fi que le PC)</label>
-        <div id="phone-info" class="phone-info" hidden>
-          <div id="phone-qr" class="phone-qr"></div>
-          <div class="phone-text">
-            <p>Scanne ce QR code avec l'appareil photo de ton téléphone, ou ouvre :</p>
-            <code id="phone-url"></code>
-            <p class="hint">Au premier lancement, Windows demande d'autoriser l'app sur le réseau : accepte pour les « réseaux privés ». Garde ce lien pour toi : il permet de jouer tes sons.</p>
-            <button type="button" data-action="phone-token">Nouveau code (invalide l'ancien lien)</button>
+      <header class="set-head"><h2>Réglages</h2></header>
+      <div class="set-body">
+        <nav class="set-nav">
+          <button type="button" data-tab="sound" class="on"><span>🔊</span> Sons</button>
+          <button type="button" data-tab="mic"><span>🎙️</span> Micro</button>
+          <button type="button" data-tab="keys"><span>⌨️</span> Raccourcis</button>
+          <button type="button" data-tab="remote"><span>📱</span> Téléphone et overlay</button>
+          <button type="button" data-tab="general"><span>⚙️</span> Général</button>
+        </nav>
+        <div class="set-panes">
+        <section data-pane="sound">
+          <h3>Sorties</h3>
+          <div class="set-card">
+          <label class="set-field">Ton casque (là où tu entends les sons)
+            <select name="monitor_device"></select>
+          </label>
+          <label class="set-field">Sortie vers Discord (câble virtuel)
+            <select name="virtual_device"></select>
+          </label>
           </div>
+          <h3>Volume</h3>
+          <div class="set-card">
+          <label class="set-field">Volume des sons dans Discord <span class="value" data-for="master_volume"></span>
+            <input name="master_volume" type="range" min="0" max="1.5" step="0.05">
+          </label>
+          <label class="set-field">Volume des sons dans ton casque <span class="value" data-for="monitor_volume"></span>
+            <input name="monitor_volume" type="range" min="0" max="1.5" step="0.05">
+          </label>
+          <label class="set-row"><span class="txt"><b>Égaliser le volume des sons</b><small>Mesure chaque son comme à la télé (norme EBU R128) et calme les cris et les pics.</small></span><input name="normalize" type="checkbox" class="switch"></label>
+          <label class="set-row"><span class="txt"><b>Niveau des sons face à ta voix</b><small>Si les sons couvrent encore les voix, choisis « Plus bas ».</small></span>
+            <select name="loudness_target">
+              <option value="-31">Plus bas</option>
+              <option value="-28">Recommandé</option>
+              <option value="-25">Plus fort</option>
+            </select>
+          </label>
+          <label class="set-row"><span class="txt"><b>Un nouveau son coupe ceux en cours</b></span><input name="stop_previous" type="checkbox" class="switch"></label>
+          </div>
+        </section>
+        <section data-pane="mic" hidden>
+          <h3>Ta voix</h3>
+          <div class="set-card">
+          <label class="set-field">Ton micro
+            <select name="mic_device"></select>
+          </label>
+          <label class="set-row"><span class="txt"><b>Envoyer ma voix dans Discord avec les sons</b><small>Dans Discord, choisis « CABLE Output » comme micro.</small></span><input name="mic_enabled" type="checkbox" class="switch"></label>
+          <label class="set-field">Volume de ta voix <span class="value" data-for="mic_volume"></span>
+            <input name="mic_volume" type="range" min="0" max="2" step="0.05">
+          </label>
+          <label class="set-field">Effet sur ta voix
+            <select name="voice_effect">
+              <option value="none">Aucun</option>
+              <option value="robot">Robot</option>
+              <option value="high">Voix aiguë</option>
+              <option value="low">Voix grave</option>
+              <option value="echo">Écho</option>
+            </select>
+          </label>
+          </div>
+          <h3>Bruits et silences</h3>
+          <div class="set-card">
+          <label class="set-row"><span class="txt"><b>Réduction des bruits</b><small>Clavier, souris, ventilateur… Forte : IA DeepFilterNet. Légère : RNNoise, pour les vieux PC.</small></span>
+            <select name="denoise_mode">
+              <option value="strong">Forte</option>
+              <option value="light">Légère</option>
+              <option value="off">Désactivée</option>
+            </select>
+          </label>
+          <label class="set-row"><span class="txt"><b>Couper ton micro quand tu ne parles pas</b></span><input name="voice_gate" type="checkbox" class="switch"></label>
+          <label class="set-field">Seuil de détection de la voix <span class="value" data-for="gate_threshold"></span>
+            <input name="gate_threshold" type="range" min="0.1" max="0.95" step="0.05">
+          </label>
+          <div class="meter" id="mic-meter">
+            <div class="meter-row"><span>Niveau</span><div class="bar"><div class="fill" data-level></div></div></div>
+            <div class="meter-row"><span>Voix</span><div class="bar"><div class="fill voice" data-voice></div><div class="mark" data-threshold></div></div></div>
+            <div class="meter-state" data-state>Parle pour tester ton micro…</div>
+          </div>
+          <p class="hint">Ces filtres ne touchent que ton micro, jamais les sons. Début des phrases coupé : baisse le seuil (le petit trait). Bruits qui passent : monte-le. L'indicateur montre les réglages enregistrés.</p>
+          </div>
+        </section>
+        <section data-pane="keys" hidden>
+          <h3>Raccourcis globaux</h3>
+          <div class="set-card">
+          <label class="set-row"><span class="txt"><b>Tout arrêter</b></span><input name="stop_hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche"></label>
+          <label class="set-row"><span class="txt"><b>Couper / rallumer mon micro</b><small>Les sons passent toujours.</small></span><input name="mute_hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche"></label>
+          <label class="set-row"><span class="txt"><b>Son au hasard</b></span><input name="random_hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche"></label>
+          <label class="set-row"><span class="txt"><b>Afficher / cacher l'overlay en jeu</b></span><input name="overlay_hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche"></label>
+          </div>
+          <p class="hint">Les raccourcis de chaque son se règlent dans sa fiche (clic droit ou ✎ sur le son). Retour arrière efface un raccourci.</p>
+        </section>
+        <section data-pane="remote" hidden>
+          <h3>Téléphone</h3>
+          <div class="set-card phone-box">
+          <label class="set-row"><span class="txt"><b>Jouer les sons depuis mon téléphone</b><small>Le téléphone doit être sur le même Wi-Fi que le PC.</small></span><input name="phone_enabled" type="checkbox" class="switch"></label>
+            <div id="phone-info" class="phone-info" hidden>
+              <div id="phone-qr" class="phone-qr"></div>
+              <div class="phone-text">
+                <p>Scanne ce QR code avec l'appareil photo de ton téléphone, ou ouvre :</p>
+                <code id="phone-url"></code>
+                <p class="hint">Au premier lancement, Windows demande d'autoriser l'app sur le réseau : accepte pour les « réseaux privés ». Garde ce lien pour toi : il permet de jouer tes sons.</p>
+                <button type="button" data-action="phone-token">Nouveau code (invalide l'ancien lien)</button>
+              </div>
+            </div>
+            <label class="set-row"><span class="txt"><b>Port</b><small>À changer seulement si une autre app l'utilise déjà.</small></span><input name="phone_port" type="number" min="1024" max="65535" class="port"></label>
+          </div>
+          <h3>Overlay en jeu</h3>
+          <div class="set-card">
+            <p class="hint">L'overlay s'affiche par-dessus les jeux en mode fenêtré ou « plein écran fenêtré » (pas en plein écran exclusif). Cliquer dessus ne fait pas perdre le focus au jeu. Son raccourci se règle dans l'onglet Raccourcis.</p>
+          </div>
+        </section>
+        <section data-pane="general" hidden>
+          <h3>Démarrage</h3>
+          <div class="set-card">
+          <label class="set-row"><span class="txt"><b>Lancer au démarrage de Windows</b><small>Discrètement, près de l'horloge.</small></span><input name="launch_at_startup" type="checkbox" class="switch"></label>
+          <label class="set-row"><span class="txt"><b>Garder l'app près de l'horloge à la fermeture</b><small>Les raccourcis restent actifs.</small></span><input name="close_to_tray" type="checkbox" class="switch"></label>
+          </div>
+          <h3>Recherche en ligne</h3>
+          <div class="set-card">
+          <label class="set-field">Clé Freesound (pour chercher sur freesound.org)
+            <input name="freesound_key" autocomplete="off" spellcheck="false" placeholder="Colle ta clé ici">
+          </label>
+          <p class="hint">Gratuite : crée un compte Freesound puis <a href="#" data-action="freesound-key">demande une clé ici</a> (copie la valeur « Client secret/Api key »).</p>
+          </div>
+          <h3>Aide</h3>
+          <div class="set-card">
+            <div class="set-row"><span class="txt"><b>Assistant de configuration</b><small>VB-Cable, réglages de Discord, test du micro.</small></span><button type="button" data-action="wizard">Revoir l'assistant</button></div>
+          </div>
+        </section>
         </div>
-        <label class="phone-port">Port <input name="phone_port" type="number" min="1024" max="65535"></label>
       </div>
-      <label>Clé Freesound (pour chercher sur freesound.org)
-        <input name="freesound_key" autocomplete="off" spellcheck="false" placeholder="Colle ta clé ici">
-      </label>
-      <p class="hint">Gratuite : crée un compte Freesound puis <a href="#" data-action="freesound-key">demande une clé ici</a> (copie la valeur « Client secret/Api key »).</p>
       <div class="actions">
-        <button type="button" data-action="wizard">Revoir l'assistant</button>
         <div class="spacer"></div>
         <button value="cancel" formnovalidate>Annuler</button>
         <button value="save" class="primary">Enregistrer</button>
