@@ -65,6 +65,9 @@ jobs:
             Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
             Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
+            Nouveautés de la 1.1.1 :
+            - Plus de phrases coupées avec la détection automatique de la parole : une voix douce dans une pièce bruyante passe, le micro reste ouvert entre les mots et la première syllabe n'est plus mangée.
+
             Nouveautés de la 1.1 :
             - Micro sans micro-coupures : traitement de la voix dans son propre fil et rattrapage en douceur des horloges micro/câble.
             - Détection automatique de la parole, comme sur Discord : le micro apprend le bruit de ta pièce et ignore les clics de clavier.

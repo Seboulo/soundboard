@@ -4761,7 +4761,7 @@ dependencies = [
 
 [[package]]
 name = "soundboard"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "deep_filter",
  "local-ip-address",
