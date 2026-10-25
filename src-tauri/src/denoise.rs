@@ -31,18 +31,22 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 /// RNNoise travaille en mono, 48 kHz, par trames de 10 ms.
 pub const RATE: u32 = 48_000;
 const FRAME: usize = DenoiseState::FRAME_SIZE;
-/// Le micro reste ouvert 350 ms après la dernière trame de voix.
-const HOLD_FRAMES: u32 = 35;
+/// Le micro reste ouvert 500 ms après la dernière trame de voix : les
+/// respirations et les silences entre deux mots ne coupent pas la phrase.
+const HOLD_FRAMES: u32 = 50;
 /// En dessous de -55 dBFS, le micro ne capte rien d'assez fort pour ouvrir
 /// la porte, même si ça ressemble à de la voix.
 const OPEN_FLOOR: f32 = 0.0018;
 /// Réduction maximale de DeepFilterNet. Plus fort, il mange les fins de mots
 /// et les syllabes douces (micro-coupures) ; 30 dB suffisent avec la porte.
 const DF_ATTEN_LIMIT_DB: f32 = 30.0;
-/// Détection automatique : la voix doit dépasser le bruit de fond de 10 dB
-/// pour ouvrir, et de 5 dB pour garder ouvert.
-const AUTO_OPEN_DB: f32 = 10.0;
-const AUTO_KEEP_DB: f32 = 5.0;
+/// Détection automatique : plus RNNoise est sûr que c'est de la voix, moins
+/// elle a besoin de dépasser le bruit de fond. Une voix douce dans une pièce
+/// bruyante ne dépasse souvent le bruit que de 6 à 9 dB : exiger 10 dB
+/// coupait des phrases entières.
+const AUTO_OPEN: [(f32, f32); 3] = [(0.9, 3.0), (0.5, 6.0), (0.2, 10.0)];
+/// Pour rester ouvert : un peu au-dessus du bruit, ou de la voix probable.
+const AUTO_KEEP_DB: f32 = 2.0;
 /// Durée des fondus d'ouverture et de fermeture, en échantillons.
 const ATTACK: f32 = 1.0 / (RATE as f32 * 0.005);
 const RELEASE: f32 = 1.0 / (RATE as f32 * 0.08);
@@ -180,12 +184,14 @@ impl MicProcessor {
         let deep = (filters.denoise && filters.strong)
             .then(load_deep_filter)
             .flatten();
-        // Retard ajouté pour que la porte voie ~20 ms en avance. RNNoise
+        // Retard ajouté pour que la porte voie ~30 ms en avance (la première
+        // syllabe n'est pas mangée pendant qu'elle décide). RNNoise
         // retarde déjà d'une trame, DeepFilterNet de trois.
         let delay_frames = match (filters.gate, filters.denoise, deep.is_some()) {
-            (false, _, _) | (true, true, true) => 0,
-            (true, true, false) => 1,
-            (true, false, _) => 2,
+            (false, _, _) => 0,
+            (true, true, true) => 1,
+            (true, true, false) => 2,
+            (true, false, _) => 3,
         };
         Self {
             filters,
@@ -335,11 +341,11 @@ impl MicProcessor {
         let above = db - self.floor_db;
         let open = if self.hold == 0 {
             // Deux trames de suite (20 ms) : un clic de clavier n'ouvre pas.
-            let loud = above >= AUTO_OPEN_DB && voice >= 0.2 && input_rms >= OPEN_FLOOR;
+            let loud = input_rms >= OPEN_FLOOR && AUTO_OPEN.iter().any(|&(v, db)| voice >= v && above >= db);
             self.onset = if loud { self.onset + 1 } else { 0 };
             self.onset >= 2
         } else {
-            above >= AUTO_KEEP_DB && voice >= 0.1
+            (above >= AUTO_KEEP_DB && voice >= 0.1) || voice >= 0.5
         };
         let rate = if db < self.floor_db {
             0.1
@@ -523,7 +529,8 @@ mod tests {
         let tail = &out[out.len() / 2..];
         assert!(tail.iter().all(|v| v.abs() < 1e-3));
         assert!((p.floor_db + 45.0).abs() < 4.0, "floor {}", p.floor_db);
-        assert!(!p.auto_gate(0.9, 0.012));
+        // Un peu plus fort mais pas franchement de la voix : reste fermé.
+        assert!(!p.auto_gate(0.3, 0.012));
         assert!(!p.auto_gate(0.9, 0.1));
         assert!(p.auto_gate(0.9, 0.1));
         // Puis la voix retombe dans le bruit : la porte se referme.
