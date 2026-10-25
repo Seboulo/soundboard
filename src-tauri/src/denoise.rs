@@ -58,6 +58,8 @@ pub struct MicFilters {
     pub gate_auto: bool,
     /// Probabilité de voix (0–1) en dessous de laquelle la porte se ferme.
     pub gate_threshold: f32,
+    /// Volume de voix automatique (voir `VoiceLeveler`).
+    pub level: bool,
 }
 
 /// Dernières mesures du micro, lues par l'indicateur de niveau des réglages.
@@ -113,6 +115,7 @@ pub struct MicProcessor {
     delay_frames: usize,
     gain: f32,
     hold: u32,
+    leveler: VoiceLeveler,
     /// Bruit de fond estimé, en dBFS, et trames fortes d'affilée (mode automatique).
     floor_db: f32,
     onset: u32,
@@ -205,6 +208,7 @@ impl MicProcessor {
             delay_frames,
             gain: if filters.gate { 0.0 } else { 1.0 },
             hold: 0,
+            leveler: VoiceLeveler::new(),
             floor_db: f32::NAN,
             onset: 0,
         }
@@ -301,13 +305,20 @@ impl MicProcessor {
         self.meter.voice.store(voice.to_bits(), Ordering::Relaxed);
         self.meter.open.store(target > 0.0, Ordering::Relaxed);
 
+        if self.filters.level {
+            self.leveler.begin_frame(rms, voice >= 0.5 && target > 0.0);
+        }
         for &s in source.iter() {
             if self.gain < target {
                 self.gain = (self.gain + ATTACK).min(target);
             } else if self.gain > target {
                 self.gain = (self.gain - RELEASE).max(target);
             }
-            let v = self.effect.process(s / 32768.0 * self.gain);
+            let mut v = s / 32768.0 * self.gain;
+            if self.filters.level {
+                v = self.leveler.process(v);
+            }
+            let v = self.effect.process(v);
             out.push(v.clamp(-1.0, 1.0));
         }
         self.frame_in.clear();
@@ -344,6 +355,75 @@ impl MicProcessor {
     }
 }
 
+/// Volume de voix automatique.
+///
+/// Sans lui, une voix douce arrive trop bas dans Discord et un cri sature.
+/// On mesure le niveau moyen de la parole (seulement quand tu parles), on
+/// règle lentement le gain pour viser -20 dBFS (de -6 à +12 dB), puis un
+/// compresseur doux (2:1 au-dessus de -14 dBFS) et un plafond à -3 dBFS
+/// rattrapent les éclats de voix.
+struct VoiceLeveler {
+    speech_db: f32,
+    gain_db: f32,
+    /// Gain du début et de la fin de la trame en cours (linéaire).
+    from: f32,
+    to: f32,
+    pos: f32,
+    env: f32,
+    reduce: f32,
+}
+
+const LEVEL_TARGET_DB: f32 = -20.0;
+const LEVEL_MIN_DB: f32 = -6.0;
+const LEVEL_MAX_DB: f32 = 12.0;
+const VOICE_COMP_THRESHOLD: f32 = 0.2;
+const VOICE_CEILING: f32 = 0.708;
+
+impl VoiceLeveler {
+    fn new() -> Self {
+        Self {
+            speech_db: LEVEL_TARGET_DB,
+            gain_db: 0.0,
+            from: 1.0,
+            to: 1.0,
+            pos: 0.0,
+            env: 0.0,
+            reduce: 1.0,
+        }
+    }
+
+    /// À appeler avant chaque trame de 10 ms, avec son niveau (RMS).
+    fn begin_frame(&mut self, rms: f32, speaking: bool) {
+        let db = 20.0 * rms.max(1e-6).log10();
+        if speaking && db > -55.0 {
+            // ~0,5 s : suit ta façon de parler, pas chaque syllabe.
+            self.speech_db += (db - self.speech_db) * 0.02;
+        }
+        let wanted = (LEVEL_TARGET_DB - self.speech_db).clamp(LEVEL_MIN_DB, LEVEL_MAX_DB);
+        self.gain_db += (wanted - self.gain_db) * 0.03;
+        self.from = self.to;
+        self.to = 10f32.powf(self.gain_db / 20.0);
+        self.pos = 0.0;
+    }
+
+    fn process(&mut self, x: f32) -> f32 {
+        self.pos = (self.pos + 1.0 / FRAME as f32).min(1.0);
+        let y = x * (self.from + (self.to - self.from) * self.pos);
+        let level = y.abs();
+        // Enveloppe : monte tout de suite, redescend en ~100 ms.
+        self.env = if level > self.env { level } else { level + (self.env - level) * 0.9998 };
+        let wanted = if self.env > VOICE_COMP_THRESHOLD {
+            (self.env / VOICE_COMP_THRESHOLD).powf(-0.5)
+        } else {
+            1.0
+        };
+        // Attaque ~3 ms, relâche ~150 ms.
+        let coef = if wanted < self.reduce { 0.993 } else { 0.99986 };
+        self.reduce = wanted + (self.reduce - wanted) * coef;
+        y * self.reduce.min(VOICE_CEILING / self.env.max(1e-6))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,6 +441,7 @@ mod tests {
         gate: false,
         gate_auto: false,
         gate_threshold: 0.5,
+        level: false,
     };
 
     #[test]
@@ -423,6 +504,7 @@ mod tests {
             gate: true,
             gate_auto: true,
             gate_threshold: 0.5,
+            level: false,
         };
         let out = run(gate, 48_000, 1, &noise);
         let tail = &out[out.len() / 2..];
@@ -446,5 +528,28 @@ mod tests {
         assert!(p.auto_gate(0.9, 0.1));
         // Puis la voix retombe dans le bruit : la porte se referme.
         assert!(!p.auto_gate(0.9, 0.006));
+    }
+
+    fn leveled(amp: f32) -> f32 {
+        let mut l = VoiceLeveler::new();
+        let mut out = Vec::new();
+        for f in 0..500 {
+            let frame: Vec<f32> = (0..FRAME).map(|i| ((f * FRAME + i) as f32 * 0.03).sin() * amp).collect();
+            l.begin_frame(rms(&frame), true);
+            out.extend(frame.iter().map(|&x| l.process(x)));
+        }
+        rms(&out[out.len() / 2..])
+    }
+
+    #[test]
+    fn voice_leveler_evens_out_quiet_and_loud_voices() {
+        let db = |v: f32| 20.0 * v.log10();
+        let quiet = db(leveled(0.02)); // voix à -37 dBFS
+        let normal = db(leveled(0.14)); // -20 dBFS
+        let loud = db(leveled(0.7)); // -6 dBFS
+        assert!(quiet > -28.0 && quiet < -22.0, "quiet {quiet}");
+        assert!((normal + 20.0).abs() < 3.0, "normal {normal}");
+        assert!(loud < -12.0, "loud {loud}");
+        assert!(loud - quiet < 12.0, "écart {}", loud - quiet);
     }
 }

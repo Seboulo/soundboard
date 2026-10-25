@@ -938,6 +938,7 @@ async function openSettings() {
   formSettings.denoise_mode.value = !s.noise_suppression ? "off" : s.strong_denoise ? "strong" : "light";
   formSettings.voice_gate.checked = s.voice_gate;
   formSettings.gate_auto.checked = s.gate_auto ?? true;
+  formSettings.voice_leveler.checked = s.voice_leveler ?? true;
   updateGateRows();
   for (const k of ["mic_volume", "master_volume", "monitor_volume", "gate_threshold"]) {
     formSettings[k].value = s[k];
@@ -1108,6 +1109,7 @@ dlgSettings.addEventListener("close", () => {
     strong_denoise: f.denoise_mode.value === "strong",
     voice_gate: f.voice_gate.checked,
     gate_auto: f.gate_auto.checked,
+    voice_leveler: f.voice_leveler.checked,
     gate_threshold: Number(f.gate_threshold.value),
     master_volume: Number(f.master_volume.value),
     monitor_volume: Number(f.monitor_volume.value),

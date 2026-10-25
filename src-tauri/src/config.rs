@@ -165,6 +165,8 @@ pub struct Settings {
     pub gate_auto: bool,
     /// Probabilité de voix (0–1) en dessous de laquelle le micro est coupé.
     pub gate_threshold: f32,
+    /// Volume de voix automatique : voix douce remontée, cris adoucis.
+    pub voice_leveler: bool,
     /// Raccourci qui coupe / rallume ton micro (les sons passent toujours).
     pub mute_hotkey: Option<String>,
     /// Raccourci qui joue un son au hasard.
@@ -203,6 +205,7 @@ impl Default for Settings {
             voice_gate: true,
             gate_auto: true,
             gate_threshold: 0.6,
+            voice_leveler: true,
             mute_hotkey: None,
             random_hotkey: None,
             voice_effect: VoiceEffect::None,

@@ -1058,6 +1058,7 @@ fn audio_settings(s: &Settings) -> serde_json::Value {
         s.monitor_device, s.virtual_device, s.mic_device, s.mic_enabled, s.mic_volume,
         s.master_volume, s.monitor_volume, s.stop_previous, s.noise_suppression,
         s.strong_denoise, s.voice_gate, s.gate_auto, s.gate_threshold, s.voice_effect,
+        s.voice_leveler,
     ])
 }
 

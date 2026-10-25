@@ -440,6 +440,7 @@ impl Engine {
             gate: self.settings.voice_gate,
             gate_auto: self.settings.gate_auto,
             gate_threshold: self.settings.gate_threshold.clamp(0.0, 1.0),
+            level: self.settings.voice_leveler,
         };
 
         // Le micro sort du filtre en mono 48 kHz. 200 ms de marge au plus :
@@ -991,8 +992,8 @@ struct MicSource {
     /// Avancée dans le son capté pour chaque trame jouée (≈ 1).
     step: f64,
     pos: f64,
-    cur: Vec<f32>,
-    next: Vec<f32>,
+    /// Quatre trames consécutives pour l'interpolation cubique.
+    points: [Vec<f32>; 4],
     frame: Vec<f32>,
     frame_pos: usize,
 }
@@ -1011,8 +1012,7 @@ impl MicSource {
             ever_primed: false,
             step: 1.0,
             pos: 0.0,
-            cur: vec![0.0; ch],
-            next: vec![0.0; ch],
+            points: [vec![0.0; ch], vec![0.0; ch], vec![0.0; ch], vec![0.0; ch]],
             frame: vec![0.0; ch],
             frame_pos: ch,
         }
@@ -1050,7 +1050,7 @@ impl MicSource {
             CAPTURE_UNDERRUNS.fetch_add(1, Ordering::Relaxed);
             self.primed = false;
         }
-        self.next.iter().map(|v| v * 0.9).collect()
+        self.points[3].iter().map(|v| v * 0.9).collect()
     }
 }
 
@@ -1063,11 +1063,15 @@ impl Iterator for MicSource {
             while self.pos >= 1.0 {
                 self.pos -= 1.0;
                 let next = self.pull_frame();
-                self.cur = std::mem::replace(&mut self.next, next);
+                self.points.rotate_left(1);
+                self.points[3] = next;
             }
             let t = self.pos as f32;
+            let [p0, p1, p2, p3] = &self.points;
             for i in 0..ch {
-                self.frame[i] = self.cur[i] + (self.next[i] - self.cur[i]) * t;
+                let (a, b, c, d) = (p0[i], p1[i], p2[i], p3[i]);
+                self.frame[i] =
+                    b + 0.5 * t * (c - a + t * (2.0 * a - 5.0 * b + 4.0 * c - d + t * (3.0 * (b - c) + d - a)));
             }
             self.pos += self.step;
             self.frame_pos = 0;
