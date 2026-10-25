@@ -62,8 +62,17 @@ jobs:
           tagName: v__VERSION__
           releaseName: Soundboard v__VERSION__
           releaseBody: |
-            Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le.
+            Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
             Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
+
+            Nouveautés de la 1.0 :
+            - Volume des sons égalisé comme à la télé (norme EBU R128), niveau réglable, compresseur et limiteur contre les cris et les pics.
+            - Antibruit du micro par IA (DeepFilterNet), porte de voix plus intelligente, voix sans micro-coupures.
+            - Images de memes : emoji choisi d'après le nom du son, GIF GIPHY avec une clé gratuite, ou ta propre image.
+            - Diagnostic en un clic et « Écouter comme Discord ».
+            - Statistiques : sons les plus joués, temps joué, sons jamais joués.
+            - Réglages en onglets et nouveau look plus lisible.
+            - Overlay en jeu retiré.
           releaseDraft: false
           args: ${{ env.BUILD_ARGS }}
 
