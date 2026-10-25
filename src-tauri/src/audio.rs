@@ -1059,7 +1059,6 @@ struct MicSource {
     /// Avance visée dans le tampon, en trames, et avance moyenne mesurée.
     target: f64,
     fill: f64,
-    ever_primed: bool,
     /// Avancée dans le son capté pour chaque trame jouée (≈ 1).
     step: f64,
     pos: f64,
@@ -1080,7 +1079,6 @@ impl MicSource {
             primed: false,
             target: sample_rate as f64 * 0.04,
             fill: 0.0,
-            ever_primed: false,
             step: 1.0,
             pos: 0.0,
             points: [vec![0.0; ch], vec![0.0; ch], vec![0.0; ch], vec![0.0; ch]],
@@ -1098,10 +1096,11 @@ impl MicSource {
             if let Ok(mut buf) = self.buffer.lock() {
                 let waiting = (buf.len() / ch) as f64;
                 self.fill += (waiting - self.fill) * 0.002;
-                let start_at = if self.ever_primed { self.target * 0.5 } else { self.target };
-                if !self.primed && waiting >= start_at {
+                // Après un manque, on reprend avec toute l'avance : repartir
+                // avec la moitié en provoquait un autre juste après (des
+                // micro-coupures en rafale au lieu d'une seule).
+                if !self.primed && waiting >= self.target {
                     self.primed = true;
-                    self.ever_primed = true;
                     self.fill = waiting;
                 }
                 if self.primed {

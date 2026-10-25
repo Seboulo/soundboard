@@ -40,6 +40,15 @@ const OPEN_FLOOR: f32 = 0.0018;
 /// Réduction maximale de DeepFilterNet. Plus fort, il mange les fins de mots
 /// et les syllabes douces (micro-coupures) ; 30 dB suffisent avec la porte.
 const DF_ATTEN_LIMIT_DB: f32 = 30.0;
+/// Par défaut, DeepFilterNet saute une partie du calcul selon le rapport
+/// voix/bruit de chaque trame de 10 ms : rien au-dessus de 30 dB, pas de
+/// 2ᵉ étage au-dessus de 20 dB, silence total en dessous de -10 dB. Sur une
+/// voix proche du micro, les voyelles et les consonnes bruitées (les R, les
+/// CH) tombent de part et d'autre : le traitement change d'une trame à
+/// l'autre, ce qui rend les R rugueux, et les syllabes douces sont coupées
+/// net. On traite donc toutes les trames de la même façon, comme le modèle
+/// a été entraîné ; la porte s'occupe des silences.
+const DF_THRESHOLDS: (f32, f32, f32) = (-100.0, 100.0, 100.0);
 /// Détection automatique : plus RNNoise est sûr que c'est de la voix, moins
 /// elle a besoin de dépasser le bruit de fond. Une voix douce dans une pièce
 /// bruyante ne dépasse souvent le bruit que de 6 à 9 dB : exiger 10 dB
@@ -102,10 +111,10 @@ pub struct MicProcessor {
     rnnoise: Box<DenoiseState<'static>>,
     deep: Option<Box<DeepFilter>>,
     high_pass: HighPass,
-    // Rééchantillonnage linéaire vers 48 kHz.
+    // Rééchantillonnage cubique vers 48 kHz (quatre derniers échantillons).
     step: f64,
     pos: f64,
-    prev: f32,
+    hist: [f32; 4],
     // Downmix d'une trame entrelacée en cours.
     acc: f32,
     acc_n: usize,
@@ -162,7 +171,10 @@ struct DeepFilter(DfTract);
 unsafe impl Send for DeepFilter {}
 
 fn load_deep_filter() -> Option<Box<DeepFilter>> {
-    let params = RuntimeParams::default_with_ch(1).with_atten_lim(DF_ATTEN_LIMIT_DB);
+    let (min, erb, df) = DF_THRESHOLDS;
+    let params = RuntimeParams::default_with_ch(1)
+        .with_atten_lim(DF_ATTEN_LIMIT_DB)
+        .with_thresholds(min, erb, df);
     match DfTract::new(DfParams::default(), &params) {
         Ok(df) if df.hop_size == FRAME && df.sr == RATE as usize => Some(Box::new(DeepFilter(df))),
         Ok(_) => None,
@@ -203,7 +215,7 @@ impl MicProcessor {
             high_pass: HighPass::new(80.0),
             step: in_rate as f64 / RATE as f64,
             pos: 0.0,
-            prev: 0.0,
+            hist: [0.0; 4],
             acc: 0.0,
             acc_n: 0,
             frame_in: Vec::with_capacity(FRAME),
@@ -233,19 +245,31 @@ impl MicProcessor {
             self.acc = 0.0;
             self.acc_n = 0;
 
+            if self.step == 1.0 {
+                self.push_sample(mono, out);
+                continue;
+            }
             // Chaque échantillon d'entrée fait avancer de 1 ; on produit les
-            // échantillons de sortie qui tombent entre le précédent et lui.
+            // échantillons de sortie qui tombent entre les deux du milieu
+            // (Catmull-Rom : le linéaire ajoutait un grésillement aigu).
+            self.hist.rotate_left(1);
+            self.hist[3] = mono;
             while self.pos <= 1.0 {
-                let v = self.prev + (mono - self.prev) * self.pos as f32;
-                let v = if self.filters.denoise { self.high_pass.run(v) } else { v };
-                self.frame_in.push(v * 32768.0);
-                if self.frame_in.len() == FRAME {
-                    self.flush_frame(out);
-                }
+                let t = self.pos as f32;
+                let [a, b, c, d] = self.hist;
+                let v = b + 0.5 * t * (c - a + t * (2.0 * a - 5.0 * b + 4.0 * c - d + t * (3.0 * (b - c) + d - a)));
+                self.push_sample(v, out);
                 self.pos += self.step;
             }
             self.pos -= 1.0;
-            self.prev = mono;
+        }
+    }
+
+    fn push_sample(&mut self, v: f32, out: &mut Vec<f32>) {
+        let v = if self.filters.denoise { self.high_pass.run(v) } else { v };
+        self.frame_in.push(v * 32768.0);
+        if self.frame_in.len() == FRAME {
+            self.flush_frame(out);
         }
     }
 
@@ -366,8 +390,10 @@ impl MicProcessor {
 /// Sans lui, une voix douce arrive trop bas dans Discord et un cri sature.
 /// On mesure le niveau moyen de la parole (seulement quand tu parles), on
 /// règle lentement le gain pour viser -20 dBFS (de -6 à +12 dB), puis un
-/// compresseur doux (2:1 au-dessus de -14 dBFS) et un plafond à -3 dBFS
-/// rattrapent les éclats de voix.
+/// compresseur doux (2:1 au-dessus de -11 dBFS) et un plafond à -3 dBFS
+/// rattrapent les éclats de voix. L'attaque du compresseur est lente
+/// (10 ms) : plus rapide, il écrasait chaque voyelle et les consonnes
+/// (R, S, CH) ressortaient trop par rapport à elles.
 struct VoiceLeveler {
     speech_db: f32,
     gain_db: f32,
@@ -382,7 +408,7 @@ struct VoiceLeveler {
 const LEVEL_TARGET_DB: f32 = -20.0;
 const LEVEL_MIN_DB: f32 = -6.0;
 const LEVEL_MAX_DB: f32 = 12.0;
-const VOICE_COMP_THRESHOLD: f32 = 0.2;
+const VOICE_COMP_THRESHOLD: f32 = 0.28;
 const VOICE_CEILING: f32 = 0.708;
 
 impl VoiceLeveler {
@@ -423,8 +449,8 @@ impl VoiceLeveler {
         } else {
             1.0
         };
-        // Attaque ~3 ms, relâche ~150 ms.
-        let coef = if wanted < self.reduce { 0.993 } else { 0.99986 };
+        // Attaque ~10 ms, relâche ~150 ms.
+        let coef = if wanted < self.reduce { 0.9979 } else { 0.99986 };
         self.reduce = wanted + (self.reduce - wanted) * coef;
         y * self.reduce.min(VOICE_CEILING / self.env.max(1e-6))
     }
@@ -458,6 +484,28 @@ mod tests {
         assert!((out.len() as i64 - 48_000).abs() <= FRAME as i64, "{}", out.len());
         // Sans filtre, le signal passe tel quel (hors tout début interpolé depuis 0).
         assert!(out[FRAME..].iter().all(|v| (v - 0.1).abs() < 1e-4));
+    }
+
+    #[test]
+    fn resampling_keeps_a_clean_tone() {
+        // Un la aigu (3 kHz) capté à 44,1 kHz ressort propre à 48 kHz : le
+        // linéaire y laissait des parasites vers -35 dB.
+        let f = 3000.0f64;
+        let input: Vec<f32> = (0..44_100).map(|i| (i as f64 * f / 44_100.0 * std::f64::consts::TAU).sin() as f32 * 0.5).collect();
+        let out = run(OFF, 44_100, 1, &input);
+        // Meilleur décalage (le cubique retarde d'un échantillon d'entrée).
+        let err = |shift: f64| {
+            let e: f64 = (4800..40_000)
+                .map(|i| {
+                    let want = ((i as f64 - shift) * f / 48_000.0 * std::f64::consts::TAU).sin() * 0.5;
+                    (out[i] as f64 - want).powi(2)
+                })
+                .sum();
+            (e / 35_200.0).sqrt()
+        };
+        let best = (0..3000).map(|k| err(k as f64 * 0.001)).fold(f64::MAX, f64::min);
+        let db = 20.0 * (best / (0.5 / 2f64.sqrt())).log10();
+        assert!(db < -50.0, "parasites {db:.1} dB");
     }
 
     fn noise(n: usize, amp: f32) -> Vec<f32> {
