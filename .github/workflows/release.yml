@@ -65,14 +65,15 @@ jobs:
             Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
             Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
-            Nouveautés de la 1.0 :
-            - Volume des sons égalisé comme à la télé (norme EBU R128), niveau réglable, compresseur et limiteur contre les cris et les pics.
-            - Antibruit du micro par IA (DeepFilterNet), porte de voix plus intelligente, voix sans micro-coupures.
-            - Images de memes : emoji choisi d'après le nom du son, GIF GIPHY avec une clé gratuite, ou ta propre image.
-            - Diagnostic en un clic et « Écouter comme Discord ».
-            - Statistiques : sons les plus joués, temps joué, sons jamais joués.
-            - Réglages en onglets et nouveau look plus lisible.
-            - Overlay en jeu retiré.
+            Nouveautés de la 1.1 :
+            - Micro sans micro-coupures : traitement de la voix dans son propre fil et rattrapage en douceur des horloges micro/câble.
+            - Détection automatique de la parole, comme sur Discord : le micro apprend le bruit de ta pièce et ignore les clics de clavier.
+            - Volume de voix automatique : voix douce remontée, cris adoucis.
+            - Antibruit IA plus naturel (fins de mots préservées).
+            - Bouton « M'écouter » pour entendre ta voix comme tes potes la reçoivent.
+            - Plus de saturation quand plusieurs sons et ta voix se cumulent (table de mixage avec limiteur), aigus plus nets.
+            - GIF qui ne « vibrent » plus pendant la lecture.
+            - Corrections : réglages qui coupaient le son, import de nombreux fichiers qui figeait l'appli, fichiers de sons supprimés qui restaient sur le disque.
           releaseDraft: false
           args: ${{ env.BUILD_ARGS }}
 
