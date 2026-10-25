@@ -13,7 +13,8 @@ use crate::denoise::{self, MicFilters, MicLevel, MicMeter, MicProcessor};
 use rodio::cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rodio::cpal::{self, SampleFormat};
 use crate::decoder::AudioFile;
-use rodio::{OutputStream, OutputStreamHandle, Sink, Source};
+use crate::mixer::{Bus, Voice};
+use rodio::{OutputStream, Source};
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -82,6 +83,7 @@ enum Command {
     Toggle(PlayRequest, Option<PlayReply>),
     Preview(PlayRequest, Reply),
     StopAll,
+    Stop(String),
     StopPreview,
     SetMicMuted(bool),
     /// Fait entendre dans le casque ce qui sort du câble (ce que Discord reçoit).
@@ -141,6 +143,11 @@ impl AudioHandle {
 
     pub fn stop_all(&self) {
         let _ = self.send(Command::StopAll);
+    }
+
+    /// Arrête un son tout de suite (sans fondu).
+    pub fn stop(&self, id: &str) {
+        let _ = self.send(Command::Stop(id.to_string()));
     }
 
     pub fn listen_cable(&self, on: bool) -> Result<(), String> {
@@ -249,28 +256,29 @@ fn find_input(name: Option<&str>) -> Option<cpal::Device> {
 
 struct Output {
     _stream: OutputStream,
-    handle: OutputStreamHandle,
-    /// Fréquence de la sortie : les sons y sont convertis avant rodio.
-    rate: u32,
+    /// Tous les sons de la sortie passent par ce bus (mélange + limiteur).
+    bus: Bus,
 }
 
 impl Output {
     fn open(device: &cpal::Device) -> Result<Self, String> {
         let config = device.default_output_config().map_err(|e| e.to_string())?;
-        let rate = config.sample_rate().0;
+        let (bus, source) = Bus::new(config.channels(), config.sample_rate().0);
         let (stream, handle) =
             OutputStream::try_from_device_config(device, config).map_err(|e| e.to_string())?;
-        Ok(Self {
-            _stream: stream,
-            handle,
-            rate,
-        })
+        handle.play_raw(source).map_err(|e| e.to_string())?;
+        Ok(Self { _stream: stream, bus })
+    }
+
+    /// Les sons sont convertis à la fréquence de la sortie avant le bus.
+    fn rate(&self) -> u32 {
+        self.bus.rate()
     }
 }
 
 struct Playing {
     id: String,
-    sinks: Vec<Sink>,
+    voices: Vec<Voice>,
     started: Instant,
     duration_ms: Option<u64>,
     looping: bool,
@@ -283,7 +291,7 @@ struct Playing {
 
 impl Playing {
     fn is_finished(&self) -> bool {
-        self.sinks.iter().all(Sink::empty) || self.stopping.is_some_and(|t| t.elapsed() > FADE + Duration::from_millis(50))
+        self.voices.iter().all(Voice::is_done) || self.stopping.is_some_and(|t| t.elapsed() > FADE + Duration::from_millis(50))
     }
 }
 
@@ -293,14 +301,14 @@ struct Engine {
     monitor: Option<Output>,
     virt: Option<Output>,
     mic_stream: Option<cpal::Stream>,
-    mic_sink: Option<Sink>,
+    mic_voice: Option<Voice>,
     mic_muted: bool,
     meter: Arc<MicMeter>,
     playing: Vec<Playing>,
     /// Écoute du câble en cours : les sons ne passent plus directement par
     /// le casque, on entend seulement ce qui sort du câble.
     cable_stream: Option<cpal::Stream>,
-    cable_sink: Option<Sink>,
+    cable_voice: Option<Voice>,
 }
 
 fn run(rx: Receiver<Command>, meter_on: Arc<AtomicBool>, on_event: impl Fn(AudioEvent)) {
@@ -315,7 +323,7 @@ fn run(rx: Receiver<Command>, meter_on: Arc<AtomicBool>, on_event: impl Fn(Audio
         engine.playing.retain(|p| {
             let done = p.is_finished();
             if done {
-                p.sinks.iter().for_each(Sink::stop);
+                p.voices.iter().for_each(Voice::stop);
             }
             !done
         });
@@ -333,9 +341,10 @@ fn run(rx: Receiver<Command>, meter_on: Arc<AtomicBool>, on_event: impl Fn(Audio
 impl Engine {
     fn configure(&mut self, settings: Settings) -> Result<(), String> {
         self.stop_all();
-        self.cable_sink = None;
-        self.cable_stream = None;
-        self.mic_sink = None;
+        self.stop_cable();
+        if let Some(v) = self.mic_voice.take() {
+            v.stop();
+        }
         self.mic_stream = None;
         self.monitor = None;
         self.virt = None;
@@ -376,9 +385,15 @@ impl Engine {
         }
     }
 
-    fn listen_cable(&mut self, on: bool) -> Result<(), String> {
-        self.cable_sink = None;
+    fn stop_cable(&mut self) {
+        if let Some(v) = self.cable_voice.take() {
+            v.stop();
+        }
         self.cable_stream = None;
+    }
+
+    fn listen_cable(&mut self, on: bool) -> Result<(), String> {
+        self.stop_cable();
         if !on {
             return Ok(());
         }
@@ -398,12 +413,12 @@ impl Engine {
         let filter: CaptureFilter = Box::new(|samples| samples.collect());
         let stream = open_capture(&device, &config, format, buffer.clone(), max_len, filter)?;
         stream.play().map_err(|e| e.to_string())?;
-        let sink = Sink::try_new(&monitor.handle).map_err(|e| e.to_string())?;
-        sink.set_volume(self.settings.monitor_volume);
         let source = MicSource::new(buffer, channels, rate).convert_samples::<i16>();
-        sink.append(Resample::new(source, monitor.rate));
+        let voice = monitor
+            .bus
+            .add(Box::new(Resample::new(source, monitor.rate())), self.settings.monitor_volume);
         self.cable_stream = Some(stream);
-        self.cable_sink = Some(sink);
+        self.cable_voice = Some(voice);
         Ok(())
     }
 
@@ -461,13 +476,14 @@ impl Engine {
         let stream = open_capture(&device, &config, format, dummy, max_len, filter)?;
         stream.play().map_err(|e| e.to_string())?;
 
-        let sink = Sink::try_new(&virt.handle).map_err(|e| e.to_string())?;
-        sink.set_volume(if self.mic_muted { 0.0 } else { self.settings.mic_volume });
         let mic = MicSource::new(buffer, 1, denoise::RATE);
-        sink.append(Resample::new(mic.convert_samples::<i16>(), virt.rate));
+        let volume = if self.mic_muted { 0.0 } else { self.settings.mic_volume };
+        let voice = virt
+            .bus
+            .add(Box::new(Resample::new(mic.convert_samples::<i16>(), virt.rate())), volume);
 
         self.mic_stream = Some(stream);
-        self.mic_sink = Some(sink);
+        self.mic_voice = Some(voice);
         Ok(())
     }
 
@@ -496,6 +512,14 @@ impl Engine {
                 let _ = reply.send(res);
             }
             Command::StopAll => self.stop_all(),
+            Command::Stop(id) => {
+                self.playing.retain(|p| {
+                    if p.id == id {
+                        p.voices.iter().for_each(Voice::stop);
+                    }
+                    p.id != id
+                });
+            }
             Command::ListenCable(on, reply) => {
                 let _ = reply.send(self.listen_cable(on));
             }
@@ -504,8 +528,8 @@ impl Engine {
             }
             Command::SetMicMuted(muted) => {
                 self.mic_muted = muted;
-                if let Some(sink) = &self.mic_sink {
-                    sink.set_volume(if muted { 0.0 } else { self.settings.mic_volume });
+                if let Some(voice) = &self.mic_voice {
+                    voice.set_volume(if muted { 0.0 } else { self.settings.mic_volume });
                 }
             }
         }
@@ -546,7 +570,7 @@ impl Engine {
     fn start(&mut self, req: PlayRequest, monitor_only: bool) -> Result<(), String> {
         let mut targets = Vec::new();
         // Pendant l'écoute du câble, le son arrive déjà au casque par là.
-        if self.cable_sink.is_none() || monitor_only {
+        if self.cable_voice.is_none() || monitor_only {
             targets.push((&self.monitor, self.settings.monitor_volume));
         }
         if !monitor_only {
@@ -556,24 +580,22 @@ impl Engine {
         let fade_target = req
             .looping
             .then(|| Arc::new(AtomicU32::new(1.0f32.to_bits())));
-        let mut sinks = Vec::new();
+        let mut voices = Vec::new();
         for (output, out_volume) in targets {
             let Some(output) = output else { continue };
-            let sink = Sink::try_new(&output.handle).map_err(|e| e.to_string())?;
-            sink.set_volume(out_volume);
-            let source = open_source(&req, output.rate)?;
-            match &fade_target {
-                Some(target) => sink.append(Fader::new(source, target.clone())),
-                None => sink.append(source),
-            }
-            sinks.push(sink);
+            let source = open_source(&req, output.rate())?;
+            let source: Box<dyn Source<Item = i16> + Send> = match &fade_target {
+                Some(target) => Box::new(Fader::new(source, target.clone())),
+                None => source,
+            };
+            voices.push(output.bus.add(source, out_volume));
         }
-        if sinks.is_empty() {
+        if voices.is_empty() {
             return Err("aucune sortie audio configurée".into());
         }
         self.playing.push(Playing {
             id: req.id,
-            sinks,
+            voices,
             started: Instant::now(),
             duration_ms: req.duration_ms,
             looping: req.looping,
@@ -600,7 +622,7 @@ impl Engine {
                     true
                 }
                 None => {
-                    p.sinks.iter().for_each(Sink::stop);
+                    p.voices.iter().for_each(Voice::stop);
                     false
                 }
             }
@@ -610,7 +632,7 @@ impl Engine {
 
     fn stop_all(&mut self) {
         for p in self.playing.drain(..) {
-            p.sinks.iter().for_each(Sink::stop);
+            p.voices.iter().for_each(Voice::stop);
         }
     }
 }
@@ -709,19 +731,25 @@ impl<S: Source<Item = i16>> Source for Leveler<S> {
 /// Convertit un son à la fréquence de la sortie, d'un seul tenant.
 ///
 /// rodio sait le faire, mais il recommence sa conversion à chaque bloc du
-/// fichier (ou tous les 512 échantillons dans un `Sink`), ce qui laisse un
+/// fichier (ou tous les 512 échantillons dans un mélangeur), ce qui laisse un
 /// petit clic à chaque raccord : le son grésille. Une fois à la bonne
 /// fréquence, rodio n'y touche plus.
+///
+/// Interpolation cubique (Catmull-Rom) sur 4 points : bien plus propre que
+/// la droite entre 2 points, qui étouffe les aigus et ajoute du souffle
+/// métallique quand on passe de 44,1 à 48 kHz.
 struct Resample<S> {
     inner: S,
     channels: usize,
     rate: u32,
     /// Avancée dans le son d'origine pour chaque échantillon produit.
     step: f64,
-    /// Position entre `current` et `next` (0 à 1).
+    /// Position entre `points[1]` et `points[2]` (0 à 1).
     pos: f64,
-    current: Vec<f32>,
-    next: Vec<f32>,
+    /// Quatre trames consécutives du son d'origine ; vide = fini.
+    points: [Vec<f32>; 4],
+    /// Trames restantes après la fin du son (on prolonge par la dernière).
+    tail: u8,
     frame: Vec<i16>,
     frame_pos: usize,
 }
@@ -736,14 +764,19 @@ impl<S: Source<Item = i16>> Resample<S> {
             rate,
             step,
             pos: 0.0,
-            current: Vec::with_capacity(channels),
-            next: Vec::with_capacity(channels),
+            points: Default::default(),
+            tail: 2,
             frame: Vec::with_capacity(channels),
             frame_pos: 0,
         };
         if step != 1.0 {
-            this.current = this.read_frame();
-            this.next = this.read_frame();
+            let first = this.read_frame();
+            if !first.is_empty() {
+                this.points[0] = first.clone();
+                this.points[1] = first;
+                this.points[2] = this.next_point();
+                this.points[3] = this.next_point();
+            }
         }
         this
     }
@@ -756,6 +789,20 @@ impl<S: Source<Item = i16>> Resample<S> {
             Vec::new()
         }
     }
+
+    /// Trame suivante ; après la fin, on répète la dernière deux fois pour
+    /// finir l'interpolation, puis plus rien.
+    fn next_point(&mut self) -> Vec<f32> {
+        let frame = self.read_frame();
+        if !frame.is_empty() {
+            return frame;
+        }
+        if self.tail == 0 {
+            return Vec::new();
+        }
+        self.tail -= 1;
+        self.points.iter().rev().find(|p| !p.is_empty()).cloned().unwrap_or_default()
+    }
 }
 
 impl<S: Source<Item = i16>> Iterator for Resample<S> {
@@ -766,20 +813,26 @@ impl<S: Source<Item = i16>> Iterator for Resample<S> {
             return self.inner.next();
         }
         if self.frame_pos >= self.frame.len() {
-            if self.next.is_empty() {
+            if self.points[2].is_empty() {
                 return None;
             }
             let t = self.pos as f32;
+            let [p0, p1, p2, p3] = &self.points;
             self.frame.clear();
-            for (a, b) in self.current.iter().zip(&self.next) {
-                self.frame.push((a + (b - a) * t).round() as i16);
+            for c in 0..self.channels {
+                let (a, b, c2, d) = (p0[c], p1[c], p2[c], p3.get(c).copied().unwrap_or(p2[c]));
+                let v = b + 0.5
+                    * t
+                    * (c2 - a + t * (2.0 * a - 5.0 * b + 4.0 * c2 - d + t * (3.0 * (b - c2) + d - a)));
+                self.frame.push(v.round().clamp(-32768.0, 32767.0) as i16);
             }
             self.frame_pos = 0;
             self.pos += self.step;
-            while self.pos >= 1.0 && !self.next.is_empty() {
+            while self.pos >= 1.0 && !self.points[2].is_empty() {
                 self.pos -= 1.0;
-                self.current = std::mem::take(&mut self.next);
-                self.next = self.read_frame();
+                let next = self.next_point();
+                self.points.rotate_left(1);
+                self.points[3] = next;
             }
         }
         let sample = self.frame[self.frame_pos];

@@ -5,6 +5,7 @@ mod decoder;
 mod denoise;
 mod effects;
 mod giphy;
+mod mixer;
 mod online;
 mod phone;
 mod youtube;
@@ -489,14 +490,28 @@ async fn refresh_devices(app: AppHandle) -> Result<Snapshot, String> {
     Ok(state.snapshot())
 }
 
+/// Importe des fichiers du PC. L'analyse (décodage complet de chaque son)
+/// se fait hors du fil de l'interface et sans bloquer la config : les
+/// raccourcis et les clics continuent de jouer pendant ce temps.
 #[tauri::command]
-fn add_sounds(app: AppHandle, state: State<AppState>, paths: Vec<String>) -> Result<Snapshot, String> {
+async fn add_sounds(app: AppHandle, paths: Vec<String>) -> Result<Snapshot, String> {
+    let state = app.state::<AppState>();
+    let first_index = state.config.lock().unwrap().sounds.len();
+    let sounds_dir = state.sounds_dir.clone();
+    let results = tauri::async_runtime::spawn_blocking(move || {
+        paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| import_file(Path::new(p), &sounds_dir, first_index + i))
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     let mut errors = Vec::new();
     {
         let mut config = state.config.lock().unwrap();
-        for p in paths {
-            let index = config.sounds.len();
-            match import_file(Path::new(&p), &state.sounds_dir, index) {
+        for res in results {
+            match res {
                 Ok(sound) => config.sounds.push(sound),
                 Err(e) => errors.push(e),
             }
@@ -525,8 +540,7 @@ async fn pick_sounds(app: AppHandle) -> Result<Snapshot, String> {
         .filter_map(|f| f.into_path().ok())
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
-    let state = app.state::<AppState>();
-    add_sounds(app.clone(), state, paths)
+    add_sounds(app, paths).await
 }
 
 #[tauri::command]
@@ -567,6 +581,9 @@ fn remove_sound(app: AppHandle, state: State<AppState>, id: String) -> Result<Sn
         let mut config = state.config.lock().unwrap();
         if let Some(pos) = config.sounds.iter().position(|s| s.id == id) {
             let sound = config.sounds.remove(pos);
+            // Sous Windows, un fichier en cours de lecture ne peut pas être
+            // supprimé : il resterait pour toujours dans le dossier.
+            state.audio.stop(&sound.id);
             if sound.path.starts_with(&state.sounds_dir) {
                 let _ = fs::remove_file(&sound.path);
             }
@@ -1003,6 +1020,7 @@ fn move_sound(state: State<AppState>, id: String, to: usize) -> Result<Snapshot,
 #[tauri::command]
 fn update_settings(app: AppHandle, state: State<AppState>, mut settings: Settings) -> Result<Snapshot, String> {
     let phone_changed;
+    let audio_changed;
     {
         let mut config = state.config.lock().unwrap();
         // Le code du téléphone ne se change que par « Nouveau code ».
@@ -1014,6 +1032,7 @@ fn update_settings(app: AppHandle, state: State<AppState>, mut settings: Setting
         let old = &config.settings;
         phone_changed = (old.phone_enabled, old.phone_port, &old.phone_token)
             != (settings.phone_enabled, settings.phone_port, &settings.phone_token);
+        audio_changed = audio_settings(old) != audio_settings(&settings);
         config.settings = settings.clone();
         state.save(&config)?;
     }
@@ -1021,10 +1040,25 @@ fn update_settings(app: AppHandle, state: State<AppState>, mut settings: Setting
         apply_phone(&app);
     }
     let autostart = settings.launch_at_startup;
-    apply_audio(&state, settings);
+    // Relancer l'audio coupe les sons et le micro une seconde : seulement
+    // si un réglage du son a changé (pas pour un raccourci ou une clé).
+    // (ou pour réessayer quand un périphérique manquait).
+    let audio_failed = state.warnings.lock().unwrap().iter().any(|w| w.starts_with(WARN_AUDIO));
+    if audio_changed || audio_failed {
+        apply_audio(&state, settings);
+    }
     apply_autostart(&app, autostart);
     register_hotkeys(&app);
     Ok(state.snapshot())
+}
+
+/// Ce que le moteur audio lit dans les réglages.
+fn audio_settings(s: &Settings) -> serde_json::Value {
+    serde_json::json!([
+        s.monitor_device, s.virtual_device, s.mic_device, s.mic_enabled, s.mic_volume,
+        s.master_volume, s.monitor_volume, s.stop_previous, s.noise_suppression,
+        s.strong_denoise, s.voice_gate, s.gate_auto, s.gate_threshold, s.voice_effect,
+    ])
 }
 
 /// Joue le son, ou l'arrête s'il est déjà en cours.
