@@ -88,6 +88,8 @@ enum Command {
     SetMicMuted(bool),
     /// Fait entendre dans le casque ce qui sort du câble (ce que Discord reçoit).
     ListenCable(bool, Reply),
+    /// Fait entendre ta voix traitée (antibruit, porte, volume) dans le casque.
+    HearMyself(bool, Reply),
 }
 
 #[derive(Clone)]
@@ -153,6 +155,12 @@ impl AudioHandle {
     pub fn listen_cable(&self, on: bool) -> Result<(), String> {
         let (reply, rx) = mpsc::channel();
         self.send(Command::ListenCable(on, reply))?;
+        wait(rx)
+    }
+
+    pub fn hear_myself(&self, on: bool) -> Result<(), String> {
+        let (reply, rx) = mpsc::channel();
+        self.send(Command::HearMyself(on, reply))?;
         wait(rx)
     }
 
@@ -309,6 +317,10 @@ struct Engine {
     /// le casque, on entend seulement ce qui sort du câble.
     cable_stream: Option<cpal::Stream>,
     cable_voice: Option<Voice>,
+    /// Copie de la voix traitée, remplie seulement quand le drapeau est levé.
+    mic_tap: Option<(Arc<AtomicBool>, SampleBuffer)>,
+    /// Ta voix renvoyée dans le casque (« M'écouter »).
+    hear_voice: Option<Voice>,
 }
 
 fn run(rx: Receiver<Command>, meter_on: Arc<AtomicBool>, on_event: impl Fn(AudioEvent)) {
@@ -342,6 +354,8 @@ impl Engine {
     fn configure(&mut self, settings: Settings) -> Result<(), String> {
         self.stop_all();
         self.stop_cable();
+        self.stop_hearing();
+        self.mic_tap = None;
         if let Some(v) = self.mic_voice.take() {
             v.stop();
         }
@@ -392,8 +406,52 @@ impl Engine {
         self.cable_stream = None;
     }
 
+    fn stop_hearing(&mut self) {
+        if let Some(v) = self.hear_voice.take() {
+            v.stop();
+        }
+        if let Some((flag, _)) = &self.mic_tap {
+            flag.store(false, Ordering::Relaxed);
+        }
+    }
+
+    /// Volume de ta voix (coupée par le raccourci = silence).
+    fn mic_level(&self) -> f32 {
+        if self.mic_muted {
+            0.0
+        } else {
+            self.settings.mic_volume
+        }
+    }
+
+    fn hear_myself(&mut self, on: bool) -> Result<(), String> {
+        self.stop_hearing();
+        if !on {
+            return Ok(());
+        }
+        let monitor = self.monitor.as_ref().ok_or("casque introuvable")?;
+        let (flag, tap) = self
+            .mic_tap
+            .as_ref()
+            .ok_or("ta voix n'est pas envoyée : active « Envoyer ma voix dans Discord » et choisis le câble")?;
+        // Écouter le câble ferait entendre ta voix deux fois.
+        self.cable_voice.take().inspect(Voice::stop);
+        self.cable_stream = None;
+        if let Ok(mut buf) = tap.lock() {
+            buf.clear();
+        }
+        flag.store(true, Ordering::Relaxed);
+        let source = MicSource::new(tap.clone(), 1, denoise::RATE).convert_samples::<i16>();
+        let voice = monitor
+            .bus
+            .add(Box::new(Resample::new(source, monitor.rate())), self.mic_level());
+        self.hear_voice = Some(voice);
+        Ok(())
+    }
+
     fn listen_cable(&mut self, on: bool) -> Result<(), String> {
         self.stop_cable();
+        self.stop_hearing();
         if !on {
             return Ok(());
         }
@@ -456,6 +514,9 @@ impl Engine {
         // là fait perdre des bouts de son au pilote = micro-coupures).
         let (raw_tx, raw_rx) = mpsc::sync_channel::<Vec<f32>>(64);
         let out = buffer.clone();
+        let tap_on = Arc::new(AtomicBool::new(false));
+        let tap = Arc::new(Mutex::new(VecDeque::<f32>::with_capacity(max_len * 2)));
+        let (tap_on2, tap2) = (tap_on.clone(), tap.clone());
         thread::Builder::new()
             .name("micro".into())
             .spawn(move || {
@@ -463,6 +524,9 @@ impl Engine {
                 while let Ok(chunk) = raw_rx.recv() {
                     let mut cleaned = Vec::with_capacity(chunk.len());
                     processor.process(chunk.into_iter(), &mut cleaned);
+                    if tap_on2.load(Ordering::Relaxed) {
+                        push(&tap2, cleaned.clone(), max_len);
+                    }
                     push(&out, cleaned, max_len);
                 }
             })
@@ -478,13 +542,14 @@ impl Engine {
         stream.play().map_err(|e| e.to_string())?;
 
         let mic = MicSource::new(buffer, 1, denoise::RATE);
-        let volume = if self.mic_muted { 0.0 } else { self.settings.mic_volume };
+        let volume = self.mic_level();
         let voice = virt
             .bus
             .add(Box::new(Resample::new(mic.convert_samples::<i16>(), virt.rate())), volume);
 
         self.mic_stream = Some(stream);
         self.mic_voice = Some(voice);
+        self.mic_tap = Some((tap_on, tap));
         Ok(())
     }
 
@@ -524,13 +589,16 @@ impl Engine {
             Command::ListenCable(on, reply) => {
                 let _ = reply.send(self.listen_cable(on));
             }
+            Command::HearMyself(on, reply) => {
+                let _ = reply.send(self.hear_myself(on));
+            }
             Command::StopPreview => {
                 self.stop(PREVIEW_ID);
             }
             Command::SetMicMuted(muted) => {
                 self.mic_muted = muted;
-                if let Some(voice) = &self.mic_voice {
-                    voice.set_volume(if muted { 0.0 } else { self.settings.mic_volume });
+                for voice in [&self.mic_voice, &self.hear_voice].into_iter().flatten() {
+                    voice.set_volume(self.mic_level());
                 }
             }
         }
@@ -927,6 +995,9 @@ fn push(buf: &Mutex<VecDeque<f32>>, samples: Vec<f32>, max_len: usize) {
         CAPTURE_OVERFLOWS.fetch_add(1, Ordering::Relaxed);
     }
 }
+
+/// Échantillons captés en attente d'être joués.
+type SampleBuffer = Arc<Mutex<VecDeque<f32>>>;
 
 type CaptureFilter = Box<dyn FnMut(&mut dyn Iterator<Item = f32>) -> Vec<f32> + Send>;
 

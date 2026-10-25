@@ -791,6 +791,11 @@ fn listen_cable(state: State<AppState>, on: bool) -> Result<(), String> {
     state.audio.listen_cable(on)
 }
 
+#[tauri::command]
+fn hear_myself(state: State<AppState>, on: bool) -> Result<(), String> {
+    state.audio.hear_myself(on)
+}
+
 #[derive(Serialize)]
 struct Check {
     /// "ok", "warn", "error" ou "info".
@@ -1733,6 +1738,7 @@ pub fn run() {
             import_play_counts,
             reset_stats,
             listen_cable,
+            hear_myself,
             run_diagnostics,
             get_phone_info,
             regenerate_phone_token,

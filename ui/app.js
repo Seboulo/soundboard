@@ -1065,6 +1065,8 @@ $('[data-action="phone-token"]', dlgSettings).addEventListener("click", async ()
 $('[data-action="diagnose-settings"]', dlgSettings).addEventListener("click", openDiagnostics);
 $('[data-action="listen-settings"]', dlgSettings).addEventListener("click", () => setListening(!listening));
 dlgSettings.addEventListener("close", () => listening && !dlgDiag.open && setListening(false));
+$('[data-action="hear-myself"]', dlgSettings).addEventListener("click", () => setHearing(!hearing));
+dlgSettings.addEventListener("close", () => hearing && setHearing(false));
 
 $('[data-action="giphy-key"]', dlgSettings).addEventListener("click", (e) => {
   e.preventDefault();
@@ -1243,10 +1245,33 @@ async function setListening(on) {
     listening = false;
     toast(String(e), true);
   }
+  // Le moteur coupe « M'écouter » quand on écoute le câble.
+  if (listening) hearing = false;
+  renderListenButtons();
+}
+
+// « M'écouter » : ta voix traitée renvoyée dans ton casque.
+let hearing = false;
+async function setHearing(on) {
+  try {
+    await invoke("hear_myself", { on });
+    hearing = on;
+  } catch (e) {
+    hearing = false;
+    toast(String(e), true);
+  }
+  if (hearing) listening = false;
+  renderListenButtons();
+}
+
+function renderListenButtons() {
   for (const b of $$('[data-action="listen"], [data-action="listen-settings"]')) {
     b.textContent = listening ? "■ Arrêter l'écoute" : "Écouter le câble";
     b.classList.toggle("primary", listening);
   }
+  const b = $('[data-action="hear-myself"]');
+  b.textContent = hearing ? "■ Arrêter" : "M'écouter";
+  b.classList.toggle("primary", hearing);
 }
 
 async function runDiagnostics() {
