@@ -1257,7 +1257,7 @@ async function setListening(on) {
 
 // « M'écouter » : ta voix traitée renvoyée dans ton casque.
 let hearing = false;
-const EQ_NAMES = { natural: "Naturelle", warm: "Chaude", clear: "Claire" };
+const EQ_NAMES = { natural: "Naturelle", warm: "Chaude", clear: "Claire", custom: "Sur mesure" };
 
 // Test de voix : le moteur enregistre 10 s d'un coup, l'écran guide la
 // personne (silence puis parole) pendant ce temps.

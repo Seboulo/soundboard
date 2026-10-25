@@ -140,6 +140,9 @@ pub enum VoiceEq {
     Warm,
     /// Moins de « boue », plus de présence : pour un micro sourd.
     Clear,
+    /// Calculé par le test de voix pour rapprocher ton micro d'une voix
+    /// équilibrée (voir `MicCalibration::eq_db`).
+    Custom,
 }
 
 /// Mesures du test de voix, en dBFS : de quoi régler le micro dès le
@@ -150,6 +153,10 @@ pub struct MicCalibration {
     pub noise_db: f32,
     /// Niveau moyen de ta voix.
     pub speech_db: f32,
+    /// Corrections de l'égaliseur sur mesure, en dB, pour chaque bande de
+    /// `denoise::EQ_BANDS_HZ`.
+    #[serde(default)]
+    pub eq_db: [f32; 6],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

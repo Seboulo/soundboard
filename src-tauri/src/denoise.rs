@@ -49,6 +49,13 @@ const DF_ATTEN_LIMIT_DB: f32 = 30.0;
 /// net. On traite donc toutes les trames de la même façon, comme le modèle
 /// a été entraîné ; la porte s'occupe des silences.
 const DF_THRESHOLDS: (f32, f32, f32) = (-100.0, 100.0, 100.0);
+/// DeepFilterNet rend un silence total, sans transition, dès qu'une trame
+/// passe sous -70 dBFS. Sur un micro très propre (ou déjà filtré par
+/// Windows ou le logiciel du casque), les fins de mots y tombent : trous de
+/// 20 à 200 ms au milieu des phrases, mesurés sur un vrai enregistrement.
+/// Un souffle imperceptible (-64 dBFS, que DeepFilterNet retire ensuite de
+/// 30 dB) le garde toujours au travail.
+const DF_DITHER: f32 = 0.0011;
 /// Détection automatique : plus RNNoise est sûr que c'est de la voix, moins
 /// elle a besoin de dépasser le bruit de fond. Une voix douce dans une pièce
 /// bruyante ne dépasse souvent le bruit que de 6 à 9 dB : exiger 10 dB
@@ -146,6 +153,7 @@ pub struct MicProcessor {
     /// Bruit de fond estimé, en dBFS, et trames fortes d'affilée (mode automatique).
     floor_db: f32,
     onset: u32,
+    dither: u32,
 }
 
 /// Filtre du 2ᵉ ordre, pour 48 kHz.
@@ -221,10 +229,29 @@ impl Biquad {
     }
 }
 
+/// Bandes de l'égaliseur sur mesure : un plateau grave, quatre cloches,
+/// un plateau aigu (fréquences centrales en Hz).
+pub const EQ_BANDS_HZ: [f32; 6] = [150.0, 300.0, 800.0, 2000.0, 4000.0, 8000.0];
+
 /// Les réglages de chaque couleur de voix : des corrections douces (3 dB au
 /// plus), comme un ingénieur du son sur une voix parlée.
-fn equalizer(eq: VoiceEq) -> Vec<Biquad> {
+fn equalizer(eq: VoiceEq, calibration: Option<MicCalibration>) -> Vec<Biquad> {
     match eq {
+        VoiceEq::Custom => {
+            let gains = calibration.map(|c| c.eq_db).unwrap_or_default();
+            let last = EQ_BANDS_HZ.len() - 1;
+            EQ_BANDS_HZ
+                .iter()
+                .zip(gains)
+                .enumerate()
+                .filter(|(_, (_, gain))| gain.abs() >= 0.1)
+                .map(|(i, (&freq, gain))| match i {
+                    0 => Biquad::shelf(freq, gain, false),
+                    i if i == last => Biquad::shelf(freq, gain, true),
+                    _ => Biquad::peaking(freq, 1.4, gain),
+                })
+                .collect()
+        }
         VoiceEq::Natural => Vec::new(),
         VoiceEq::Warm => vec![
             Biquad::shelf(180.0, 3.0, false),
@@ -306,10 +333,11 @@ impl MicProcessor {
             hold: 0,
             leveler: VoiceLeveler::new(filters.calibration.map(|c| c.speech_db)),
             limiter: Limiter::new(),
-            eq: equalizer(filters.eq),
+            eq: equalizer(filters.eq, filters.calibration),
             recording: None,
             floor_db: filters.calibration.map_or(f32::NAN, |c| c.noise_db.clamp(-90.0, -20.0)),
             onset: 0,
+            dither: 0x2545_f491,
         }
     }
 
@@ -385,7 +413,9 @@ impl MicProcessor {
             self.frame_in.clone()
         } else if let Some(df) = self.deep.as_mut() {
             for (d, s) in self.deep_in.iter_mut().zip(&self.frame_in) {
-                *d = s / 32768.0;
+                self.dither = self.dither.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let white = (self.dither >> 8) as f32 / (1 << 23) as f32 - 1.0;
+                *d = s / 32768.0 + white * DF_DITHER;
             }
             let noisy = ArrayView2::from_shape((1, FRAME), &self.deep_in).expect("trame");
             let enhanced = ArrayViewMut2::from_shape((1, FRAME), &mut self.deep_out).expect("trame");
@@ -507,7 +537,7 @@ fn to_db(power: f32) -> f32 {
 ///
 /// 1. Volume automatique : on mesure le niveau moyen de la parole
 ///    (seulement quand tu parles) et on règle lentement le gain pour viser
-///    -20 dBFS (de -6 à +12 dB). Une voix douce n'arrive plus trop bas, un
+///    -20 dBFS (de -6 à +18 dB). Une voix douce n'arrive plus trop bas, un
 ///    cri ne sature plus.
 /// 2. Dé-esseur : quand l'aigu (au-dessus de 5 kHz) prend le dessus, comme
 ///    sur les S, CH et Z, on ne baisse que cet aigu, de 10 dB au plus. Le
@@ -535,7 +565,7 @@ struct VoiceLeveler {
 
 const LEVEL_TARGET_DB: f32 = -20.0;
 const LEVEL_MIN_DB: f32 = -6.0;
-const LEVEL_MAX_DB: f32 = 12.0;
+const LEVEL_MAX_DB: f32 = 18.0;
 /// Le dé-esseur agit quand l'aigu (bande large autour de 7 kHz) dépasse
 /// -9 dB de l'énergie totale (une voyelle est vers -25 dB, un S vers -3 dB)
 /// et qu'il est audible.
@@ -823,7 +853,7 @@ mod tests {
         let quiet = db(leveled(0.02)); // voix à -37 dBFS
         let normal = db(leveled(0.14)); // -20 dBFS
         let loud = db(leveled(0.7)); // -6 dBFS
-        assert!(quiet > -28.0 && quiet < -22.0, "quiet {quiet}");
+        assert!(quiet > -24.0 && quiet < -17.0, "quiet {quiet}");
         assert!((normal + 20.0).abs() < 3.0, "normal {normal}");
         assert!(loud < -12.0, "loud {loud}");
         assert!(loud - quiet < 12.0, "écart {}", loud - quiet);
@@ -856,14 +886,43 @@ mod tests {
 
     #[test]
     fn equalizer_presets_are_gentle() {
-        let mut clear = equalizer(VoiceEq::Clear);
+        let mut clear = equalizer(VoiceEq::Clear, None);
         assert!((gain_db(&mut clear, 300.0) + 2.5).abs() < 0.7);
         assert!((gain_db(&mut clear, 3500.0) - 3.0).abs() < 0.7);
         assert!((gain_db(&mut clear, 1000.0)).abs() < 1.5);
-        let mut warm = equalizer(VoiceEq::Warm);
+        let mut warm = equalizer(VoiceEq::Warm, None);
         assert!((gain_db(&mut warm, 60.0) - 3.0).abs() < 0.5);
         assert!((gain_db(&mut warm, 14_000.0) + 2.0).abs() < 1.0);
         assert!((gain_db(&mut warm, 1000.0)).abs() < 1.0);
+    }
+
+    #[test]
+    fn custom_equalizer_follows_calibration() {
+        let calibration = MicCalibration { noise_db: -70.0, speech_db: -30.0, eq_db: [-6.0, 0.0, 0.0, 3.0, 8.0, 6.0] };
+        let mut eq = equalizer(VoiceEq::Custom, Some(calibration));
+        assert!(gain_db(&mut eq, 50.0) < -5.0);
+        assert!((gain_db(&mut eq, 4000.0) - 8.0).abs() < 2.0, "{}", gain_db(&mut eq, 4000.0));
+        assert!(gain_db(&mut eq, 14_000.0) > 5.0);
+        // Sans test de voix, rien ne change.
+        assert!(equalizer(VoiceEq::Custom, None).is_empty());
+    }
+
+    #[test]
+    fn deep_filter_never_cuts_quiet_word_endings() {
+        // Une fin de mot qui descend à -75 dBFS sur un micro sans bruit de
+        // fond : avant, DeepFilterNet rendait un trou de silence total.
+        let filters = MicFilters { denoise: true, strong: true, ..OFF };
+        let mut input = tone(300.0, 0.03, 24_000);
+        input.extend(tone(300.0, 0.0003, 9600));
+        input.extend(tone(300.0, 0.03, 24_000));
+        let out = run(filters, 48_000, 1, &input);
+        let mut run_len = 0;
+        let mut longest = 0;
+        for v in &out[4800..] {
+            run_len = if v.abs() < 1e-9 { run_len + 1 } else { 0 };
+            longest = longest.max(run_len);
+        }
+        assert!(longest < 48, "trou de {longest} échantillons");
     }
 
     #[test]
