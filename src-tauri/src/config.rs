@@ -161,6 +161,8 @@ pub struct Settings {
     pub strong_denoise: bool,
     /// Coupe le micro quand tu ne parles pas.
     pub voice_gate: bool,
+    /// Sensibilité automatique du micro, comme Discord.
+    pub gate_auto: bool,
     /// Probabilité de voix (0–1) en dessous de laquelle le micro est coupé.
     pub gate_threshold: f32,
     /// Raccourci qui coupe / rallume ton micro (les sons passent toujours).
@@ -199,6 +201,7 @@ impl Default for Settings {
             noise_suppression: true,
             strong_denoise: true,
             voice_gate: true,
+            gate_auto: true,
             gate_threshold: 0.6,
             mute_hotkey: None,
             random_hotkey: None,

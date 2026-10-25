@@ -423,22 +423,42 @@ impl Engine {
             denoise: self.settings.noise_suppression,
             strong: self.settings.strong_denoise,
             gate: self.settings.voice_gate,
+            gate_auto: self.settings.gate_auto,
             gate_threshold: self.settings.gate_threshold.clamp(0.0, 1.0),
         };
 
-        // Le micro sort du filtre en mono 48 kHz. ~100 ms de marge : au-delà on
-        // jette le plus ancien pour garder une latence basse si les horloges du
-        // micro et du câble dérivent.
-        let max_len = denoise::RATE as usize / 10;
+        // Le micro sort du filtre en mono 48 kHz. 200 ms de marge au plus :
+        // la lecture rattrape en douceur la dérive des horloges (voir
+        // `MicSource`), ce plafond ne sert qu'en cas de gros à-coup.
+        let max_len = denoise::RATE as usize / 5;
         let buffer = Arc::new(Mutex::new(VecDeque::<f32>::with_capacity(max_len * 2)));
         let mut processor =
             MicProcessor::new(channels, sample_rate, filters, self.settings.voice_effect, self.meter.clone());
+
+        // Le nettoyage (IA comprise) tourne dans son propre fil : le fil du
+        // micro ne fait que copier, il ne prend jamais de retard (un retard
+        // là fait perdre des bouts de son au pilote = micro-coupures).
+        let (raw_tx, raw_rx) = mpsc::sync_channel::<Vec<f32>>(64);
+        let out = buffer.clone();
+        thread::Builder::new()
+            .name("micro".into())
+            .spawn(move || {
+                // S'arrête tout seul quand le micro est fermé (raw_tx lâché).
+                while let Ok(chunk) = raw_rx.recv() {
+                    let mut cleaned = Vec::with_capacity(chunk.len());
+                    processor.process(chunk.into_iter(), &mut cleaned);
+                    push(&out, cleaned, max_len);
+                }
+            })
+            .map_err(|e| e.to_string())?;
         let filter: CaptureFilter = Box::new(move |samples| {
-            let mut out = Vec::new();
-            processor.process(samples, &mut out);
-            out
+            if raw_tx.try_send(samples.collect()).is_err() {
+                CAPTURE_OVERFLOWS.fetch_add(1, Ordering::Relaxed);
+            }
+            Vec::new()
         });
-        let stream = open_capture(&device, &config, format, buffer.clone(), max_len, filter)?;
+        let dummy = Arc::new(Mutex::new(VecDeque::new()));
+        let stream = open_capture(&device, &config, format, dummy, max_len, filter)?;
         stream.play().map_err(|e| e.to_string())?;
 
         let sink = Sink::try_new(&virt.handle).map_err(|e| e.to_string())?;
@@ -847,8 +867,7 @@ fn push(buf: &Mutex<VecDeque<f32>>, samples: Vec<f32>, max_len: usize) {
     let Ok(mut buf) = buf.lock() else { return };
     buf.extend(samples);
     if buf.len() > max_len {
-        // On revient à mi-hauteur d'un coup : un seul raccord au lieu d'en
-        // refaire un à chaque paquet quand les horloges dérivent.
+        // Gros à-coup seulement : on revient à mi-hauteur d'un coup.
         let excess = buf.len() - max_len / 2;
         buf.drain(..excess);
         CAPTURE_OVERFLOWS.fetch_add(1, Ordering::Relaxed);
@@ -898,35 +917,87 @@ fn open_capture(
     .map_err(|e| e.to_string())
 }
 
-/// Source rodio infinie qui lit les échantillons du micro. rodio s'occupe
-/// de convertir la fréquence et le nombre de canaux vers ceux du câble.
+/// Source rodio infinie qui lit les échantillons du micro (ou du câble).
 ///
-/// Il attend d'avoir 20 ms d'avance avant de jouer : un micro qui livre par
-/// paquets irréguliers ne crée plus de trous. Si le son manque quand même,
-/// le dernier échantillon s'éteint en douceur au lieu de tomber d'un coup à
-/// zéro (ce qui faisait un clic).
+/// Le micro et le câble ont chacun leur horloge : l'un va toujours un poil
+/// plus vite que l'autre. Au lieu de jeter ou d'inventer des bouts de son
+/// (des micro-coupures), la lecture accélère ou ralentit de quelques
+/// dixièmes de pour cent pour garder ~40 ms d'avance : inaudible.
+/// Elle attend aussi d'avoir cette avance avant de démarrer, et si le son
+/// manque quand même, la dernière valeur s'éteint en douceur (pas de clic).
 struct MicSource {
     buffer: Arc<Mutex<VecDeque<f32>>>,
     local: VecDeque<f32>,
     channels: u16,
     sample_rate: u32,
     primed: bool,
-    /// Dernière trame jouée, qui s'éteint pendant un manque.
-    last: Vec<f32>,
-    channel: usize,
+    /// Avance visée dans le tampon, en trames, et avance moyenne mesurée.
+    target: f64,
+    fill: f64,
+    ever_primed: bool,
+    /// Avancée dans le son capté pour chaque trame jouée (≈ 1).
+    step: f64,
+    pos: f64,
+    cur: Vec<f32>,
+    next: Vec<f32>,
+    frame: Vec<f32>,
+    frame_pos: usize,
 }
 
 impl MicSource {
     fn new(buffer: Arc<Mutex<VecDeque<f32>>>, channels: u16, sample_rate: u32) -> Self {
+        let ch = channels.max(1) as usize;
         Self {
             buffer,
             local: VecDeque::new(),
             channels: channels.max(1),
             sample_rate,
             primed: false,
-            last: vec![0.0; channels.max(1) as usize],
-            channel: 0,
+            target: sample_rate as f64 * 0.04,
+            fill: 0.0,
+            ever_primed: false,
+            step: 1.0,
+            pos: 0.0,
+            cur: vec![0.0; ch],
+            next: vec![0.0; ch],
+            frame: vec![0.0; ch],
+            frame_pos: ch,
         }
+    }
+
+    /// Prochaine trame captée, ou la précédente qui s'éteint s'il n'y a rien.
+    fn pull_frame(&mut self) -> Vec<f32> {
+        let ch = self.channels as usize;
+        if self.local.len() < ch {
+            // Par petits paquets (~1 ms) : on mesure l'avance souvent, et on
+            // ne verrouille pas à chaque trame.
+            if let Ok(mut buf) = self.buffer.lock() {
+                let waiting = (buf.len() / ch) as f64;
+                self.fill += (waiting - self.fill) * 0.002;
+                let start_at = if self.ever_primed { self.target * 0.5 } else { self.target };
+                if !self.primed && waiting >= start_at {
+                    self.primed = true;
+                    self.ever_primed = true;
+                    self.fill = waiting;
+                }
+                if self.primed {
+                    // Avance trop grande : on lit un peu plus vite, et inversement.
+                    let error = (self.fill - self.target) / self.target;
+                    let wanted = 1.0 + (error * 0.004).clamp(-0.005, 0.005);
+                    self.step += (wanted - self.step) * 0.05;
+                    let n = (buf.len() - buf.len() % ch).min(64 * ch);
+                    self.local.extend(buf.drain(..n));
+                }
+            }
+        }
+        if self.local.len() >= ch {
+            return self.local.drain(..ch).collect();
+        }
+        if self.primed {
+            CAPTURE_UNDERRUNS.fetch_add(1, Ordering::Relaxed);
+            self.primed = false;
+        }
+        self.next.iter().map(|v| v * 0.9).collect()
     }
 }
 
@@ -935,35 +1006,21 @@ impl Iterator for MicSource {
 
     fn next(&mut self) -> Option<f32> {
         let ch = self.channels as usize;
-        if self.local.is_empty() {
-            // On récupère par paquets pour ne pas verrouiller à chaque échantillon.
-            if let Ok(mut buf) = self.buffer.lock() {
-                let prime = (self.sample_rate as usize * ch / 50).max(ch);
-                if self.primed || buf.len() >= prime {
-                    let n = buf.len() - buf.len() % ch;
-                    self.local.extend(buf.drain(..n));
-                }
+        if self.frame_pos >= ch {
+            while self.pos >= 1.0 {
+                self.pos -= 1.0;
+                let next = self.pull_frame();
+                self.cur = std::mem::replace(&mut self.next, next);
             }
-            if self.local.is_empty() {
-                if self.primed {
-                    CAPTURE_UNDERRUNS.fetch_add(1, Ordering::Relaxed);
-                    self.primed = false;
-                }
-                // Court silence aligné sur les canaux, en partant du dernier
-                // échantillon qui décroît.
-                for _ in 0..64 {
-                    for v in self.last.iter_mut() {
-                        *v *= 0.9;
-                        self.local.push_back(*v);
-                    }
-                }
-            } else {
-                self.primed = true;
+            let t = self.pos as f32;
+            for i in 0..ch {
+                self.frame[i] = self.cur[i] + (self.next[i] - self.cur[i]) * t;
             }
+            self.pos += self.step;
+            self.frame_pos = 0;
         }
-        let v = self.local.pop_front()?;
-        self.last[self.channel] = v;
-        self.channel = (self.channel + 1) % ch;
+        let v = self.frame[self.frame_pos];
+        self.frame_pos += 1;
         Some(v)
     }
 }

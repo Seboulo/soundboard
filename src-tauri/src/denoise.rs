@@ -36,9 +36,13 @@ const HOLD_FRAMES: u32 = 35;
 /// En dessous de -55 dBFS, le micro ne capte rien d'assez fort pour ouvrir
 /// la porte, même si ça ressemble à de la voix.
 const OPEN_FLOOR: f32 = 0.0018;
-/// Réduction maximale de DeepFilterNet : au-delà, le bruit restant pompe
-/// et la voix sonne métallique.
-const DF_ATTEN_LIMIT_DB: f32 = 50.0;
+/// Réduction maximale de DeepFilterNet. Plus fort, il mange les fins de mots
+/// et les syllabes douces (micro-coupures) ; 30 dB suffisent avec la porte.
+const DF_ATTEN_LIMIT_DB: f32 = 30.0;
+/// Détection automatique : la voix doit dépasser le bruit de fond de 10 dB
+/// pour ouvrir, et de 5 dB pour garder ouvert.
+const AUTO_OPEN_DB: f32 = 10.0;
+const AUTO_KEEP_DB: f32 = 5.0;
 /// Durée des fondus d'ouverture et de fermeture, en échantillons.
 const ATTACK: f32 = 1.0 / (RATE as f32 * 0.005);
 const RELEASE: f32 = 1.0 / (RATE as f32 * 0.08);
@@ -49,6 +53,9 @@ pub struct MicFilters {
     /// DeepFilterNet plutôt que RNNoise.
     pub strong: bool,
     pub gate: bool,
+    /// Sensibilité automatique (comme Discord) : la porte suit le bruit de
+    /// fond de la pièce au lieu d'un seuil fixe.
+    pub gate_auto: bool,
     /// Probabilité de voix (0–1) en dessous de laquelle la porte se ferme.
     pub gate_threshold: f32,
 }
@@ -106,6 +113,9 @@ pub struct MicProcessor {
     delay_frames: usize,
     gain: f32,
     hold: u32,
+    /// Bruit de fond estimé, en dBFS, et trames fortes d'affilée (mode automatique).
+    floor_db: f32,
+    onset: u32,
 }
 
 /// Passe-haut de Butterworth (2ᵉ ordre) à 80 Hz, pour 48 kHz.
@@ -195,6 +205,8 @@ impl MicProcessor {
             delay_frames,
             gain: if filters.gate { 0.0 } else { 1.0 },
             hold: 0,
+            floor_db: f32::NAN,
+            onset: 0,
         }
     }
 
@@ -253,11 +265,15 @@ impl MicProcessor {
         let target = if !self.filters.gate {
             1.0
         } else {
-            let threshold = self.filters.gate_threshold;
-            let opening = self.hold == 0;
-            if (opening && voice >= threshold && input_rms >= OPEN_FLOOR)
-                || (!opening && voice >= threshold * 0.5)
-            {
+            let open = if self.filters.gate_auto {
+                self.auto_gate(voice, input_rms)
+            } else {
+                let threshold = self.filters.gate_threshold;
+                let opening = self.hold == 0;
+                (opening && voice >= threshold && input_rms >= OPEN_FLOOR)
+                    || (!opening && voice >= threshold * 0.5)
+            };
+            if open {
                 self.hold = HOLD_FRAMES;
             } else {
                 self.hold = self.hold.saturating_sub(1);
@@ -296,6 +312,36 @@ impl MicProcessor {
         }
         self.frame_in.clear();
     }
+
+    /// Comme Discord : on suit le bruit de fond de la pièce (il descend vite
+    /// sur les silences et remonte lentement) et on ouvre quand le son le
+    /// dépasse nettement et ressemble à de la voix.
+    fn auto_gate(&mut self, voice: f32, input_rms: f32) -> bool {
+        let db = 20.0 * input_rms.max(1e-6).log10();
+        if self.floor_db.is_nan() {
+            self.floor_db = db;
+        }
+        let above = db - self.floor_db;
+        let open = if self.hold == 0 {
+            // Deux trames de suite (20 ms) : un clic de clavier n'ouvre pas.
+            let loud = above >= AUTO_OPEN_DB && voice >= 0.2 && input_rms >= OPEN_FLOOR;
+            self.onset = if loud { self.onset + 1 } else { 0 };
+            self.onset >= 2
+        } else {
+            above >= AUTO_KEEP_DB && voice >= 0.1
+        };
+        let rate = if db < self.floor_db {
+            0.1
+        } else if voice >= 0.5 {
+            // Pendant que tu parles, le bruit de fond bouge à peine.
+            0.0005
+        } else {
+            // ~3 s pour s'adapter à un bruit qui monte (ventilateur, pluie).
+            0.003
+        };
+        self.floor_db = (self.floor_db + (db - self.floor_db) * rate).clamp(-90.0, -20.0);
+        open
+    }
 }
 
 #[cfg(test)]
@@ -313,6 +359,7 @@ mod tests {
         denoise: false,
         strong: false,
         gate: false,
+        gate_auto: false,
         gate_threshold: 0.5,
     };
 
@@ -361,7 +408,8 @@ mod tests {
 
     #[test]
     fn gate_closes_on_noise() {
-        // Bruit blanc faible : pas de la voix, la porte doit rester fermée.
+        // Souffle constant : la détection automatique l'apprend comme bruit de
+        // fond et la porte reste fermée.
         let mut seed = 1u32;
         let noise: Vec<f32> = (0..48_000)
             .map(|_| {
@@ -373,11 +421,30 @@ mod tests {
             denoise: true,
             strong: true,
             gate: true,
+            gate_auto: true,
             gate_threshold: 0.5,
         };
         let out = run(gate, 48_000, 1, &noise);
         let tail = &out[out.len() / 2..];
         let peak = tail.iter().fold(0.0f32, |m, v| m.max(v.abs()));
         assert!(peak < 1e-3, "peak {peak}");
+    }
+
+    #[test]
+    fn auto_gate_ignores_room_noise_and_opens_on_loud_input() {
+        // Souffle constant pendant 2 s : la porte apprend le bruit et reste
+        // fermée ; il faut nettement plus fort pour l'ouvrir.
+        let filters = MicFilters { gate: true, gate_auto: true, ..OFF };
+        let mut p = MicProcessor::new(1, 48_000, filters, VoiceEffect::None, Default::default());
+        let mut out = Vec::new();
+        p.process(noise(48_000 * 2, 0.01).into_iter(), &mut out);
+        let tail = &out[out.len() / 2..];
+        assert!(tail.iter().all(|v| v.abs() < 1e-3));
+        assert!((p.floor_db + 45.0).abs() < 4.0, "floor {}", p.floor_db);
+        assert!(!p.auto_gate(0.9, 0.012));
+        assert!(!p.auto_gate(0.9, 0.1));
+        assert!(p.auto_gate(0.9, 0.1));
+        // Puis la voix retombe dans le bruit : la porte se referme.
+        assert!(!p.auto_gate(0.9, 0.006));
     }
 }

@@ -1017,3 +1017,6 @@ dialog { border-radius: 18px; }
   #btn-online { width: 36px; padding: 0; }
   .topbar .search-box #search { width: 150px; }
 }
+
+/* Réglage sans effet (dépend d'un autre interrupteur). */
+.set-row:has(input:disabled), .set-field:has(input:disabled) { opacity: .5; }

@@ -246,7 +246,8 @@
             </select>
           </label>
           <label class="set-row"><span class="txt"><b>Couper ton micro quand tu ne parles pas</b></span><input name="voice_gate" type="checkbox" class="switch"></label>
-          <label class="set-field">Seuil de détection de la voix <span class="value" data-for="gate_threshold"></span>
+          <label class="set-row"><span class="txt"><b>Sensibilité automatique</b><small>Comme sur Discord : le micro apprend le bruit de ta pièce et ne s'ouvre que quand tu parles.</small></span><input name="gate_auto" type="checkbox" class="switch"></label>
+          <label class="set-field">Seuil manuel de détection de la voix <span class="value" data-for="gate_threshold"></span>
             <input name="gate_threshold" type="range" min="0.1" max="0.95" step="0.05">
           </label>
           <div class="meter" id="mic-meter">
@@ -254,7 +255,7 @@
             <div class="meter-row"><span>Voix</span><div class="bar"><div class="fill voice" data-voice></div><div class="mark" data-threshold></div></div></div>
             <div class="meter-state" data-state>Parle pour tester ton micro…</div>
           </div>
-          <p class="hint">Ces filtres ne touchent que ton micro, jamais les sons. Début des phrases coupé : baisse le seuil (le petit trait). Bruits qui passent : monte-le. L'indicateur montre les réglages enregistrés.</p>
+          <p class="hint">Ces filtres ne touchent que ton micro, jamais les sons. En automatique, laisse-lui quelques secondes pour apprendre ta pièce. En manuel : début des phrases coupé, baisse le seuil (le petit trait) ; bruits qui passent, monte-le. L'indicateur montre les réglages enregistrés.</p>
           </div>
         </section>
         <section data-pane="keys" hidden>

@@ -287,7 +287,10 @@ function renderPlaying() {
     pad.classList.toggle("playing", !!p);
     const img = $(".icon.image img", pad);
     const sound = img && soundById(id);
-    if (sound?.image) img.src = fileSrc(p ? sound.image : sound.image_still);
+    // Seulement quand l'image change : remettre la même adresse 10 fois par
+    // seconde fait redémarrer le GIF (il « vibre »).
+    const src = sound?.image && fileSrc(p ? sound.image : sound.image_still || sound.image);
+    if (src && img.getAttribute("src") !== src) img.src = src;
     let ratio = 0;
     if (p && p.duration_ms) {
       ratio = p.looping ? (p.elapsed_ms % p.duration_ms) / p.duration_ms : Math.min(1, p.elapsed_ms / p.duration_ms);
@@ -934,6 +937,8 @@ async function openSettings() {
   formSettings.mic_enabled.checked = s.mic_enabled;
   formSettings.denoise_mode.value = !s.noise_suppression ? "off" : s.strong_denoise ? "strong" : "light";
   formSettings.voice_gate.checked = s.voice_gate;
+  formSettings.gate_auto.checked = s.gate_auto ?? true;
+  updateGateRows();
   for (const k of ["mic_volume", "master_volume", "monitor_volume", "gate_threshold"]) {
     formSettings[k].value = s[k];
     formSettings[k].update();
@@ -994,7 +999,18 @@ function startMeter() {
 
 function updateThresholdMark() {
   $("[data-threshold]", meter).style.left = formSettings.gate_threshold.value * 100 + "%";
+  $("[data-threshold]", meter).hidden = formSettings.gate_auto.checked;
 }
+
+// En automatique, le seuil ne sert plus : la porte suit le bruit de la pièce.
+function updateGateRows() {
+  const on = formSettings.voice_gate.checked;
+  formSettings.gate_auto.disabled = !on;
+  formSettings.gate_threshold.disabled = !on || formSettings.gate_auto.checked;
+  updateThresholdMark();
+}
+formSettings.voice_gate.addEventListener("change", updateGateRows);
+formSettings.gate_auto.addEventListener("change", updateGateRows);
 formSettings.gate_threshold.addEventListener("input", updateThresholdMark);
 
 listen("mic-level", ({ payload: m }) => {
@@ -1007,7 +1023,9 @@ listen("mic-level", ({ payload: m }) => {
     ? "🔇 Micro coupé par le raccourci"
     : m.open
       ? "● Ta voix passe"
-      : "○ Micro fermé (pas de voix détectée)";
+      : formSettings.gate_auto.checked
+        ? "○ Micro fermé : bruit de fond ignoré automatiquement"
+        : "○ Micro fermé (pas de voix détectée)";
 });
 
 // QR code de la page du téléphone (seulement quand c'est activé et enregistré).
@@ -1089,6 +1107,7 @@ dlgSettings.addEventListener("close", () => {
     noise_suppression: f.denoise_mode.value !== "off",
     strong_denoise: f.denoise_mode.value === "strong",
     voice_gate: f.voice_gate.checked,
+    gate_auto: f.gate_auto.checked,
     gate_threshold: Number(f.gate_threshold.value),
     master_volume: Number(f.master_volume.value),
     monitor_volume: Number(f.monitor_volume.value),
