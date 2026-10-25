@@ -4,7 +4,7 @@
   --panel-2: #f7f8fa;
   --border: #e2e4e9;
   --text: #1c1e23;
-  --muted: #6b7280;
+  --muted: #5d6472;
   --accent: #4f46e5;
   --on-accent: #ffffff;
   --danger: #e5484d;
@@ -29,7 +29,7 @@
   --panel-2: #26282f;
   --border: #33353d;
   --text: #ececf1;
-  --muted: #9a9fab;
+  --muted: #a5aab6;
   --accent: #7c83f5;
   --on-accent: #ffffff;
   --shadow: 0 1px 2px rgba(0, 0, 0, .3);
@@ -52,7 +52,8 @@ html, body {
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
+  font: 14.5px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
   user-select: none;
 }
 
@@ -899,3 +900,120 @@ button:focus-visible, .pad:focus-visible, select:focus-visible, input:focus-visi
 .pad:focus-visible { outline: 2px solid var(--accent); }
 /* Barres de défilement fines et discrètes. */
 * { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--muted) 45%, transparent) transparent; }
+
+/* ---------- Lisibilité et graphisme (0.12) ---------- */
+
+/* Icônes en traits fins. */
+.ico {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; font-weight: 500; }
+button.icon { width: 36px; height: 36px; padding: 0; font-size: 18px; }
+button.ghost { background: transparent; border-color: transparent; box-shadow: none; color: var(--muted); }
+button.ghost:hover { background: var(--panel-2); color: var(--text); }
+.topbar button:not(.pill) { height: 36px; }
+
+/* Logo : barres d'égaliseur blanches sur la couleur de l'app. */
+.logo { width: 32px; height: 32px; border-radius: 10px; background: var(--accent); border: 0; color: #fff; }
+.logo .ico { width: 20px; height: 20px; stroke-width: 2.4; }
+
+/* Recherche avec loupe. */
+.search-box { position: relative; display: flex; align-items: center; flex-shrink: 1; min-width: 90px; }
+.search-box .ico { position: absolute; left: 10px; width: 16px; height: 16px; color: var(--muted); }
+.topbar .search-box #search { width: 200px; height: 36px; padding-left: 32px; border-radius: 10px; background: var(--panel-2); }
+.topbar .search-box #search:focus { background: var(--panel); }
+
+/* Pastilles d'état plus lisibles. */
+.pill { font-size: 12.5px; font-weight: 500; padding: 4px 11px; }
+
+/* Onglets */
+.tab { display: inline-flex; gap: 6px; height: 32px; padding: 0 14px; font-weight: 500; }
+.tab .ico { width: 15px; height: 15px; }
+.tabbar > button { height: 34px; }
+.tabbar > button.icon { width: 34px; }
+.tabbar .ico { width: 17px; height: 17px; }
+.view-toggle button { width: 32px; height: 28px; padding: 0; }
+.view-toggle .ico { width: 16px; height: 16px; }
+#sort { width: auto; height: 34px; border-radius: 10px; padding: 0 10px; }
+
+/* Bandeau de mise à jour plus discret. */
+.banner {
+  border-left: 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
+  border-radius: 12px;
+  padding: 8px 10px 8px 14px;
+}
+
+/* Pads : le nom en couleur de texte (lisible sur toutes les couleurs), la
+   couleur du son reste dans le fond, la bordure et la pastille. */
+:root { --tint-amount: 16%; }
+:root[data-theme="dark"] { --tint-amount: 20%; }
+.pad { gap: 10px; border-radius: 20px; }
+.pad .name {
+  color: var(--text);
+  font-size: 14.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+/* Mot très long (« Applaudissements ») : plus petit plutôt que coupé. */
+.pad .name.long-word { font-size: 12.5px; letter-spacing: -.1px; }
+.grid.list .pad .name.long-word { font-size: inherit; letter-spacing: 0; }
+.grid.list .pad.playing .name { color: var(--text); }
+main { padding-bottom: 40px; }
+.pad .icon {
+  width: 60px;
+  height: 60px;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--c) 14%, var(--pad-base));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 22%, transparent);
+}
+.pad .icon.emoji { font-size: 32px; }
+.grid:not(.list) .pad .icon.image { width: 60px; height: 60px; border-radius: 18px; }
+.pad .key { font-size: 11.5px; color: color-mix(in srgb, var(--text) 72%, var(--c)); bottom: 10px; }
+.pad .key kbd {
+  font-weight: 600;
+  padding: 1px 8px;
+  background: color-mix(in srgb, var(--pad-base) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c) 25%, var(--border));
+}
+.pad .edit, .pad .fav { width: 28px; height: 28px; background: var(--pad-base); box-shadow: var(--shadow); color: var(--text); }
+.pad .edit .ico, .pad .fav .ico { width: 15px; height: 15px; }
+.pad .fav.on { color: #f5a524; box-shadow: none; }
+.pad .fav.on .ico { fill: currentColor; }
+.pad .eq i { background: var(--c); }
+.pad.playing { box-shadow: 0 0 0 2px var(--c), 0 10px 24px color-mix(in srgb, var(--c) 25%, transparent); }
+.pad .progress { height: 4px; border-radius: 0 4px 4px 0; }
+
+/* Liste : lignes plus aérées, pastille de couleur sur l'icône. */
+.grid.list .pad .icon { width: 42px; height: 42px; border-radius: 12px; }
+.grid.list .pad .icon.image img { border-radius: 12px; }
+.grid.list .pad .name { font-weight: 600; }
+.grid.list .pad.playing { box-shadow: none; }
+
+/* Fenêtres : titres un peu plus présents, marges régulières. */
+.form h2 { font-size: 19px; letter-spacing: -.2px; }
+.form label { color: var(--text); }
+.form .hint { color: var(--muted); line-height: 1.45; }
+dialog { border-radius: 18px; }
+.set-nav button { justify-content: flex-start; }
+.set-nav button .ico { width: 18px; height: 18px; }
+/* Fenêtre étroite : les boutons secondaires gardent juste leur icône. */
+@media (max-width: 1040px) {
+  #btn-random .lbl { display: none; }
+  #btn-random { width: 34px; padding: 0; }
+  .tabbar .size input { width: 60px; }
+}
+@media (max-width: 900px) {
+  #btn-online .lbl { display: none; }
+  #btn-online { width: 36px; padding: 0; }
+  .topbar .search-box #search { width: 150px; }
+}

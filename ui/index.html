@@ -7,18 +7,46 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <!-- Icônes dessinées en traits fins, comme une police d'icônes. -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></symbol>
+      <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="i-chart" viewBox="0 0 24 24"><path d="M5 20v-8M12 20V5M19 20v-5"/></symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z"/></symbol>
+      <symbol id="i-auto" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17z" fill="currentColor"/></symbol>
+      <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
+      <symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/></symbol>
+      <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r=".6" fill="currentColor"/><circle cx="4.5" cy="12" r=".6" fill="currentColor"/><circle cx="4.5" cy="18" r=".6" fill="currentColor"/></symbol>
+      <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M16 4h4v4M4 20 20 4M20 16v4h-4M14.5 14.5 20 20M4 4l5 5"/></symbol>
+      <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></symbol>
+      <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4zM13 7l4 4"/></symbol>
+      <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+      <symbol id="i-volume" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/></symbol>
+      <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5"/></symbol>
+      <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2.5"/><path d="M7 10h.01M11 10h.01M15 10h.01M8 14h8"/></symbol>
+      <symbol id="i-phone" viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M11 17.5h2"/></symbol>
+      <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/></symbol>
+      <symbol id="i-logo" viewBox="0 0 24 24"><path d="M5 10v4M9 7v10M13 4v16M17 8v8M21 11v2"/></symbol>
+    </defs>
+  </svg>
   <header class="topbar">
-    <div class="brand"><span class="logo">🔊</span><h1>Soundboard</h1></div>
+    <div class="brand"><span class="logo"><svg class="ico"><use href="#i-logo"/></svg></span><h1>Soundboard</h1></div>
     <button id="cable-status" class="pill" type="button" title="État du câble virtuel"></button>
     <button id="mic-toggle" class="pill" type="button" hidden></button>
     <div class="spacer"></div>
-    <input id="search" type="search" placeholder="Rechercher…" autocomplete="off">
-    <button id="btn-online" type="button"title="Chercher des sons sur internet">🔎 En ligne</button>
-    <button id="btn-add" type="button" class="primary"title="Ajouter des fichiers audio">+ Ajouter</button>
-    <button id="btn-stop" type="button" class="danger" title="Tout arrêter">■ Stop</button>
-    <button id="btn-stats" type="button" class="icon" title="Statistiques">📊</button>
-    <button id="btn-theme" type="button" class="icon"></button>
-    <button id="btn-settings" type="button" class="icon" title="Réglages">⚙</button>
+    <label class="search-box"><svg class="ico"><use href="#i-search"/></svg><input id="search" type="search" placeholder="Rechercher un son…" autocomplete="off"></label>
+    <button id="btn-online" type="button" title="Chercher des sons sur internet"><svg class="ico"><use href="#i-globe"/></svg><span class="lbl">En ligne</span></button>
+    <button id="btn-add" type="button" class="primary" title="Ajouter des fichiers audio"><svg class="ico"><use href="#i-plus"/></svg><span class="lbl">Ajouter</span></button>
+    <button id="btn-stop" type="button" class="danger" title="Tout arrêter"><svg class="ico"><use href="#i-stop"/></svg><span class="lbl">Stop</span></button>
+    <button id="btn-stats" type="button" class="icon ghost" title="Statistiques"><svg class="ico"><use href="#i-chart"/></svg></button>
+    <button id="btn-theme" type="button" class="icon ghost"><svg class="ico"><use href="#i-auto"/></svg></button>
+    <button id="btn-settings" type="button" class="icon ghost" title="Réglages"><svg class="ico"><use href="#i-sliders"/></svg></button>
   </header>
 
   <div id="update-banner" class="banner" hidden>
@@ -46,13 +74,13 @@
       <option value="color">Par couleur</option>
     </select>
     <div class="view-toggle" role="group" aria-label="Affichage">
-      <button type="button" data-view="grid" title="Affichage en grille">▦</button>
-      <button type="button" data-view="list" title="Affichage en liste">☰</button>
+      <button type="button" data-view="grid" title="Affichage en grille"><svg class="ico"><use href="#i-grid"/></svg></button>
+      <button type="button" data-view="list" title="Affichage en liste"><svg class="ico"><use href="#i-list"/></svg></button>
     </div>
     <label class="size" title="Taille des pads"><input id="pad-size" type="range" min="100" max="220" step="10"></label>
-    <button id="btn-random" type="button" title="Jouer un son au hasard de cet onglet">🎲 Au hasard</button>
-    <button id="btn-export" type="button" class="icon" title="Exporter : enregistrer les sons de cet onglet dans un .zip à partager">📦</button>
-    <button id="btn-import" type="button" class="icon" title="Importer : ajouter les sons d'un pack .zip">📥</button>
+    <button id="btn-random" type="button" title="Jouer un son au hasard de cet onglet"><svg class="ico"><use href="#i-shuffle"/></svg><span class="lbl">Au hasard</span></button>
+    <button id="btn-export" type="button" class="icon" title="Exporter : enregistrer les sons de cet onglet dans un .zip à partager"><svg class="ico"><use href="#i-upload"/></svg></button>
+    <button id="btn-import" type="button" class="icon" title="Importer : ajouter les sons d'un pack .zip"><svg class="ico"><use href="#i-download"/></svg></button>
   </nav>
 
   <main>
@@ -149,11 +177,11 @@
       <header class="set-head"><h2>Réglages</h2></header>
       <div class="set-body">
         <nav class="set-nav">
-          <button type="button" data-tab="sound" class="on"><span>🔊</span> Sons</button>
-          <button type="button" data-tab="mic"><span>🎙️</span> Micro</button>
-          <button type="button" data-tab="keys"><span>⌨️</span> Raccourcis</button>
-          <button type="button" data-tab="remote"><span>📱</span> Téléphone</button>
-          <button type="button" data-tab="general"><span>⚙️</span> Général</button>
+          <button type="button" data-tab="sound" class="on"><svg class="ico"><use href="#i-volume"/></svg> Sons</button>
+          <button type="button" data-tab="mic"><svg class="ico"><use href="#i-mic"/></svg> Micro</button>
+          <button type="button" data-tab="keys"><svg class="ico"><use href="#i-keyboard"/></svg> Raccourcis</button>
+          <button type="button" data-tab="remote"><svg class="ico"><use href="#i-phone"/></svg> Téléphone</button>
+          <button type="button" data-tab="general"><svg class="ico"><use href="#i-gear"/></svg> Général</button>
         </nav>
         <div class="set-panes">
         <section data-pane="sound">

@@ -197,11 +197,12 @@ function tabCategory() {
 function renderTabs() {
   const cats = categories();
   if (currentTab && currentTab !== RECENT_TAB && !cats.includes(currentTab)) currentTab = null;
-  const tab = (label, value) => {
+  const tab = (label, value, iconName) => {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "tab" + (currentTab === value ? " active" : "");
-    b.textContent = label;
+    if (iconName) b.append(svgIcon(iconName));
+    b.append(label);
     b.addEventListener("click", () => {
       currentTab = value;
       try {
@@ -213,7 +214,7 @@ function renderTabs() {
     });
     return b;
   };
-  $("#tabs").replaceChildren(tab("Tous", null), tab("🕘 Récents", RECENT_TAB), ...cats.map((c) => tab(c, c)));
+  $("#tabs").replaceChildren(tab("Tous", null), tab("Récents", RECENT_TAB, "clock"), ...cats.map((c) => tab(c, c)));
   $("#categories").replaceChildren(...cats.map((c) => new Option(c)));
   $("#btn-export").title = tabCategory()
     ? `Exporter « ${tabCategory()} » : enregistrer ses sons dans un .zip à partager`
@@ -232,6 +233,16 @@ function renderWarnings() {
   const el = $("#warnings");
   $("[data-text]", el).textContent = state.warnings.join("\n");
   el.hidden = state.warnings.length === 0;
+}
+
+/** Icône du jeu d'icônes de index.html. */
+function svgIcon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "ico");
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", "#i-" + name);
+  svg.append(use);
+  return svg;
 }
 
 const fold = (text) => text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
@@ -478,7 +489,7 @@ function padElement(sound, index) {
   eq.className = "eq";
   eq.append(...[0, 1, 2, 3].map(() => document.createElement("i")));
   const name = document.createElement("span");
-  name.className = "name";
+  name.className = "name" + (sound.name.split(/\s+/).some((w) => w.length > 12) ? " long-word" : "");
   name.textContent = sound.name;
   // Numéro, catégorie et durée : visibles seulement en liste.
   const num = document.createElement("span");
@@ -508,11 +519,11 @@ function padElement(sound, index) {
   }
   const edit = document.createElement("span");
   edit.className = "edit";
-  edit.textContent = "✎";
+  edit.append(svgIcon("pencil"));
   edit.title = "Modifier";
   const fav = document.createElement("span");
   fav.className = "fav" + (sound.favorite ? " on" : "");
-  fav.textContent = sound.favorite ? "★" : "☆";
+  fav.append(svgIcon("star"));
   fav.title = sound.favorite ? "Retirer des favoris" : "Épingler en haut (favori)";
   const progress = document.createElement("span");
   progress.className = "progress";
@@ -520,8 +531,8 @@ function padElement(sound, index) {
 
   pad.addEventListener("click", (e) => {
     if (reorder.justDropped) return;
-    if (e.target === edit) return openSoundDialog(sound);
-    if (e.target === fav) return call("toggle_favorite", { id: sound.id });
+    if (edit.contains(e.target)) return openSoundDialog(sound);
+    if (fav.contains(e.target)) return call("toggle_favorite", { id: sound.id });
     flash(sound.id);
     call("play_sound", { id: sound.id }); // joue, ou arrête s'il est déjà en cours
   });
@@ -1170,7 +1181,7 @@ $('[data-action="finish"]', dlgWizard).addEventListener("click", async () => {
 
 // « auto » suit le thème de Windows ; le choix est gardé sur ce PC.
 const THEMES = ["auto", "light", "dark"];
-const THEME_ICONS = { auto: "🌗", light: "☀️", dark: "🌙" };
+const THEME_ICONS = { auto: "auto", light: "sun", dark: "moon" };
 const THEME_LABELS = { auto: "Thème : automatique (comme Windows)", light: "Thème : clair", dark: "Thème : nuit" };
 const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
 let theme = "auto";
@@ -1182,7 +1193,7 @@ function applyTheme() {
   const dark = theme === "dark" || (theme === "auto" && darkQuery.matches);
   document.documentElement.dataset.theme = dark ? "dark" : "light";
   const btn = $("#btn-theme");
-  btn.textContent = THEME_ICONS[theme];
+  btn.replaceChildren(svgIcon(THEME_ICONS[theme]));
   btn.title = THEME_LABELS[theme] + " — clique pour changer";
   if (dlgSound.open) drawTrim();
 }
