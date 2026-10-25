@@ -1,5 +1,6 @@
 mod analysis;
 mod audio;
+mod calibration;
 mod config;
 mod decoder;
 mod denoise;
@@ -796,6 +797,48 @@ fn hear_myself(state: State<AppState>, on: bool) -> Result<(), String> {
     state.audio.hear_myself(on)
 }
 
+fn recordings_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("enregistrements");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// Test de voix : 5 s de silence puis 5 s de parole. Enregistre ta voix
+/// brute et traitée, mesure ta pièce et ton micro, puis règle le micro
+/// (calibrage et égaliseur conseillé).
+#[tauri::command]
+async fn calibrate_voice(app: AppHandle) -> Result<calibration::VoiceReport, String> {
+    let audio = app.state::<AppState>().audio.clone();
+    let seconds = calibration::PHASE_SECONDS * 2;
+    let recording = tauri::async_runtime::spawn_blocking(move || audio.record_voice(seconds))
+        .await
+        .map_err(|e| e.to_string())??;
+    let dir = recordings_dir(&app)?;
+    calibration::write_wav(&dir.join("1-voix-brute.wav"), &recording.raw)?;
+    calibration::write_wav(&dir.join("2-voix-traitee.wav"), &recording.processed)?;
+    let (cal, mut report) = calibration::analyze(&recording.raw)?;
+    report.folder = dir.to_string_lossy().into_owned();
+
+    let state = app.state::<AppState>();
+    let settings = {
+        let mut config = state.config.lock().unwrap();
+        config.settings.mic_calibration = Some(cal);
+        config.settings.voice_eq = report.eq;
+        state.save(&config)?;
+        config.settings.clone()
+    };
+    apply_audio(&state, settings);
+    Ok(report)
+}
+
+#[tauri::command]
+fn open_recordings(app: AppHandle) -> Result<(), String> {
+    let dir = recordings_dir(&app)?;
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 #[derive(Serialize)]
 struct Check {
     /// "ok", "warn", "error" ou "info".
@@ -1063,7 +1106,7 @@ fn audio_settings(s: &Settings) -> serde_json::Value {
         s.monitor_device, s.virtual_device, s.mic_device, s.mic_enabled, s.mic_volume,
         s.master_volume, s.monitor_volume, s.stop_previous, s.noise_suppression,
         s.strong_denoise, s.voice_gate, s.gate_auto, s.gate_threshold, s.voice_effect,
-        s.voice_leveler,
+        s.voice_leveler, s.voice_eq, s.mic_calibration,
     ])
 }
 
@@ -1739,6 +1782,8 @@ pub fn run() {
             reset_stats,
             listen_cable,
             hear_myself,
+            calibrate_voice,
+            open_recordings,
             run_diagnostics,
             get_phone_info,
             regenerate_phone_token,

@@ -19,7 +19,7 @@
 //!   arrive, appliquée au son qui sort avec 20 à 30 ms de retard : le début
 //!   des mots n'est plus mangé.
 
-use crate::config::VoiceEffect;
+use crate::config::{MicCalibration, VoiceEffect, VoiceEq};
 use crate::effects::Effect;
 use df::tract::{DfParams, DfTract, RuntimeParams};
 use ndarray::{ArrayView2, ArrayViewMut2};
@@ -73,6 +73,16 @@ pub struct MicFilters {
     pub gate_threshold: f32,
     /// Volume de voix automatique (voir `VoiceLeveler`).
     pub level: bool,
+    pub eq: VoiceEq,
+    /// Mesures du test de voix : bruit de fond et volume connus d'avance.
+    pub calibration: Option<MicCalibration>,
+}
+
+/// Enregistrement du test de voix : le son du micro tel quel (48 kHz mono)
+/// et le même passé dans tout le traitement.
+pub struct Recording {
+    pub raw: Vec<f32>,
+    pub processed: Vec<f32>,
 }
 
 /// Dernières mesures du micro, lues par l'indicateur de niveau des réglages.
@@ -130,21 +140,57 @@ pub struct MicProcessor {
     hold: u32,
     leveler: VoiceLeveler,
     limiter: Limiter,
+    eq: Vec<Biquad>,
+    /// Test de voix en cours et sa longueur voulue (en échantillons).
+    recording: Option<(Recording, usize)>,
     /// Bruit de fond estimé, en dBFS, et trames fortes d'affilée (mode automatique).
     floor_db: f32,
     onset: u32,
 }
 
 /// Filtre du 2ᵉ ordre, pour 48 kHz.
-struct Biquad {
+pub(crate) struct Biquad {
     b: [f32; 3],
     a: [f32; 2],
     z: [f32; 2],
 }
 
 impl Biquad {
+    /// Coefficients bruts (formules du « RBJ Audio EQ Cookbook »).
+    fn from_raw(b: [f32; 3], a: [f32; 3]) -> Self {
+        Self {
+            b: [b[0] / a[0], b[1] / a[0], b[2] / a[0]],
+            a: [a[1] / a[0], a[2] / a[0]],
+            z: [0.0; 2],
+        }
+    }
+
+    /// Cloche : monte ou baisse une bande autour de `freq`.
+    fn peaking(freq: f32, q: f32, gain_db: f32) -> Self {
+        let a = 10f32.powf(gain_db / 40.0);
+        let w = std::f32::consts::TAU * freq / RATE as f32;
+        let alpha = w.sin() / (2.0 * q);
+        let cos = w.cos();
+        Self::from_raw([1.0 + alpha * a, -2.0 * cos, 1.0 - alpha * a], [1.0 + alpha / a, -2.0 * cos, 1.0 - alpha / a])
+    }
+
+    /// Plateau : monte ou baisse tout ce qui est sous (`high` = false) ou
+    /// au-dessus de `freq`.
+    fn shelf(freq: f32, gain_db: f32, high: bool) -> Self {
+        let a = 10f32.powf(gain_db / 40.0);
+        let w = std::f32::consts::TAU * freq / RATE as f32;
+        let cos = w.cos();
+        let k = 2.0 * a.sqrt() * w.sin() / std::f32::consts::SQRT_2;
+        let (p, m) = (a + 1.0, a - 1.0);
+        let s = if high { 1.0 } else { -1.0 };
+        Self::from_raw(
+            [a * (p + s * m * cos + k), -2.0 * s * a * (m + s * p * cos), a * (p + s * m * cos - k)],
+            [p - s * m * cos + k, 2.0 * s * (m - s * p * cos), p - s * m * cos - k],
+        )
+    }
+
     /// Passe-haut de Butterworth.
-    fn high_pass(cutoff: f32) -> Self {
+    pub(crate) fn high_pass(cutoff: f32) -> Self {
         let k = (std::f32::consts::PI * cutoff / RATE as f32).tan();
         let q = std::f32::consts::FRAC_1_SQRT_2;
         let norm = 1.0 / (1.0 + k / q + k * k);
@@ -156,7 +202,7 @@ impl Biquad {
     }
 
     /// Passe-bande, gain 1 et sans déphasage au centre.
-    fn band_pass(center: f32, q: f32) -> Self {
+    pub(crate) fn band_pass(center: f32, q: f32) -> Self {
         let w = std::f32::consts::TAU * center / RATE as f32;
         let alpha = w.sin() / (2.0 * q);
         let norm = 1.0 / (1.0 + alpha);
@@ -167,11 +213,29 @@ impl Biquad {
         }
     }
 
-    fn run(&mut self, x: f32) -> f32 {
+    pub(crate) fn run(&mut self, x: f32) -> f32 {
         let y = self.b[0] * x + self.z[0];
         self.z[0] = self.b[1] * x - self.a[0] * y + self.z[1];
         self.z[1] = self.b[2] * x - self.a[1] * y;
         y
+    }
+}
+
+/// Les réglages de chaque couleur de voix : des corrections douces (3 dB au
+/// plus), comme un ingénieur du son sur une voix parlée.
+fn equalizer(eq: VoiceEq) -> Vec<Biquad> {
+    match eq {
+        VoiceEq::Natural => Vec::new(),
+        VoiceEq::Warm => vec![
+            Biquad::shelf(180.0, 3.0, false),
+            Biquad::peaking(3500.0, 1.0, -1.5),
+            Biquad::shelf(8000.0, -2.0, true),
+        ],
+        VoiceEq::Clear => vec![
+            Biquad::peaking(300.0, 1.0, -2.5),
+            Biquad::peaking(3500.0, 1.0, 3.0),
+            Biquad::shelf(10_000.0, 2.0, true),
+        ],
     }
 }
 
@@ -240,9 +304,11 @@ impl MicProcessor {
             delay_frames,
             gain: if filters.gate { 0.0 } else { 1.0 },
             hold: 0,
-            leveler: VoiceLeveler::new(),
+            leveler: VoiceLeveler::new(filters.calibration.map(|c| c.speech_db)),
             limiter: Limiter::new(),
-            floor_db: f32::NAN,
+            eq: equalizer(filters.eq),
+            recording: None,
+            floor_db: filters.calibration.map_or(f32::NAN, |c| c.noise_db.clamp(-90.0, -20.0)),
             onset: 0,
         }
     }
@@ -280,7 +346,27 @@ impl MicProcessor {
         }
     }
 
+    /// Commence à enregistrer `samples` échantillons (brut et traité).
+    pub fn start_recording(&mut self, samples: usize) {
+        let empty = || Vec::with_capacity(samples);
+        self.recording = Some((Recording { raw: empty(), processed: empty() }, samples));
+    }
+
+    /// L'enregistrement, une fois complet.
+    pub fn take_recording(&mut self) -> Option<Recording> {
+        let full = self
+            .recording
+            .as_ref()
+            .is_some_and(|(r, n)| r.raw.len() >= *n && r.processed.len() >= *n);
+        full.then(|| self.recording.take().map(|(r, _)| r)).flatten()
+    }
+
     fn push_sample(&mut self, v: f32, out: &mut Vec<f32>) {
+        if let Some((r, n)) = self.recording.as_mut() {
+            if r.raw.len() < *n {
+                r.raw.push(v);
+            }
+        }
         let v = if self.filters.denoise { self.high_pass.run(v) } else { v };
         self.frame_in.push(v * 32768.0);
         if self.frame_in.len() == FRAME {
@@ -360,11 +446,18 @@ impl MicProcessor {
                 self.gain = (self.gain - RELEASE).max(target);
             }
             let mut v = s / 32768.0 * self.gain;
+            for band in &mut self.eq {
+                v = band.run(v);
+            }
             if self.filters.level {
                 v = self.leveler.process(v);
             }
             let v = self.limiter.process(self.effect.process(v));
             out.push(v.clamp(-1.0, 1.0));
+        }
+        if let Some((r, n)) = self.recording.as_mut() {
+            let missing = n.saturating_sub(r.processed.len());
+            r.processed.extend(out[out.len() - FRAME..].iter().take(missing));
         }
         self.frame_in.clear();
     }
@@ -455,12 +548,17 @@ const COMP_KNEE_DB: f32 = 6.0;
 const COMP_RATIO: f32 = 2.0;
 
 impl VoiceLeveler {
-    fn new() -> Self {
+    /// `speech_db` : niveau de ta voix s'il est déjà connu (test de voix),
+    /// pour que le premier mot sorte déjà au bon volume.
+    fn new(speech_db: Option<f32>) -> Self {
+        let speech_db = speech_db.unwrap_or(LEVEL_TARGET_DB);
+        let gain_db = (LEVEL_TARGET_DB - speech_db).clamp(LEVEL_MIN_DB, LEVEL_MAX_DB);
+        let gain = 10f32.powf(gain_db / 20.0);
         Self {
-            speech_db: LEVEL_TARGET_DB,
-            gain_db: 0.0,
-            from: 1.0,
-            to: 1.0,
+            speech_db,
+            gain_db,
+            from: gain,
+            to: gain,
             pos: 0.0,
             band: Biquad::band_pass(ESS_CENTER_HZ, 0.7),
             high_power: 0.0,
@@ -591,6 +689,8 @@ mod tests {
         gate_auto: false,
         gate_threshold: 0.5,
         level: false,
+        eq: VoiceEq::Natural,
+        calibration: None,
     };
 
     #[test]
@@ -678,6 +778,8 @@ mod tests {
             gate_auto: true,
             gate_threshold: 0.5,
             level: false,
+            eq: VoiceEq::Natural,
+            calibration: None,
         };
         let out = run(gate, 48_000, 1, &noise);
         let tail = &out[out.len() / 2..];
@@ -705,7 +807,7 @@ mod tests {
     }
 
     fn leveled(amp: f32) -> f32 {
-        let mut l = VoiceLeveler::new();
+        let mut l = VoiceLeveler::new(None);
         let mut out = Vec::new();
         for f in 0..500 {
             let frame: Vec<f32> = (0..FRAME).map(|i| ((f * FRAME + i) as f32 * 0.03).sin() * amp).collect();
@@ -735,7 +837,7 @@ mod tests {
     fn de_esser_tames_sibilants_only() {
         // Même niveau : un 7 kHz (un S) est baissé, un 1 kHz (une voyelle) non.
         let through = |freq: f32| {
-            let mut l = VoiceLeveler::new();
+            let mut l = VoiceLeveler::new(None);
             let input = tone(freq, 0.05, 48_000);
             let out: Vec<f32> = input.iter().map(|&x| l.process(x)).collect();
             20.0 * (rms(&out[24_000..]) / rms(&input[24_000..])).log10()
@@ -744,6 +846,38 @@ mod tests {
         let sibilant = through(7000.0);
         assert!(vowel.abs() < 0.5, "voyelle {vowel}");
         assert!(sibilant < vowel - 6.0, "S {sibilant} vs {vowel}");
+    }
+
+    fn gain_db(bands: &mut [Biquad], freq: f32) -> f32 {
+        let input = tone(freq, 0.1, 48_000);
+        let out: Vec<f32> = input.iter().map(|&x| bands.iter_mut().fold(x, |v, b| b.run(v))).collect();
+        20.0 * (rms(&out[24_000..]) / rms(&input[24_000..])).log10()
+    }
+
+    #[test]
+    fn equalizer_presets_are_gentle() {
+        let mut clear = equalizer(VoiceEq::Clear);
+        assert!((gain_db(&mut clear, 300.0) + 2.5).abs() < 0.7);
+        assert!((gain_db(&mut clear, 3500.0) - 3.0).abs() < 0.7);
+        assert!((gain_db(&mut clear, 1000.0)).abs() < 1.5);
+        let mut warm = equalizer(VoiceEq::Warm);
+        assert!((gain_db(&mut warm, 60.0) - 3.0).abs() < 0.5);
+        assert!((gain_db(&mut warm, 14_000.0) + 2.0).abs() < 1.0);
+        assert!((gain_db(&mut warm, 1000.0)).abs() < 1.0);
+    }
+
+    #[test]
+    fn records_raw_and_processed() {
+        let filters = MicFilters { level: true, ..OFF };
+        let mut p = MicProcessor::new(1, 48_000, filters, VoiceEffect::None, Default::default());
+        p.start_recording(4800);
+        let mut out = Vec::new();
+        p.process(noise(2400, 0.1).into_iter(), &mut out);
+        assert!(p.take_recording().is_none());
+        p.process(noise(9600, 0.1).into_iter(), &mut out);
+        let r = p.take_recording().expect("enregistrement");
+        assert_eq!((r.raw.len(), r.processed.len()), (4800, 4800));
+        assert!(p.take_recording().is_none());
     }
 
     #[test]

@@ -954,6 +954,8 @@ async function openSettings() {
   formSettings.phone_port.value = s.phone_port;
   renderPhoneInfo();
   formSettings.voice_effect.value = s.voice_effect ?? "none";
+  formSettings.voice_eq.value = s.voice_eq ?? "natural";
+  $("#calib").hidden = true;
   formSettings.freesound_key.value = s.freesound_key ?? "";
   formSettings.giphy_key.value = s.giphy_key ?? "";
   updateNormalizeRow();
@@ -1066,6 +1068,8 @@ $('[data-action="diagnose-settings"]', dlgSettings).addEventListener("click", op
 $('[data-action="listen-settings"]', dlgSettings).addEventListener("click", () => setListening(!listening));
 dlgSettings.addEventListener("close", () => listening && !dlgDiag.open && setListening(false));
 $('[data-action="hear-myself"]', dlgSettings).addEventListener("click", () => setHearing(!hearing));
+$('[data-action="calibrate"]', dlgSettings).addEventListener("click", calibrateVoice);
+$('[data-action="open-recordings"]', dlgSettings).addEventListener("click", () => call("open_recordings"));
 dlgSettings.addEventListener("close", () => hearing && setHearing(false));
 
 $('[data-action="giphy-key"]', dlgSettings).addEventListener("click", (e) => {
@@ -1126,6 +1130,7 @@ dlgSettings.addEventListener("close", () => {
     phone_port: Math.min(65535, Math.max(1024, Number(f.phone_port.value) || 7878)),
     random_hotkey: f.random_hotkey.dataset.hotkey || null,
     voice_effect: f.voice_effect.value,
+    voice_eq: f.voice_eq.value,
     freesound_key: f.freesound_key.value.trim() || null,
     giphy_key: f.giphy_key.value.trim() || null,
   });
@@ -1252,6 +1257,53 @@ async function setListening(on) {
 
 // « M'écouter » : ta voix traitée renvoyée dans ton casque.
 let hearing = false;
+const EQ_NAMES = { natural: "Naturelle", warm: "Chaude", clear: "Claire" };
+
+// Test de voix : le moteur enregistre 10 s d'un coup, l'écran guide la
+// personne (silence puis parole) pendant ce temps.
+async function calibrateVoice() {
+  const box = $("#calib");
+  const step = $("[data-step]", box);
+  const advice = $("[data-advice]", box);
+  const actions = $("[data-actions]", box);
+  const button = $('[data-action="calibrate"]', dlgSettings);
+  box.hidden = false;
+  actions.hidden = true;
+  advice.replaceChildren();
+  button.disabled = true;
+  const started = Date.now();
+  const tick = () => {
+    const t = (Date.now() - started) / 1000;
+    step.textContent =
+      t < 5 ? `🤫 Silence, ne parle pas… ${Math.ceil(5 - t)}`
+      : t < 10 ? `🗣️ Parle normalement, comme sur Discord… ${Math.ceil(10 - t)}`
+      : "Analyse…";
+  };
+  tick();
+  const timer = setInterval(tick, 200);
+  try {
+    const r = await invoke("calibrate_voice");
+    const db = (v) => `${Math.round(v)} dB`;
+    step.textContent = `✅ Micro réglé. Bruit de la pièce ${db(r.noise_db)}, ta voix ${db(r.speech_db)}, crêtes ${db(r.peak_db)}. Couleur : ${EQ_NAMES[r.eq]}.`;
+    for (const line of r.advice) {
+      const li = document.createElement("li");
+      li.textContent = line;
+      advice.append(li);
+    }
+    actions.hidden = false;
+    formSettings.voice_eq.value = r.eq;
+    render(await invoke("get_state"));
+    // Le micro a redémarré avec les nouveaux réglages.
+    hearing = false;
+    renderListenButtons();
+  } catch (e) {
+    step.textContent = `❌ ${e}`;
+  } finally {
+    clearInterval(timer);
+    button.disabled = false;
+  }
+}
+
 async function setHearing(on) {
   try {
     await invoke("hear_myself", { on });

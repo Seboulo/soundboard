@@ -129,6 +129,29 @@ pub enum VoiceEffect {
     Echo,
 }
 
+/// Couleur de la voix (égaliseur du micro).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceEq {
+    /// Aucune correction.
+    #[default]
+    Natural,
+    /// Plus de corps, aigus adoucis : pour un micro trop brillant.
+    Warm,
+    /// Moins de « boue », plus de présence : pour un micro sourd.
+    Clear,
+}
+
+/// Mesures du test de voix, en dBFS : de quoi régler le micro dès le
+/// premier mot au lieu de l'apprendre pendant les premières secondes.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MicCalibration {
+    /// Bruit de fond de la pièce.
+    pub noise_db: f32,
+    /// Niveau moyen de ta voix.
+    pub speech_db: f32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -167,6 +190,8 @@ pub struct Settings {
     pub gate_threshold: f32,
     /// Volume de voix automatique : voix douce remontée, cris adoucis.
     pub voice_leveler: bool,
+    pub voice_eq: VoiceEq,
+    pub mic_calibration: Option<MicCalibration>,
     /// Raccourci qui coupe / rallume ton micro (les sons passent toujours).
     pub mute_hotkey: Option<String>,
     /// Raccourci qui joue un son au hasard.
@@ -206,6 +231,8 @@ impl Default for Settings {
             gate_auto: true,
             gate_threshold: 0.6,
             voice_leveler: true,
+            voice_eq: VoiceEq::Natural,
+            mic_calibration: None,
             mute_hotkey: None,
             random_hotkey: None,
             voice_effect: VoiceEffect::None,

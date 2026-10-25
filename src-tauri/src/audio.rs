@@ -9,7 +9,7 @@
 //! vit dans un thread dédié piloté par des messages.
 
 use crate::config::Settings;
-use crate::denoise::{self, MicFilters, MicLevel, MicMeter, MicProcessor};
+use crate::denoise::{self, MicFilters, MicLevel, MicMeter, MicProcessor, Recording};
 use rodio::cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rodio::cpal::{self, SampleFormat};
 use crate::decoder::AudioFile;
@@ -90,6 +90,19 @@ enum Command {
     ListenCable(bool, Reply),
     /// Fait entendre ta voix traitée (antibruit, porte, volume) dans le casque.
     HearMyself(bool, Reply),
+    /// Donne accès à l'enregistrement du micro (test de voix).
+    RecordSlot(Sender<Result<Arc<Mutex<RecordSlot>>, String>>),
+}
+
+/// Échange entre le moteur et le fil du micro pour le test de voix.
+#[derive(Default)]
+pub enum RecordSlot {
+    #[default]
+    Idle,
+    /// Enregistrer tant d'échantillons (48 kHz).
+    Wanted(usize),
+    Running,
+    Done(Recording),
 }
 
 #[derive(Clone)]
@@ -162,6 +175,26 @@ impl AudioHandle {
         let (reply, rx) = mpsc::channel();
         self.send(Command::HearMyself(on, reply))?;
         wait(rx)
+    }
+
+    /// Enregistre `seconds` secondes du micro, brut et traité. Bloquant.
+    pub fn record_voice(&self, seconds: usize) -> Result<Recording, String> {
+        let (reply, rx) = mpsc::channel();
+        self.send(Command::RecordSlot(reply))?;
+        let slot = wait(rx)?;
+        *slot.lock().map_err(|e| e.to_string())? = RecordSlot::Wanted(seconds * denoise::RATE as usize);
+        let deadline = Instant::now() + Duration::from_secs(seconds as u64 + 5);
+        while Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(50));
+            let mut slot = slot.lock().map_err(|e| e.to_string())?;
+            if let RecordSlot::Done(_) = &*slot {
+                if let RecordSlot::Done(r) = std::mem::take(&mut *slot) {
+                    return Ok(r);
+                }
+            }
+        }
+        *slot.lock().map_err(|e| e.to_string())? = RecordSlot::Idle;
+        Err("le micro n'a rien envoyé : vérifie qu'il est branché et choisi dans les réglages".into())
     }
 
     pub fn stop_preview(&self) {
@@ -321,6 +354,8 @@ struct Engine {
     mic_tap: Option<(Arc<AtomicBool>, SampleBuffer)>,
     /// Ta voix renvoyée dans le casque (« M'écouter »).
     hear_voice: Option<Voice>,
+    /// Test de voix, partagé avec le fil du micro.
+    mic_record: Option<Arc<Mutex<RecordSlot>>>,
 }
 
 fn run(rx: Receiver<Command>, meter_on: Arc<AtomicBool>, on_event: impl Fn(AudioEvent)) {
@@ -356,6 +391,7 @@ impl Engine {
         self.stop_cable();
         self.stop_hearing();
         self.mic_tap = None;
+        self.mic_record = None;
         if let Some(v) = self.mic_voice.take() {
             v.stop();
         }
@@ -499,6 +535,8 @@ impl Engine {
             gate_auto: self.settings.gate_auto,
             gate_threshold: self.settings.gate_threshold.clamp(0.0, 1.0),
             level: self.settings.voice_leveler,
+            eq: self.settings.voice_eq,
+            calibration: self.settings.mic_calibration,
         };
 
         // Le micro sort du filtre en mono 48 kHz. 200 ms de marge au plus :
@@ -517,6 +555,8 @@ impl Engine {
         let tap_on = Arc::new(AtomicBool::new(false));
         let tap = Arc::new(Mutex::new(VecDeque::<f32>::with_capacity(max_len * 2)));
         let (tap_on2, tap2) = (tap_on.clone(), tap.clone());
+        let record = Arc::new(Mutex::new(RecordSlot::Idle));
+        let record2 = record.clone();
         thread::Builder::new()
             .name("micro".into())
             .spawn(move || {
@@ -528,6 +568,20 @@ impl Engine {
                         push(&tap2, cleaned.clone(), max_len);
                     }
                     push(&out, cleaned, max_len);
+                    if let Ok(mut slot) = record2.try_lock() {
+                        match &*slot {
+                            RecordSlot::Wanted(n) => {
+                                processor.start_recording(*n);
+                                *slot = RecordSlot::Running;
+                            }
+                            RecordSlot::Running => {
+                                if let Some(r) = processor.take_recording() {
+                                    *slot = RecordSlot::Done(r);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             })
             .map_err(|e| e.to_string())?;
@@ -550,6 +604,7 @@ impl Engine {
         self.mic_stream = Some(stream);
         self.mic_voice = Some(voice);
         self.mic_tap = Some((tap_on, tap));
+        self.mic_record = Some(record);
         Ok(())
     }
 
@@ -594,6 +649,11 @@ impl Engine {
             }
             Command::StopPreview => {
                 self.stop(PREVIEW_ID);
+            }
+            Command::RecordSlot(reply) => {
+                let _ = reply.send(self.mic_record.clone().ok_or_else(|| {
+                    "ta voix n'est pas envoyée : active « Envoyer ma voix dans Discord » et choisis le câble".to_string()
+                }));
             }
             Command::SetMicMuted(muted) => {
                 self.mic_muted = muted;

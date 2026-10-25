@@ -235,6 +235,13 @@
               <option value="echo">Écho</option>
             </select>
           </label>
+          <label class="set-field">Couleur de ta voix (égaliseur)
+            <select name="voice_eq">
+              <option value="natural">Naturelle : aucune correction</option>
+              <option value="warm">Chaude : plus de corps, aigus adoucis</option>
+              <option value="clear">Claire : plus de présence, moins sourde</option>
+            </select>
+          </label>
           </div>
           <h3>Bruits et silences</h3>
           <div class="set-card">
@@ -251,6 +258,12 @@
           <label class="set-field">Seuil manuel de détection de la voix <span class="value" data-for="gate_threshold"></span>
             <input name="gate_threshold" type="range" min="0.1" max="0.95" step="0.05">
           </label>
+          <div class="set-row"><span class="txt"><b>🎙️ Tester et calibrer ma voix</b><small>10 secondes : 5 de silence, puis 5 où tu parles. L'app mesure ta pièce et ton micro, se règle toute seule et garde un enregistrement avant/après.</small></span><button type="button" data-action="calibrate">Lancer le test</button></div>
+          <div class="calib" id="calib" hidden>
+            <div class="calib-step" data-step></div>
+            <ul data-advice></ul>
+            <div class="calib-actions" data-actions hidden><button type="button" data-action="open-recordings">Ouvrir les enregistrements</button></div>
+          </div>
           <div class="set-row"><span class="txt"><b>🎧 M'écouter</b><small>Entends ta voix dans ton casque telle que tes potes la reçoivent (avec les réglages enregistrés). Garde un casque pour éviter l'écho.</small></span><button type="button" data-action="hear-myself">M'écouter</button></div>
           <div class="meter" id="mic-meter">
             <div class="meter-row"><span>Niveau</span><div class="bar"><div class="fill" data-level></div></div></div>
