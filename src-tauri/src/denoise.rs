@@ -110,7 +110,7 @@ pub struct MicProcessor {
     channels: usize,
     rnnoise: Box<DenoiseState<'static>>,
     deep: Option<Box<DeepFilter>>,
-    high_pass: HighPass,
+    high_pass: Biquad,
     // Rééchantillonnage cubique vers 48 kHz (quatre derniers échantillons).
     step: f64,
     pos: f64,
@@ -129,26 +129,40 @@ pub struct MicProcessor {
     gain: f32,
     hold: u32,
     leveler: VoiceLeveler,
+    limiter: Limiter,
     /// Bruit de fond estimé, en dBFS, et trames fortes d'affilée (mode automatique).
     floor_db: f32,
     onset: u32,
 }
 
-/// Passe-haut de Butterworth (2ᵉ ordre) à 80 Hz, pour 48 kHz.
-struct HighPass {
+/// Filtre du 2ᵉ ordre, pour 48 kHz.
+struct Biquad {
     b: [f32; 3],
     a: [f32; 2],
     z: [f32; 2],
 }
 
-impl HighPass {
-    fn new(cutoff: f32) -> Self {
+impl Biquad {
+    /// Passe-haut de Butterworth.
+    fn high_pass(cutoff: f32) -> Self {
         let k = (std::f32::consts::PI * cutoff / RATE as f32).tan();
         let q = std::f32::consts::FRAC_1_SQRT_2;
         let norm = 1.0 / (1.0 + k / q + k * k);
         Self {
             b: [norm, -2.0 * norm, norm],
             a: [2.0 * (k * k - 1.0) * norm, (1.0 - k / q + k * k) * norm],
+            z: [0.0; 2],
+        }
+    }
+
+    /// Passe-bande, gain 1 et sans déphasage au centre.
+    fn band_pass(center: f32, q: f32) -> Self {
+        let w = std::f32::consts::TAU * center / RATE as f32;
+        let alpha = w.sin() / (2.0 * q);
+        let norm = 1.0 / (1.0 + alpha);
+        Self {
+            b: [alpha * norm, 0.0, -alpha * norm],
+            a: [-2.0 * w.cos() * norm, (1.0 - alpha) * norm],
             z: [0.0; 2],
         }
     }
@@ -212,7 +226,7 @@ impl MicProcessor {
             channels: channels.max(1) as usize,
             rnnoise: DenoiseState::new(),
             deep,
-            high_pass: HighPass::new(80.0),
+            high_pass: Biquad::high_pass(80.0),
             step: in_rate as f64 / RATE as f64,
             pos: 0.0,
             hist: [0.0; 4],
@@ -227,6 +241,7 @@ impl MicProcessor {
             gain: if filters.gate { 0.0 } else { 1.0 },
             hold: 0,
             leveler: VoiceLeveler::new(),
+            limiter: Limiter::new(),
             floor_db: f32::NAN,
             onset: 0,
         }
@@ -348,7 +363,7 @@ impl MicProcessor {
             if self.filters.level {
                 v = self.leveler.process(v);
             }
-            let v = self.effect.process(v);
+            let v = self.limiter.process(self.effect.process(v));
             out.push(v.clamp(-1.0, 1.0));
         }
         self.frame_in.clear();
@@ -385,15 +400,31 @@ impl MicProcessor {
     }
 }
 
-/// Volume de voix automatique.
+/// Une constante de temps (en secondes) en coefficient de lissage par
+/// échantillon, pour 48 kHz.
+fn smoothing(seconds: f32) -> f32 {
+    (-1.0 / (seconds * RATE as f32)).exp()
+}
+
+fn to_db(power: f32) -> f32 {
+    10.0 * power.max(1e-12).log10()
+}
+
+/// Traitement « studio » de la voix, dans l'ordre d'une console de radio :
 ///
-/// Sans lui, une voix douce arrive trop bas dans Discord et un cri sature.
-/// On mesure le niveau moyen de la parole (seulement quand tu parles), on
-/// règle lentement le gain pour viser -20 dBFS (de -6 à +12 dB), puis un
-/// compresseur doux (2:1 au-dessus de -11 dBFS) et un plafond à -3 dBFS
-/// rattrapent les éclats de voix. L'attaque du compresseur est lente
-/// (10 ms) : plus rapide, il écrasait chaque voyelle et les consonnes
-/// (R, S, CH) ressortaient trop par rapport à elles.
+/// 1. Volume automatique : on mesure le niveau moyen de la parole
+///    (seulement quand tu parles) et on règle lentement le gain pour viser
+///    -20 dBFS (de -6 à +12 dB). Une voix douce n'arrive plus trop bas, un
+///    cri ne sature plus.
+/// 2. Dé-esseur : quand l'aigu (au-dessus de 5 kHz) prend le dessus, comme
+///    sur les S, CH et Z, on ne baisse que cet aigu, de 10 dB au plus. Le
+///    reste de la voix ne bouge pas.
+/// 3. Compresseur : il mesure l'énergie moyenne (RMS sur 10 ms) et non
+///    chaque crête, avec un genou doux autour de -18 dBFS et un rapport
+///    2:1. Il resserre la voix sans écraser les voyelles ni faire ressortir
+///    les consonnes. Attaque 10 ms, relâche 150 ms, réglés en dB.
+///
+/// Le plafond de sécurité est à part (`Limiter`) et toujours actif.
 struct VoiceLeveler {
     speech_db: f32,
     gain_db: f32,
@@ -401,15 +432,27 @@ struct VoiceLeveler {
     from: f32,
     to: f32,
     pos: f32,
-    env: f32,
-    reduce: f32,
+    band: Biquad,
+    high_power: f32,
+    full_power: f32,
+    ess_db: f32,
+    power: f32,
+    comp_db: f32,
 }
 
 const LEVEL_TARGET_DB: f32 = -20.0;
 const LEVEL_MIN_DB: f32 = -6.0;
 const LEVEL_MAX_DB: f32 = 12.0;
-const VOICE_COMP_THRESHOLD: f32 = 0.28;
-const VOICE_CEILING: f32 = 0.708;
+/// Le dé-esseur agit quand l'aigu (bande large autour de 7 kHz) dépasse
+/// -9 dB de l'énergie totale (une voyelle est vers -25 dB, un S vers -3 dB)
+/// et qu'il est audible.
+const ESS_CENTER_HZ: f32 = 7000.0;
+const ESS_THRESHOLD_DB: f32 = -9.0;
+const ESS_FLOOR_DB: f32 = -50.0;
+const ESS_MAX_DB: f32 = 10.0;
+const COMP_THRESHOLD_DB: f32 = -18.0;
+const COMP_KNEE_DB: f32 = 6.0;
+const COMP_RATIO: f32 = 2.0;
 
 impl VoiceLeveler {
     fn new() -> Self {
@@ -419,8 +462,12 @@ impl VoiceLeveler {
             from: 1.0,
             to: 1.0,
             pos: 0.0,
-            env: 0.0,
-            reduce: 1.0,
+            band: Biquad::band_pass(ESS_CENTER_HZ, 0.7),
+            high_power: 0.0,
+            full_power: 0.0,
+            ess_db: 0.0,
+            power: 0.0,
+            comp_db: 0.0,
         }
     }
 
@@ -440,19 +487,89 @@ impl VoiceLeveler {
 
     fn process(&mut self, x: f32) -> f32 {
         self.pos = (self.pos + 1.0 / FRAME as f32).min(1.0);
-        let y = x * (self.from + (self.to - self.from) * self.pos);
-        let level = y.abs();
-        // Enveloppe : monte tout de suite, redescend en ~100 ms.
-        self.env = if level > self.env { level } else { level + (self.env - level) * 0.9998 };
-        let wanted = if self.env > VOICE_COMP_THRESHOLD {
-            (self.env / VOICE_COMP_THRESHOLD).powf(-0.5)
+        let x = x * (self.from + (self.to - self.from) * self.pos);
+
+        // Dé-esseur en égaliseur dynamique : on retire une part de la bande
+        // aiguë. Sans S, rien n'est retiré et le son passe intact.
+        let high = self.band.run(x);
+        let c = smoothing(0.002);
+        self.high_power = self.high_power * c + high * high * (1.0 - c);
+        self.full_power = self.full_power * c + x * x * (1.0 - c);
+        let high_db = to_db(self.high_power);
+        let excess = high_db - to_db(self.full_power) - ESS_THRESHOLD_DB;
+        let wanted = if high_db > ESS_FLOOR_DB { (excess * 1.5).clamp(0.0, ESS_MAX_DB) } else { 0.0 };
+        let c = if wanted > self.ess_db { smoothing(0.001) } else { smoothing(0.06) };
+        self.ess_db = wanted + (self.ess_db - wanted) * c;
+        let y = x - high * (1.0 - 10f32.powf(-self.ess_db / 20.0));
+
+        // Compresseur RMS à genou doux.
+        let c = smoothing(0.01);
+        self.power = self.power * c + y * y * (1.0 - c);
+        let over = to_db(self.power) - COMP_THRESHOLD_DB;
+        let slope = 1.0 / COMP_RATIO - 1.0;
+        let wanted = if over <= -COMP_KNEE_DB / 2.0 {
+            0.0
+        } else if over >= COMP_KNEE_DB / 2.0 {
+            over * slope
         } else {
-            1.0
+            slope * (over + COMP_KNEE_DB / 2.0).powi(2) / (2.0 * COMP_KNEE_DB)
         };
-        // Attaque ~10 ms, relâche ~150 ms.
-        let coef = if wanted < self.reduce { 0.9979 } else { 0.99986 };
-        self.reduce = wanted + (self.reduce - wanted) * coef;
-        y * self.reduce.min(VOICE_CEILING / self.env.max(1e-6))
+        let c = if wanted < self.comp_db { smoothing(0.01) } else { smoothing(0.15) };
+        self.comp_db = wanted + (self.comp_db - wanted) * c;
+        y * 10f32.powf(self.comp_db / 20.0)
+    }
+}
+
+/// Plafond à -3 dBFS qui voit 2 ms en avance : le gain descend en douceur
+/// avant une crête au lieu de la couper net (une coupure nette fait un
+/// grésillement, surtout sur les R roulés et les éclats de voix).
+struct Limiter {
+    /// Son retardé, besoins de gain et minima glissants (anneaux).
+    delay: Vec<f32>,
+    need: Vec<f32>,
+    mins: Vec<f32>,
+    sum: f64,
+    at_delay: usize,
+    at: usize,
+    gain: f32,
+    release: f32,
+}
+
+const LIMIT_CEILING: f32 = 0.708;
+const LIMIT_LOOKAHEAD: usize = 96;
+
+impl Limiter {
+    fn new() -> Self {
+        let n = LIMIT_LOOKAHEAD + 1;
+        Self {
+            delay: vec![0.0; LIMIT_LOOKAHEAD],
+            need: vec![1.0; n],
+            mins: vec![1.0; n],
+            sum: n as f64,
+            at_delay: 0,
+            at: 0,
+            gain: 1.0,
+            release: smoothing(0.08),
+        }
+    }
+
+    /// Le son ressort avec 2 ms de retard. Chaque gain est la moyenne de
+    /// minima qui couvrent tous la crête à venir : jamais au-dessus du
+    /// plafond, et sans marche d'escalier.
+    fn process(&mut self, x: f32) -> f32 {
+        let out = std::mem::replace(&mut self.delay[self.at_delay], x);
+        self.at_delay = (self.at_delay + 1) % LIMIT_LOOKAHEAD;
+        // Le besoin de chaque échantillon et la moyenne portent sur les
+        // LIMIT_LOOKAHEAD + 1 derniers : tous incluent celui qui sort.
+        let n = self.need.len();
+        self.need[self.at] = if x.abs() > LIMIT_CEILING { LIMIT_CEILING / x.abs() } else { 1.0 };
+        let min = self.need.iter().fold(1.0f32, |m, &g| m.min(g));
+        self.sum += min as f64 - self.mins[self.at] as f64;
+        self.mins[self.at] = min;
+        self.at = (self.at + 1) % n;
+        let wanted = (self.sum / n as f64) as f32;
+        self.gain = if wanted < self.gain { wanted } else { wanted + (self.gain - wanted) * self.release };
+        out * self.gain
     }
 }
 
@@ -493,8 +610,10 @@ mod tests {
         let f = 3000.0f64;
         let input: Vec<f32> = (0..44_100).map(|i| (i as f64 * f / 44_100.0 * std::f64::consts::TAU).sin() as f32 * 0.5).collect();
         let out = run(OFF, 44_100, 1, &input);
-        // Meilleur décalage (le cubique retarde d'un échantillon d'entrée).
+        // Meilleur décalage (le cubique retarde d'un échantillon d'entrée,
+        // le plafond de 2 ms).
         let err = |shift: f64| {
+            let shift = shift + LIMIT_LOOKAHEAD as f64;
             let e: f64 = (4800..40_000)
                 .map(|i| {
                     let want = ((i as f64 - shift) * f / 48_000.0 * std::f64::consts::TAU).sin() * 0.5;
@@ -606,5 +725,42 @@ mod tests {
         assert!((normal + 20.0).abs() < 3.0, "normal {normal}");
         assert!(loud < -12.0, "loud {loud}");
         assert!(loud - quiet < 12.0, "écart {}", loud - quiet);
+    }
+
+    fn tone(freq: f32, amp: f32, n: usize) -> Vec<f32> {
+        (0..n).map(|i| (i as f32 * freq / RATE as f32 * std::f32::consts::TAU).sin() * amp).collect()
+    }
+
+    #[test]
+    fn de_esser_tames_sibilants_only() {
+        // Même niveau : un 7 kHz (un S) est baissé, un 1 kHz (une voyelle) non.
+        let through = |freq: f32| {
+            let mut l = VoiceLeveler::new();
+            let input = tone(freq, 0.05, 48_000);
+            let out: Vec<f32> = input.iter().map(|&x| l.process(x)).collect();
+            20.0 * (rms(&out[24_000..]) / rms(&input[24_000..])).log10()
+        };
+        let vowel = through(1000.0);
+        let sibilant = through(7000.0);
+        assert!(vowel.abs() < 0.5, "voyelle {vowel}");
+        assert!(sibilant < vowel - 6.0, "S {sibilant} vs {vowel}");
+    }
+
+    #[test]
+    fn limiter_never_exceeds_ceiling_and_leaves_quiet_sound_alone() {
+        let mut l = Limiter::new();
+        let mut input = tone(300.0, 0.3, 9600);
+        input.extend(tone(300.0, 1.4, 4800));
+        input.extend(tone(300.0, 0.3, 48_000));
+        let out: Vec<f32> = input.iter().map(|&x| l.process(x)).collect();
+        let peak = out.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(peak <= LIMIT_CEILING + 1e-4, "peak {peak}");
+        // Le calme d'avant ressort intact (à 2 ms de retard près).
+        for i in 0..9000 {
+            assert!((out[i + LIMIT_LOOKAHEAD] - input[i]).abs() < 1e-6);
+        }
+        // Et le gain revient après l'éclat.
+        let tail = &out[out.len() - 4800..];
+        assert!((rms(tail) - 0.3 / 2f32.sqrt()).abs() < 0.01, "{}", rms(tail));
     }
 }

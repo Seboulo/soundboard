@@ -245,7 +245,7 @@
               <option value="off">Désactivée</option>
             </select>
           </label>
-          <label class="set-row"><span class="txt"><b>Volume de voix automatique</b><small>Ta voix arrive toujours au même niveau dans Discord : une voix douce est remontée, un cri est adouci.</small></span><input name="voice_leveler" type="checkbox" class="switch"></label>
+          <label class="set-row"><span class="txt"><b>Traitement studio de la voix</b><small>Volume constant, compresseur doux et dé-esseur (S et CH moins sifflants), comme à la radio.</small></span><input name="voice_leveler" type="checkbox" class="switch"></label>
           <label class="set-row"><span class="txt"><b>Couper ton micro quand tu ne parles pas</b></span><input name="voice_gate" type="checkbox" class="switch"></label>
           <label class="set-row"><span class="txt"><b>Sensibilité automatique</b><small>Comme sur Discord : le micro apprend le bruit de ta pièce et ne s'ouvre que quand tu parles.</small></span><input name="gate_auto" type="checkbox" class="switch"></label>
           <label class="set-field">Seuil manuel de détection de la voix <span class="value" data-for="gate_threshold"></span>
@@ -430,6 +430,7 @@
           <li>Discord → <b>Paramètres utilisateur</b> → <b>Voix et vidéo</b>.</li>
           <li><b>Périphérique d'entrée</b> : choisis <code>CABLE Output (VB-Audio Virtual Cable)</code>.</li>
           <li>Désactive la <b>suppression du bruit (Krisp)</b> et l'<b>annulation de l'écho</b> : sinon Discord filtre une partie des sons. Pas d'inquiétude pour ton clavier, l'app nettoie ton micro elle-même.</li>
+          <li>Désactive aussi le <b>contrôle automatique du gain</b> (section Traitement de la voix) : l'app règle déjà le volume de ta voix, et deux réglages automatiques l'un sur l'autre font « pomper » le son.</li>
           <li>En mode <b>Détection de la voix</b>, désactive « Déterminer automatiquement la sensibilité » et mets le curseur presque tout à gauche, pour que les sons passent même quand tu ne parles pas.</li>
         </ol>
         <p class="hint">Tu peux revenir à cet assistant à tout moment depuis les réglages.</p>
