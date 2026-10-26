@@ -540,7 +540,7 @@ fn to_db(power: f32) -> f32 {
 ///    -20 dBFS (de -6 à +18 dB). Une voix douce n'arrive plus trop bas, un
 ///    cri ne sature plus.
 /// 2. Dé-esseur : quand l'aigu (au-dessus de 5 kHz) prend le dessus, comme
-///    sur les S, CH et Z, on ne baisse que cet aigu, de 10 dB au plus. Le
+///    sur les S, CH et Z, on ne baisse que cet aigu, de 6 dB au plus. Le
 ///    reste de la voix ne bouge pas.
 /// 3. Compresseur : il mesure l'énergie moyenne (RMS sur 10 ms) et non
 ///    chaque crête, avec un genou doux autour de -18 dBFS et un rapport
@@ -567,12 +567,12 @@ const LEVEL_TARGET_DB: f32 = -20.0;
 const LEVEL_MIN_DB: f32 = -6.0;
 const LEVEL_MAX_DB: f32 = 18.0;
 /// Le dé-esseur agit quand l'aigu (bande large autour de 7 kHz) dépasse
-/// -9 dB de l'énergie totale (une voyelle est vers -25 dB, un S vers -3 dB)
+/// -6 dB de l'énergie totale (une voyelle est vers -25 dB, un S vers -3 dB)
 /// et qu'il est audible.
 const ESS_CENTER_HZ: f32 = 7000.0;
-const ESS_THRESHOLD_DB: f32 = -9.0;
+const ESS_THRESHOLD_DB: f32 = -6.0;
 const ESS_FLOOR_DB: f32 = -50.0;
-const ESS_MAX_DB: f32 = 10.0;
+const ESS_MAX_DB: f32 = 6.0;
 const COMP_THRESHOLD_DB: f32 = -18.0;
 const COMP_KNEE_DB: f32 = 6.0;
 const COMP_RATIO: f32 = 2.0;
@@ -625,7 +625,7 @@ impl VoiceLeveler {
         self.full_power = self.full_power * c + x * x * (1.0 - c);
         let high_db = to_db(self.high_power);
         let excess = high_db - to_db(self.full_power) - ESS_THRESHOLD_DB;
-        let wanted = if high_db > ESS_FLOOR_DB { (excess * 1.5).clamp(0.0, ESS_MAX_DB) } else { 0.0 };
+        let wanted = if high_db > ESS_FLOOR_DB { excess.clamp(0.0, ESS_MAX_DB) } else { 0.0 };
         let c = if wanted > self.ess_db { smoothing(0.001) } else { smoothing(0.06) };
         self.ess_db = wanted + (self.ess_db - wanted) * c;
         let y = x - high * (1.0 - 10f32.powf(-self.ess_db / 20.0));
