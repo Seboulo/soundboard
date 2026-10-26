@@ -21,6 +21,7 @@
 
 use crate::config::{MicCalibration, VoiceEffect, VoiceEq};
 use crate::effects::Effect;
+use crate::resample::{Kernel, SincWindow};
 use df::tract::{DfParams, DfTract, RuntimeParams};
 use ndarray::{ArrayView2, ArrayViewMut2};
 use nnnoiseless::DenoiseState;
@@ -128,10 +129,10 @@ pub struct MicProcessor {
     rnnoise: Box<DenoiseState<'static>>,
     deep: Option<Box<DeepFilter>>,
     high_pass: Biquad,
-    // Rééchantillonnage cubique vers 48 kHz (quatre derniers échantillons).
+    // Conversion vers 48 kHz (sinus cardinal, voir `resample`).
     step: f64,
     pos: f64,
-    hist: [f32; 4],
+    window: SincWindow,
     // Downmix d'une trame entrelacée en cours.
     acc: f32,
     acc_n: usize,
@@ -320,7 +321,7 @@ impl MicProcessor {
             high_pass: Biquad::high_pass(80.0),
             step: in_rate as f64 / RATE as f64,
             pos: 0.0,
-            hist: [0.0; 4],
+            window: SincWindow::new(Kernel::for_ratio(RATE as f64 / in_rate.max(1) as f64), 1),
             acc: 0.0,
             acc_n: 0,
             frame_in: Vec::with_capacity(FRAME),
@@ -359,15 +360,13 @@ impl MicProcessor {
                 continue;
             }
             // Chaque échantillon d'entrée fait avancer de 1 ; on produit les
-            // échantillons de sortie qui tombent entre les deux du milieu
-            // (Catmull-Rom : le linéaire ajoutait un grésillement aigu).
-            self.hist.rotate_left(1);
-            self.hist[3] = mono;
-            while self.pos <= 1.0 {
-                let t = self.pos as f32;
-                let [a, b, c, d] = self.hist;
-                let v = b + 0.5 * t * (c - a + t * (2.0 * a - 5.0 * b + 4.0 * c - d + t * (3.0 * (b - c) + d - a)));
-                self.push_sample(v, out);
+            // échantillons de sortie qui tombent entre le centre de la
+            // fenêtre et le suivant.
+            self.window.push(&[mono]);
+            let mut v = [0.0];
+            while self.pos < 1.0 {
+                self.window.read(self.pos, &mut v);
+                self.push_sample(v[0], out);
                 self.pos += self.step;
             }
             self.pos -= 1.0;
@@ -735,26 +734,32 @@ mod tests {
 
     #[test]
     fn resampling_keeps_a_clean_tone() {
-        // Un la aigu (3 kHz) capté à 44,1 kHz ressort propre à 48 kHz : le
-        // linéaire y laissait des parasites vers -35 dB.
+        // Un 3 kHz capté à 44,1 kHz ressort propre à 48 kHz : le linéaire y
+        // laissait des parasites vers -35 dB, la cubique vers -60 dB.
         let f = 3000.0f64;
+        let w = f / 48_000.0 * std::f64::consts::TAU;
         let input: Vec<f32> = (0..44_100).map(|i| (i as f64 * f / 44_100.0 * std::f64::consts::TAU).sin() as f32 * 0.5).collect();
-        let out = run(OFF, 44_100, 1, &input);
-        // Meilleur décalage (le cubique retarde d'un échantillon d'entrée,
-        // le plafond de 2 ms).
-        let err = |shift: f64| {
-            let shift = shift + LIMIT_LOOKAHEAD as f64;
-            let e: f64 = (4800..40_000)
-                .map(|i| {
-                    let want = ((i as f64 - shift) * f / 48_000.0 * std::f64::consts::TAU).sin() * 0.5;
-                    (out[i] as f64 - want).powi(2)
-                })
-                .sum();
-            (e / 35_200.0).sqrt()
-        };
-        let best = (0..3000).map(|k| err(k as f64 * 0.001)).fold(f64::MAX, f64::min);
-        let db = 20.0 * (best / (0.5 / 2f64.sqrt())).log10();
-        assert!(db < -50.0, "parasites {db:.1} dB");
+        let out = &run(OFF, 44_100, 1, &input)[4800..40_000];
+        // Sinusoïde la plus proche (moindres carrés), puis ce qui reste.
+        let (mut ss, mut cc, mut sc, mut vs, mut vc) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        for (i, &v) in out.iter().enumerate() {
+            let (s, c) = (w * i as f64).sin_cos();
+            ss += s * s;
+            cc += c * c;
+            sc += s * c;
+            vs += v as f64 * s;
+            vc += v as f64 * c;
+        }
+        let det = ss * cc - sc * sc;
+        let (a, b) = ((vs * cc - vc * sc) / det, (vc * ss - vs * sc) / det);
+        let err: f64 = out
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| (v as f64 - a * (w * i as f64).sin() - b * (w * i as f64).cos()).powi(2))
+            .sum::<f64>()
+            / out.len() as f64;
+        let db = 10.0 * (err / ((a * a + b * b) / 2.0)).log10();
+        assert!(db < -90.0, "parasites {db:.1} dB");
     }
 
     fn noise(n: usize, amp: f32) -> Vec<f32> {

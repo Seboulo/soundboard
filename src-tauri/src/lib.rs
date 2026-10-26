@@ -7,6 +7,7 @@ mod denoise;
 mod effects;
 mod giphy;
 mod mixer;
+mod resample;
 mod online;
 mod phone;
 mod youtube;

@@ -10,6 +10,7 @@
 
 use crate::config::Settings;
 use crate::denoise::{self, MicFilters, MicLevel, MicMeter, MicProcessor, Recording};
+use crate::resample::{self, Kernel, SincWindow};
 use rodio::cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rodio::cpal::{self, SampleFormat};
 use crate::decoder::AudioFile;
@@ -864,21 +865,23 @@ impl<S: Source<Item = i16>> Source for Leveler<S> {
 /// petit clic à chaque raccord : le son grésille. Une fois à la bonne
 /// fréquence, rodio n'y touche plus.
 ///
-/// Interpolation cubique (Catmull-Rom) sur 4 points : bien plus propre que
-/// la droite entre 2 points, qui étouffe les aigus et ajoute du souffle
-/// métallique quand on passe de 44,1 à 48 kHz.
+/// Interpolation par sinus cardinal fenêtré (voir `resample`) : rien ne se
+/// perd dans l'aigu et aucun parasite ne s'ajoute (la cubique perdait 2 dB
+/// et ajoutait du souffle métallique vers 16 kHz en passant de 44,1 à 48 kHz).
 struct Resample<S> {
     inner: S,
     channels: usize,
     rate: u32,
     /// Avancée dans le son d'origine pour chaque échantillon produit.
     step: f64,
-    /// Position entre `points[1]` et `points[2]` (0 à 1).
+    /// Position entre l'échantillon central de la fenêtre et le suivant.
     pos: f64,
-    /// Quatre trames consécutives du son d'origine ; vide = fini.
-    points: [Vec<f32>; 4],
-    /// Trames restantes après la fin du son (on prolonge par la dernière).
-    tail: u8,
+    window: SincWindow,
+    /// Trames de silence encore à pousser après la fin du son, pour faire
+    /// sortir ses derniers échantillons ; `None` tant qu'il n'est pas fini.
+    tail: Option<usize>,
+    input: Vec<f32>,
+    out: Vec<f32>,
     frame: Vec<i16>,
     frame_pos: usize,
 }
@@ -893,44 +896,45 @@ impl<S: Source<Item = i16>> Resample<S> {
             rate,
             step,
             pos: 0.0,
-            points: Default::default(),
-            tail: 2,
+            window: SincWindow::new(Kernel::for_ratio(1.0 / step), channels),
+            tail: None,
+            input: Vec::with_capacity(channels),
+            out: vec![0.0; channels],
             frame: Vec::with_capacity(channels),
             frame_pos: 0,
         };
         if step != 1.0 {
-            let first = this.read_frame();
-            if !first.is_empty() {
-                this.points[0] = first.clone();
-                this.points[1] = first;
-                this.points[2] = this.next_point();
-                this.points[3] = this.next_point();
+            // Le premier échantillon lu doit être le début du son.
+            for _ in 0..=resample::DELAY {
+                this.push_next();
             }
         }
         this
     }
 
-    fn read_frame(&mut self) -> Vec<f32> {
-        let frame: Vec<f32> = (&mut self.inner).take(self.channels).map(f32::from).collect();
-        if frame.len() == self.channels {
-            frame
-        } else {
-            Vec::new()
+    /// Pousse la trame suivante du son dans la fenêtre (du silence après la
+    /// fin). Faux quand il n'y a plus rien à faire sortir.
+    fn push_next(&mut self) -> bool {
+        if self.tail.is_none() {
+            self.input.clear();
+            self.input.extend((&mut self.inner).take(self.channels).map(f32::from));
+            if self.input.len() == self.channels {
+                self.window.push(&self.input);
+                return true;
+            }
+            self.tail = Some(resample::DELAY + 1);
         }
-    }
-
-    /// Trame suivante ; après la fin, on répète la dernière deux fois pour
-    /// finir l'interpolation, puis plus rien.
-    fn next_point(&mut self) -> Vec<f32> {
-        let frame = self.read_frame();
-        if !frame.is_empty() {
-            return frame;
+        match self.tail.as_mut() {
+            Some(0) => false,
+            Some(n) => {
+                *n -= 1;
+                self.input.clear();
+                self.input.resize(self.channels, 0.0);
+                self.window.push(&self.input);
+                true
+            }
+            None => unreachable!(),
         }
-        if self.tail == 0 {
-            return Vec::new();
-        }
-        self.tail -= 1;
-        self.points.iter().rev().find(|p| !p.is_empty()).cloned().unwrap_or_default()
     }
 }
 
@@ -942,26 +946,19 @@ impl<S: Source<Item = i16>> Iterator for Resample<S> {
             return self.inner.next();
         }
         if self.frame_pos >= self.frame.len() {
-            if self.points[2].is_empty() {
+            if self.tail == Some(0) {
                 return None;
             }
-            let t = self.pos as f32;
-            let [p0, p1, p2, p3] = &self.points;
+            self.window.read(self.pos, &mut self.out);
             self.frame.clear();
-            for c in 0..self.channels {
-                let (a, b, c2, d) = (p0[c], p1[c], p2[c], p3.get(c).copied().unwrap_or(p2[c]));
-                let v = b + 0.5
-                    * t
-                    * (c2 - a + t * (2.0 * a - 5.0 * b + 4.0 * c2 - d + t * (3.0 * (b - c2) + d - a)));
-                self.frame.push(v.round().clamp(-32768.0, 32767.0) as i16);
-            }
+            self.frame.extend(self.out.iter().map(|v| v.round().clamp(-32768.0, 32767.0) as i16));
             self.frame_pos = 0;
             self.pos += self.step;
-            while self.pos >= 1.0 && !self.points[2].is_empty() {
+            while self.pos >= 1.0 {
                 self.pos -= 1.0;
-                let next = self.next_point();
-                self.points.rotate_left(1);
-                self.points[3] = next;
+                if !self.push_next() {
+                    break;
+                }
             }
         }
         let sample = self.frame[self.frame_pos];
@@ -1122,8 +1119,7 @@ struct MicSource {
     /// Avancée dans le son capté pour chaque trame jouée (≈ 1).
     step: f64,
     pos: f64,
-    /// Quatre trames consécutives pour l'interpolation cubique.
-    points: [Vec<f32>; 4],
+    window: SincWindow,
     frame: Vec<f32>,
     frame_pos: usize,
 }
@@ -1141,7 +1137,7 @@ impl MicSource {
             fill: 0.0,
             step: 1.0,
             pos: 0.0,
-            points: [vec![0.0; ch], vec![0.0; ch], vec![0.0; ch], vec![0.0; ch]],
+            window: SincWindow::new(Kernel::for_ratio(1.0), ch),
             frame: vec![0.0; ch],
             frame_pos: ch,
         }
@@ -1180,7 +1176,7 @@ impl MicSource {
             CAPTURE_UNDERRUNS.fetch_add(1, Ordering::Relaxed);
             self.primed = false;
         }
-        self.points[3].iter().map(|v| v * 0.9).collect()
+        (0..ch).map(|c| self.window.newest(c) * 0.9).collect()
     }
 }
 
@@ -1193,16 +1189,9 @@ impl Iterator for MicSource {
             while self.pos >= 1.0 {
                 self.pos -= 1.0;
                 let next = self.pull_frame();
-                self.points.rotate_left(1);
-                self.points[3] = next;
+                self.window.push(&next);
             }
-            let t = self.pos as f32;
-            let [p0, p1, p2, p3] = &self.points;
-            for i in 0..ch {
-                let (a, b, c, d) = (p0[i], p1[i], p2[i], p3[i]);
-                self.frame[i] =
-                    b + 0.5 * t * (c - a + t * (2.0 * a - 5.0 * b + 4.0 * c - d + t * (3.0 * (b - c) + d - a)));
-            }
+            self.window.read(self.pos, &mut self.frame);
             self.pos += self.step;
             self.frame_pos = 0;
         }
