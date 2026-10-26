@@ -1626,6 +1626,18 @@ $("#link-form").addEventListener("submit", async (e) => {
 // ---------- Nouvelle version ----------
 
 const banner = $("#update-banner");
+// Télécharge et installe la nouvelle version ; `onStatus` affiche l'avancement.
+async function installUpdate(info, onStatus) {
+  onStatus(`Téléchargement de la version ${info.version}, l'app va redémarrer toute seule.`);
+  try {
+    await invoke("install_update");
+    return true;
+  } catch (e) {
+    // Version publiée sans mise à jour intégrée, ou pas de connexion.
+    onStatus(`Mise à jour impossible : ${e}`);
+    return false;
+  }
+}
 async function checkUpdate() {
   let info = null;
   try {
@@ -1634,24 +1646,53 @@ async function checkUpdate() {
     return; // Pas de connexion : on réessaiera au prochain lancement.
   }
   if (!info) return;
-  $("span", banner).textContent = `Une nouvelle version (${info.version}) est disponible. Tes sons et réglages sont gardés.`;
+  const text = $("span", banner);
+  text.textContent = `Une nouvelle version (${info.version}) est disponible. Tes sons et réglages sont gardés.`;
   banner.hidden = false;
   $('[data-action="download"]', banner).onclick = () => call("open_release_page", { url: info.url });
   const install = $('[data-action="install"]', banner);
   install.onclick = async () => {
     install.disabled = true;
     install.textContent = "Mise à jour…";
-    $("span", banner).textContent = `Téléchargement de la version ${info.version}, l'app va redémarrer toute seule.`;
-    try {
-      await invoke("install_update");
-    } catch (e) {
-      // Version publiée sans mise à jour intégrée, ou pas de connexion.
+    if (!(await installUpdate(info, (m) => (text.textContent = m)))) {
       install.disabled = false;
       install.textContent = "Mettre à jour";
-      $("span", banner).textContent = `Mise à jour impossible : ${e}`;
     }
   };
 }
+
+// Bouton des réglages : vérifie à la demande, puis installe si une version est là.
+const updateStatus = $("#update-status");
+const updateBtn = $('[data-action="check-update"]', dlgSettings);
+let currentVersion = "";
+window.__TAURI__.app.getVersion().then((v) => {
+  currentVersion = v;
+  updateStatus.textContent = `Version actuelle : ${v}`;
+});
+let pendingUpdate = null;
+updateBtn.addEventListener("click", async () => {
+  updateBtn.disabled = true;
+  if (pendingUpdate) {
+    updateBtn.textContent = "Mise à jour…";
+    if (!(await installUpdate(pendingUpdate, (m) => (updateStatus.textContent = m)))) {
+      updateBtn.disabled = false;
+      updateBtn.textContent = "Réessayer";
+    }
+    return;
+  }
+  updateBtn.textContent = "Recherche…";
+  try {
+    pendingUpdate = await invoke("check_update");
+    updateStatus.textContent = pendingUpdate
+      ? `Version ${pendingUpdate.version} disponible (tu as la ${currentVersion}).`
+      : `Tu as la dernière version (${currentVersion}).`;
+    updateBtn.textContent = pendingUpdate ? "Mettre à jour" : "Rechercher";
+  } catch (e) {
+    updateStatus.textContent = `Pas de connexion à GitHub : ${e}`;
+    updateBtn.textContent = "Réessayer";
+  }
+  updateBtn.disabled = false;
+});
 $('[data-action="dismiss"]', banner).addEventListener("click", () => (banner.hidden = true));
 
 // ---------- Fichiers glissés depuis l'Explorateur ----------
