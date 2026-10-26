@@ -65,6 +65,13 @@ jobs:
             Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
             Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
+            Nouveautés de la 1.3 :
+            - Plus aucune micro-coupure en fin de mots : l'antibruit IA ne coupe plus net les syllabes douces (mesuré sur de vrais enregistrements).
+            - Son de qualité studio : conversion de fréquence pro (aigus intacts, plus de souffle métallique) et traitement en 32 bits flottants de bout en bout.
+            - Les sons trop forts ne sont plus écrêtés, et leur limiteur anticipe les crêtes au lieu de les écraser.
+            - Égaliseur « Sur mesure » calculé par le test de voix, dé-esseur plus doux, volume automatique qui remonte mieux les voix faibles.
+            - Le test de voix repère un micro déjà filtré par un autre logiciel.
+
             Nouveautés de la 1.2 :
             - Voix plus naturelle : plus de R rugueux ni de syllabes coupées par l'antibruit.
             - Traitement studio de la voix : compresseur doux, dé-esseur (S et CH moins sifflants) et limiteur qui évite le grésillement sur les éclats de voix.
