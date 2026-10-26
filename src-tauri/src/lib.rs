@@ -4,6 +4,7 @@ mod calibration;
 mod config;
 mod decoder;
 mod denoise;
+mod dynamics;
 mod effects;
 mod giphy;
 mod mixer;

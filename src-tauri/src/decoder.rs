@@ -24,7 +24,7 @@ pub struct AudioFile {
     format: Box<dyn FormatReader>,
     decoder: Box<dyn Decoder>,
     track_id: u32,
-    buffer: Vec<i16>,
+    buffer: Vec<f32>,
     pos: usize,
     spec: SignalSpec,
     total_duration: Option<Duration>,
@@ -141,7 +141,7 @@ impl AudioFile {
                         continue;
                     }
                     let spec = *decoded.spec();
-                    let mut buf = SampleBuffer::<i16>::new(decoded.capacity() as u64, spec);
+                    let mut buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
                     buf.copy_interleaved_ref(decoded);
                     self.buffer.clear();
                     self.buffer.extend_from_slice(buf.samples());
@@ -162,9 +162,9 @@ impl AudioFile {
 }
 
 impl Iterator for AudioFile {
-    type Item = i16;
+    type Item = f32;
 
-    fn next(&mut self) -> Option<i16> {
+    fn next(&mut self) -> Option<f32> {
         if self.pos >= self.buffer.len() && !self.refill() {
             return None;
         }

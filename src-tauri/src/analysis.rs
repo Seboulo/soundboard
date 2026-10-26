@@ -110,7 +110,7 @@ pub fn analyze(path: &Path) -> Result<Analysis, String> {
     let mut k_blocks: Vec<f64> = Vec::new();
     let (mut k_sq, mut k_n) = (0.0f64, 0usize);
     for (i, s) in decoder.enumerate() {
-        let v = s as f32 / 32768.0;
+        let v = s;
         peak = peak.max(v.abs());
         let sq = (v * v) as f64;
         sum_sq += sq;
@@ -165,13 +165,13 @@ pub fn analyze(path: &Path) -> Result<Analysis, String> {
 
 /// Pic de chaque tranche du son, entre 0 et 1.
 pub fn waveform(path: &Path, points: usize) -> Result<Vec<f32>, String> {
-    let samples: Vec<i16> = decode(path)?.collect();
+    let samples: Vec<f32> = decode(path)?.collect();
     if samples.is_empty() || points == 0 {
         return Ok(vec![]);
     }
     let chunk = samples.len().div_ceil(points);
     Ok(samples
         .chunks(chunk)
-        .map(|c| c.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0) as f32 / 32768.0)
+        .map(|c| c.iter().fold(0.0f32, |m, s| m.max(s.abs())).min(1.0))
         .collect())
 }

@@ -18,7 +18,7 @@ const CEILING: f32 = 0.944;
 /// Le limiteur relâche en ~150 ms.
 const RELEASE_SECONDS: f32 = 0.15;
 
-type BoxedSource = Box<dyn Source<Item = i16> + Send>;
+type BoxedSource = Box<dyn Source<Item = f32> + Send>;
 
 /// Commande d'un son en cours sur le bus.
 #[derive(Clone)]
@@ -140,7 +140,7 @@ impl BusSource {
                 let step = (target - start) / self.block as f32;
                 for f in 0..self.block {
                     self.frame.clear();
-                    self.frame.extend((&mut track.source).take(track.channels).map(|s| s as f32 / 32768.0));
+                    self.frame.extend((&mut track.source).take(track.channels));
                     if self.frame.len() < track.channels {
                         track.voice.done.store(true, Ordering::Relaxed);
                         break;
@@ -242,9 +242,9 @@ mod tests {
     use rodio::buffer::SamplesBuffer;
 
     fn tone(amp: f32, frames: usize, channels: u16) -> BoxedSource {
-        let data: Vec<i16> = (0..frames)
+        let data: Vec<f32> = (0..frames)
             .flat_map(|i| {
-                let v = ((i as f32 * 0.05).sin() * amp * 32767.0) as i16;
+                let v = (i as f32 * 0.05).sin() * amp;
                 std::iter::repeat_n(v, channels as usize)
             })
             .collect();

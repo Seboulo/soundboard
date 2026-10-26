@@ -10,6 +10,7 @@
 
 use crate::config::Settings;
 use crate::denoise::{self, MicFilters, MicLevel, MicMeter, MicProcessor, Recording};
+use crate::dynamics::LookaheadLimiter;
 use crate::resample::{self, Kernel, SincWindow};
 use rodio::cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rodio::cpal::{self, SampleFormat};
@@ -478,7 +479,7 @@ impl Engine {
             buf.clear();
         }
         flag.store(true, Ordering::Relaxed);
-        let source = MicSource::new(tap.clone(), 1, denoise::RATE).convert_samples::<i16>();
+        let source = MicSource::new(tap.clone(), 1, denoise::RATE);
         let voice = monitor
             .bus
             .add(Box::new(Resample::new(source, monitor.rate())), self.mic_level());
@@ -508,7 +509,7 @@ impl Engine {
         let filter: CaptureFilter = Box::new(|samples| samples.collect());
         let stream = open_capture(&device, &config, format, buffer.clone(), max_len, filter)?;
         stream.play().map_err(|e| e.to_string())?;
-        let source = MicSource::new(buffer, channels, rate).convert_samples::<i16>();
+        let source = MicSource::new(buffer, channels, rate);
         let voice = monitor
             .bus
             .add(Box::new(Resample::new(source, monitor.rate())), self.settings.monitor_volume);
@@ -600,7 +601,7 @@ impl Engine {
         let volume = self.mic_level();
         let voice = virt
             .bus
-            .add(Box::new(Resample::new(mic.convert_samples::<i16>(), virt.rate())), volume);
+            .add(Box::new(Resample::new(mic, virt.rate())), volume);
 
         self.mic_stream = Some(stream);
         self.mic_voice = Some(voice);
@@ -714,7 +715,7 @@ impl Engine {
         for (output, out_volume) in targets {
             let Some(output) = output else { continue };
             let source = open_source(&req, output.rate())?;
-            let source: Box<dyn Source<Item = i16> + Send> = match &fade_target {
+            let source: Box<dyn Source<Item = f32> + Send> = match &fade_target {
                 Some(target) => Box::new(Fader::new(source, target.clone())),
                 None => source,
             };
@@ -767,7 +768,7 @@ impl Engine {
     }
 }
 
-fn open_source(req: &PlayRequest, rate: u32) -> Result<Box<dyn Source<Item = i16> + Send>, String> {
+fn open_source(req: &PlayRequest, rate: u32) -> Result<Box<dyn Source<Item = f32> + Send>, String> {
     let decoder = AudioFile::open(&req.path)?;
     let length = match req.end_ms {
         Some(end) => Duration::from_millis(end.saturating_sub(req.start_ms)),
@@ -788,10 +789,12 @@ fn open_source(req: &PlayRequest, rate: u32) -> Result<Box<dyn Source<Item = i16
 ///
 /// L'égalisation règle un seul gain par son ; ici, un compresseur doux
 /// (3:1 au-dessus de -18 dBFS) calme les cris au milieu d'un son, et un
-/// limiteur empêche tout pic de dépasser -5 dBFS. Les deux sont en
-/// flottant : plus de saturation quand le volume du son est poussé.
+/// limiteur à anticipation (2 ms) empêche tout pic de dépasser -5 dBFS sans
+/// déformer l'onde. Tout est en flottant : un MP3 dont les crêtes dépassent
+/// 0 dBFS n'est plus écrêté au décodage.
 struct Leveler<S> {
     inner: S,
+    channels: usize,
     gain: f32,
     /// Enveloppe des pics (suit vite la montée, redescend en 50 ms).
     env: f32,
@@ -800,33 +803,49 @@ struct Leveler<S> {
     env_release: f32,
     attack: f32,
     release: f32,
+    limiter: LookaheadLimiter,
+    frame: Vec<f32>,
+    frame_pos: usize,
+    /// Trames de silence encore à pousser pour vider le limiteur à la fin.
+    tail: Option<usize>,
+    /// Trames de retard du limiteur à sauter au début : le son garde
+    /// exactement sa durée (une boucle ne gagne pas de petit blanc).
+    skip: usize,
 }
 
 const COMP_THRESHOLD: f32 = 0.126;
 const COMP_RATIO: f32 = 3.0;
 const LIMIT_CEILING: f32 = 0.56;
 
-impl<S: Source<Item = i16>> Leveler<S> {
+impl<S: Source<Item = f32>> Leveler<S> {
     fn new(inner: S, gain: f32) -> Self {
-        let per_second = inner.sample_rate().max(1) as f32 * inner.channels().max(1) as f32;
+        let channels = inner.channels().max(1) as usize;
+        let rate = inner.sample_rate().max(1) as f32;
+        // Le compresseur avance par échantillon (canaux entrelacés), le
+        // limiteur par trame.
+        let per_second = rate * channels as f32;
         let coef = |seconds: f32| (-1.0 / (per_second * seconds)).exp();
+        let lookahead = (rate * 0.002).round() as usize;
+        let limiter = LookaheadLimiter::new(channels, lookahead, LIMIT_CEILING, (-1.0 / (rate * 0.08)).exp());
         Self {
             inner,
+            channels,
             gain,
             env: 0.0,
             reduce: 1.0,
             env_release: coef(0.05),
             attack: coef(0.002),
             release: coef(0.2),
+            skip: limiter.latency(),
+            limiter,
+            frame: vec![0.0; channels],
+            frame_pos: channels,
+            tail: None,
         }
     }
-}
 
-impl<S: Source<Item = i16>> Iterator for Leveler<S> {
-    type Item = i16;
-
-    fn next(&mut self) -> Option<i16> {
-        let x = self.inner.next()? as f32 / 32768.0 * self.gain;
+    fn compress(&mut self, x: f32) -> f32 {
+        let x = x * self.gain;
         let level = x.abs();
         self.env = if level > self.env { level } else { level + (self.env - level) * self.env_release };
         let wanted = if self.env > COMP_THRESHOLD {
@@ -836,14 +855,61 @@ impl<S: Source<Item = i16>> Iterator for Leveler<S> {
         };
         let coef = if wanted < self.reduce { self.attack } else { self.release };
         self.reduce = wanted + (self.reduce - wanted) * coef;
-        // Le limiteur agit tout de suite, sans attendre l'attaque.
-        let reduce = self.reduce.min(LIMIT_CEILING / self.env.max(1e-6));
-        let y = (x * reduce).clamp(-1.0, 1.0);
-        Some((y * 32767.0) as i16)
+        x * self.reduce
+    }
+
+    /// Trame suivante, passée par le compresseur puis le limiteur.
+    fn next_frame(&mut self) -> bool {
+        if self.tail.is_none() {
+            let mut n = 0;
+            for i in 0..self.channels {
+                match self.inner.next() {
+                    Some(x) => {
+                        self.frame[i] = self.compress(x);
+                        n += 1;
+                    }
+                    None => break,
+                }
+            }
+            if n < self.channels {
+                self.tail = Some(self.limiter.latency());
+            }
+        }
+        if let Some(t) = self.tail.as_mut() {
+            if *t == 0 {
+                return false;
+            }
+            *t -= 1;
+            self.frame.iter_mut().for_each(|f| *f = 0.0);
+        }
+        self.limiter.process(&mut self.frame);
+        true
     }
 }
 
-impl<S: Source<Item = i16>> Source for Leveler<S> {
+impl<S: Source<Item = f32>> Iterator for Leveler<S> {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        if self.frame_pos >= self.channels {
+            loop {
+                if !self.next_frame() {
+                    return None;
+                }
+                if self.skip == 0 {
+                    break;
+                }
+                self.skip -= 1;
+            }
+            self.frame_pos = 0;
+        }
+        let v = self.frame[self.frame_pos];
+        self.frame_pos += 1;
+        Some(v)
+    }
+}
+
+impl<S: Source<Item = f32>> Source for Leveler<S> {
     fn current_frame_len(&self) -> Option<usize> {
         self.inner.current_frame_len()
     }
@@ -881,12 +947,11 @@ struct Resample<S> {
     /// sortir ses derniers échantillons ; `None` tant qu'il n'est pas fini.
     tail: Option<usize>,
     input: Vec<f32>,
-    out: Vec<f32>,
-    frame: Vec<i16>,
+    frame: Vec<f32>,
     frame_pos: usize,
 }
 
-impl<S: Source<Item = i16>> Resample<S> {
+impl<S: Source<Item = f32>> Resample<S> {
     fn new(inner: S, rate: u32) -> Self {
         let channels = inner.channels().max(1) as usize;
         let step = inner.sample_rate().max(1) as f64 / rate.max(1) as f64;
@@ -899,9 +964,8 @@ impl<S: Source<Item = i16>> Resample<S> {
             window: SincWindow::new(Kernel::for_ratio(1.0 / step), channels),
             tail: None,
             input: Vec::with_capacity(channels),
-            out: vec![0.0; channels],
-            frame: Vec::with_capacity(channels),
-            frame_pos: 0,
+            frame: vec![0.0; channels],
+            frame_pos: channels,
         };
         if step != 1.0 {
             // Le premier échantillon lu doit être le début du son.
@@ -917,7 +981,7 @@ impl<S: Source<Item = i16>> Resample<S> {
     fn push_next(&mut self) -> bool {
         if self.tail.is_none() {
             self.input.clear();
-            self.input.extend((&mut self.inner).take(self.channels).map(f32::from));
+            self.input.extend((&mut self.inner).take(self.channels));
             if self.input.len() == self.channels {
                 self.window.push(&self.input);
                 return true;
@@ -938,10 +1002,10 @@ impl<S: Source<Item = i16>> Resample<S> {
     }
 }
 
-impl<S: Source<Item = i16>> Iterator for Resample<S> {
-    type Item = i16;
+impl<S: Source<Item = f32>> Iterator for Resample<S> {
+    type Item = f32;
 
-    fn next(&mut self) -> Option<i16> {
+    fn next(&mut self) -> Option<f32> {
         if self.step == 1.0 {
             return self.inner.next();
         }
@@ -949,9 +1013,7 @@ impl<S: Source<Item = i16>> Iterator for Resample<S> {
             if self.tail == Some(0) {
                 return None;
             }
-            self.window.read(self.pos, &mut self.out);
-            self.frame.clear();
-            self.frame.extend(self.out.iter().map(|v| v.round().clamp(-32768.0, 32767.0) as i16));
+            self.window.read(self.pos, &mut self.frame);
             self.frame_pos = 0;
             self.pos += self.step;
             while self.pos >= 1.0 {
@@ -967,7 +1029,7 @@ impl<S: Source<Item = i16>> Iterator for Resample<S> {
     }
 }
 
-impl<S: Source<Item = i16>> Source for Resample<S> {
+impl<S: Source<Item = f32>> Source for Resample<S> {
     fn current_frame_len(&self) -> Option<usize> {
         None
     }
@@ -994,7 +1056,7 @@ struct Fader<S> {
     target: Arc<AtomicU32>,
 }
 
-impl<S: Source<Item = i16>> Fader<S> {
+impl<S: Source<Item = f32>> Fader<S> {
     fn new(inner: S, target: Arc<AtomicU32>) -> Self {
         let per_second = inner.sample_rate() as f32 * inner.channels() as f32;
         Self {
@@ -1006,10 +1068,10 @@ impl<S: Source<Item = i16>> Fader<S> {
     }
 }
 
-impl<S: Source<Item = i16>> Iterator for Fader<S> {
-    type Item = i16;
+impl<S: Source<Item = f32>> Iterator for Fader<S> {
+    type Item = f32;
 
-    fn next(&mut self) -> Option<i16> {
+    fn next(&mut self) -> Option<f32> {
         let sample = self.inner.next()?;
         let target = f32::from_bits(self.target.load(Ordering::Relaxed));
         if self.gain < target {
@@ -1017,11 +1079,11 @@ impl<S: Source<Item = i16>> Iterator for Fader<S> {
         } else if self.gain > target {
             self.gain = (self.gain - self.step).max(target);
         }
-        Some((sample as f32 * self.gain) as i16)
+        Some(sample * self.gain)
     }
 }
 
-impl<S: Source<Item = i16>> Source for Fader<S> {
+impl<S: Source<Item = f32>> Source for Fader<S> {
     fn current_frame_len(&self) -> Option<usize> {
         self.inner.current_frame_len()
     }
@@ -1213,5 +1275,37 @@ impl Source for MicSource {
     }
     fn total_duration(&self) -> Option<Duration> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rodio::buffer::SamplesBuffer;
+
+    #[test]
+    fn leveler_keeps_length_and_caps_peaks_without_clipping_overs() {
+        // Stéréo 44,1 kHz avec des crêtes au-dessus de 0 dBFS (comme un MP3
+        // poussé fort) : rien n'est écrêté, tout passe sous le plafond, et le
+        // son garde exactement sa durée (boucles sans blanc).
+        let data: Vec<f32> = (0..44_100).flat_map(|i| {
+            let v = (i as f32 * 0.03).sin() * 1.3;
+            [v, -v]
+        }).collect();
+        let len = data.len();
+        let out: Vec<f32> = Leveler::new(SamplesBuffer::new(2, 44_100, data), 1.0).collect();
+        assert_eq!(out.len(), len);
+        let peak = out.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(peak <= LIMIT_CEILING + 1e-4, "peak {peak}");
+        assert!(peak > LIMIT_CEILING * 0.9);
+    }
+
+    #[test]
+    fn resample_keeps_float_precision() {
+        // Un son très faible (-100 dBFS) n'est plus arrondi à zéro.
+        let data: Vec<f32> = (0..4410).map(|i| (i as f32 * 0.1).sin() * 1e-5).collect();
+        let out: Vec<f32> = Resample::new(SamplesBuffer::new(1, 44_100, data), 48_000).collect();
+        let peak = out[100..].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(peak > 0.5e-5 && peak < 2e-5, "{peak}");
     }
 }

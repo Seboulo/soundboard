@@ -20,6 +20,7 @@
 //!   des mots n'est plus mangé.
 
 use crate::config::{MicCalibration, VoiceEffect, VoiceEq};
+use crate::dynamics::LookaheadLimiter;
 use crate::effects::Effect;
 use crate::resample::{Kernel, SincWindow};
 use df::tract::{DfParams, DfTract, RuntimeParams};
@@ -147,7 +148,7 @@ pub struct MicProcessor {
     gain: f32,
     hold: u32,
     leveler: VoiceLeveler,
-    limiter: Limiter,
+    limiter: LookaheadLimiter,
     eq: Vec<Biquad>,
     /// Test de voix en cours et sa longueur voulue (en échantillons).
     recording: Option<(Recording, usize)>,
@@ -333,7 +334,7 @@ impl MicProcessor {
             gain: if filters.gate { 0.0 } else { 1.0 },
             hold: 0,
             leveler: VoiceLeveler::new(filters.calibration.map(|c| c.speech_db)),
-            limiter: Limiter::new(),
+            limiter: voice_limiter(),
             eq: equalizer(filters.eq, filters.calibration),
             recording: None,
             floor_db: filters.calibration.map_or(f32::NAN, |c| c.noise_db.clamp(-90.0, -20.0)),
@@ -481,8 +482,9 @@ impl MicProcessor {
             if self.filters.level {
                 v = self.leveler.process(v);
             }
-            let v = self.limiter.process(self.effect.process(v));
-            out.push(v.clamp(-1.0, 1.0));
+            let mut frame = [self.effect.process(v)];
+            self.limiter.process(&mut frame);
+            out.push(frame[0].clamp(-1.0, 1.0));
         }
         if let Some((r, n)) = self.recording.as_mut() {
             let missing = n.saturating_sub(r.processed.len());
@@ -647,57 +649,12 @@ impl VoiceLeveler {
     }
 }
 
-/// Plafond à -3 dBFS qui voit 2 ms en avance : le gain descend en douceur
-/// avant une crête au lieu de la couper net (une coupure nette fait un
-/// grésillement, surtout sur les R roulés et les éclats de voix).
-struct Limiter {
-    /// Son retardé, besoins de gain et minima glissants (anneaux).
-    delay: Vec<f32>,
-    need: Vec<f32>,
-    mins: Vec<f32>,
-    sum: f64,
-    at_delay: usize,
-    at: usize,
-    gain: f32,
-    release: f32,
-}
-
+/// Plafond de la voix : -3 dBFS, 2 ms d'anticipation (voir `dynamics`).
 const LIMIT_CEILING: f32 = 0.708;
 const LIMIT_LOOKAHEAD: usize = 96;
 
-impl Limiter {
-    fn new() -> Self {
-        let n = LIMIT_LOOKAHEAD + 1;
-        Self {
-            delay: vec![0.0; LIMIT_LOOKAHEAD],
-            need: vec![1.0; n],
-            mins: vec![1.0; n],
-            sum: n as f64,
-            at_delay: 0,
-            at: 0,
-            gain: 1.0,
-            release: smoothing(0.08),
-        }
-    }
-
-    /// Le son ressort avec 2 ms de retard. Chaque gain est la moyenne de
-    /// minima qui couvrent tous la crête à venir : jamais au-dessus du
-    /// plafond, et sans marche d'escalier.
-    fn process(&mut self, x: f32) -> f32 {
-        let out = std::mem::replace(&mut self.delay[self.at_delay], x);
-        self.at_delay = (self.at_delay + 1) % LIMIT_LOOKAHEAD;
-        // Le besoin de chaque échantillon et la moyenne portent sur les
-        // LIMIT_LOOKAHEAD + 1 derniers : tous incluent celui qui sort.
-        let n = self.need.len();
-        self.need[self.at] = if x.abs() > LIMIT_CEILING { LIMIT_CEILING / x.abs() } else { 1.0 };
-        let min = self.need.iter().fold(1.0f32, |m, &g| m.min(g));
-        self.sum += min as f64 - self.mins[self.at] as f64;
-        self.mins[self.at] = min;
-        self.at = (self.at + 1) % n;
-        let wanted = (self.sum / n as f64) as f32;
-        self.gain = if wanted < self.gain { wanted } else { wanted + (self.gain - wanted) * self.release };
-        out * self.gain
-    }
+fn voice_limiter() -> LookaheadLimiter {
+    LookaheadLimiter::new(1, LIMIT_LOOKAHEAD, LIMIT_CEILING, smoothing(0.08))
 }
 
 #[cfg(test)]
@@ -946,11 +903,18 @@ mod tests {
 
     #[test]
     fn limiter_never_exceeds_ceiling_and_leaves_quiet_sound_alone() {
-        let mut l = Limiter::new();
+        let mut l = voice_limiter();
         let mut input = tone(300.0, 0.3, 9600);
         input.extend(tone(300.0, 1.4, 4800));
         input.extend(tone(300.0, 0.3, 48_000));
-        let out: Vec<f32> = input.iter().map(|&x| l.process(x)).collect();
+        let out: Vec<f32> = input
+            .iter()
+            .map(|&x| {
+                let mut f = [x];
+                l.process(&mut f);
+                f[0]
+            })
+            .collect();
         let peak = out.iter().fold(0.0f32, |m, v| m.max(v.abs()));
         assert!(peak <= LIMIT_CEILING + 1e-4, "peak {peak}");
         // Le calme d'avant ressort intact (à 2 ms de retard près).
