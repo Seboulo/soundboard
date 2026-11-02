@@ -1945,10 +1945,12 @@ async fn import_backup(app: AppHandle) -> Result<Option<Snapshot>, String> {
     };
     let state = app.state::<AppState>();
     let (sounds_dir, images) = (state.sounds_dir.clone(), images_dir(&state));
+    // Avant d'écrire : sous Windows, un son en cours de lecture est verrouillé
+    // et ne pourrait pas être remplacé (il disparaîtrait de la restauration).
+    state.audio.stop_all();
     let restored = tauri::async_runtime::spawn_blocking(move || backup::read(&src, &sounds_dir, &images))
         .await
         .map_err(|e| e.to_string())??;
-    state.audio.stop_all();
     empty_trash(&state);
     let settings = restored.settings.clone();
     {
