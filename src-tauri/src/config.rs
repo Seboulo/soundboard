@@ -57,6 +57,10 @@ pub struct Sound {
     /// Effets de l'éditeur (vitesse, hauteur, écho…), appliqués à la lecture.
     #[serde(default)]
     pub fx: crate::sound_fx::SoundFx,
+    /// Niveau du passage réellement joué (découpe et effets compris),
+    /// mesuré en arrière-plan. Ignoré s'il ne correspond plus à la découpe.
+    #[serde(default)]
+    pub segment: Option<SegmentLevel>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -78,7 +82,44 @@ pub struct Analysis {
     pub max_short: f32,
 }
 
+/// Découpe et effets pour lesquels un niveau a été mesuré.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SegmentKey {
+    pub start_ms: u64,
+    pub end_ms: Option<u64>,
+    pub fx: crate::sound_fx::SoundFx,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct SegmentLevel {
+    pub key: SegmentKey,
+    pub analysis: Analysis,
+}
+
 impl Sound {
+    /// `None` quand le son est joué en entier et sans effet : la mesure du
+    /// fichier suffit.
+    pub fn segment_key(&self) -> Option<SegmentKey> {
+        if self.start_ms == 0 && self.end_ms.is_none() && self.fx.is_neutral() {
+            return None;
+        }
+        Some(SegmentKey { start_ms: self.start_ms, end_ms: self.end_ms, fx: self.fx })
+    }
+
+    /// Le passage découpé n'a pas encore de mesure à jour.
+    pub fn needs_segment(&self) -> bool {
+        self.segment_key().is_some_and(|k| self.segment.is_none_or(|s| s.key != k))
+    }
+
+    /// Mesure à utiliser pour le volume : celle du passage joué si elle est
+    /// à jour, sinon celle du fichier entier.
+    fn level(&self) -> Option<Analysis> {
+        match (self.segment_key(), &self.segment) {
+            (Some(k), Some(seg)) if seg.key == k => Some(seg.analysis),
+            _ => self.analysis,
+        }
+    }
+
     /// Durée jouée, découpe comprise.
     pub fn play_duration_ms(&self) -> Option<u64> {
         let total = self.analysis?.duration_ms;
@@ -99,7 +140,7 @@ impl Sound {
         let max_momentary = target_lufs + 8.0;
         // Marge sous 0 dBFS pour les pics entre deux échantillons.
         const PEAK_CEILING: f32 = 0.89;
-        match self.analysis {
+        match self.level() {
             Some(a) if a.peak > 0.0001 => {
                 let gain = if a.lufs < 0.0 {
                     let db = (target_lufs - a.lufs)

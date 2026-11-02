@@ -261,6 +261,46 @@ fn apply_autostart(app: &AppHandle, enabled: bool) {
 
 /// Calcule durée et niveau des sons importés avant cette version (ou
 /// analysés avant le calcul du niveau sans les silences).
+/// Mesure en arrière-plan le volume des passages découpés ou avec effets,
+/// pour que l'égalisation porte sur ce qui est vraiment joué.
+fn measure_segments(app: AppHandle) {
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    if RUNNING.swap(true, Ordering::AcqRel) {
+        // Une mesure tourne déjà : elle reprendra la liste en finissant.
+        PENDING.store(true, Ordering::Release);
+        return;
+    }
+    static PENDING: AtomicBool = AtomicBool::new(false);
+    std::thread::spawn(move || {
+        let state = app.state::<AppState>();
+        loop {
+            PENDING.store(false, Ordering::Release);
+            let todo: Vec<(String, PathBuf, config::SegmentKey)> = state
+                .config
+                .lock()
+                .unwrap()
+                .sounds
+                .iter()
+                .filter(|s| s.needs_segment())
+                .filter_map(|s| Some((s.id.clone(), s.path.clone(), s.segment_key()?)))
+                .collect();
+            for (id, path, key) in todo {
+                let Ok(analysis) = analysis::analyze_segment(&path, &key) else { continue };
+                let mut config = state.config.lock().unwrap();
+                // La découpe a pu changer pendant la mesure.
+                if let Some(s) = config.sounds.iter_mut().find(|s| s.id == id && s.segment_key() == Some(key)) {
+                    s.segment = Some(config::SegmentLevel { key, analysis });
+                    let _ = state.save(&config);
+                }
+            }
+            if !PENDING.load(Ordering::Acquire) {
+                break;
+            }
+        }
+        RUNNING.store(false, Ordering::Release);
+    });
+}
+
 fn analyze_missing(app: AppHandle) {
     std::thread::spawn(move || {
         let state = app.state::<AppState>();
@@ -515,6 +555,7 @@ fn store_sound(
         played_ms: 0,
         last_played: 0,
         fx: Default::default(),
+        segment: None,
     })
 }
 
@@ -646,11 +687,13 @@ async fn replace_sound_file(app: AppHandle, id: String) -> Result<Option<Snapsho
             let _ = fs::remove_file(old);
         }
         sound.analysis = Some(analysis);
+        sound.segment = None;
         sound.start_ms = 0;
         sound.end_ms = None;
         state.save(&config)?;
     }
     state.waveforms.lock().unwrap().remove(&id);
+    measure_segments(app.clone());
     Ok(Some(state.snapshot()))
 }
 
@@ -684,6 +727,7 @@ fn update_sound(app: AppHandle, state: State<AppState>, sound: Sound) -> Result<
         state.save(&config)?;
     }
     register_hotkeys(&app);
+    measure_segments(app.clone());
     Ok(state.snapshot())
 }
 
@@ -1917,6 +1961,7 @@ async fn import_backup(app: AppHandle) -> Result<Option<Snapshot>, String> {
     apply_audio(&state, settings);
     register_hotkeys(&app);
     apply_phone(&app);
+    measure_segments(app.clone());
     Ok(Some(state.snapshot()))
 }
 
@@ -2048,6 +2093,7 @@ pub fn run() {
                 watch_devices(handle.clone());
             });
             analyze_missing(app.handle().clone());
+            measure_segments(app.handle().clone());
             build_tray(app.handle())?;
             apply_phone(app.handle());
 
