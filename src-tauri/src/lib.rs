@@ -298,6 +298,11 @@ fn measure_segments(app: AppHandle) {
             }
         }
         RUNNING.store(false, Ordering::Release);
+        // Une demande arrivée juste entre la dernière vérification et la
+        // ligne du dessus aurait été perdue : on la reprend.
+        if PENDING.swap(false, Ordering::AcqRel) {
+            measure_segments(app.clone());
+        }
     });
 }
 

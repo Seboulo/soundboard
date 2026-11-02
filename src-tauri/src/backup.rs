@@ -81,13 +81,29 @@ pub fn read(src: &Path, sounds_dir: &Path, images_dir: &Path) -> Result<Config, 
     fs::create_dir_all(sounds_dir).map_err(|e| e.to_string())?;
     fs::create_dir_all(images_dir).map_err(|e| e.to_string())?;
     // Seul le nom du fichier est gardé : rien ne peut sortir des dossiers de l'app.
+    // Un fichier déjà là et identique est repris tel quel (sous Windows, un son
+    // en cours de lecture est verrouillé) ; s'il diffère, on en crée un autre
+    // à côté au lieu d'écraser un son de la soundboard actuelle.
     let mut extract = |path: &Path, dir: &Path| -> Option<PathBuf> {
-        let name = path.file_name()?;
-        let mut entry = zip.by_name(path.to_str()?).ok()?;
-        let dest = dir.join(name);
-        if entry.size() > MAX_FILE {
+        let name = Path::new(path.file_name()?);
+        let entry_name = path.to_str()?;
+        if zip.by_name(entry_name).ok()?.size() > MAX_FILE {
             return None;
         }
+        let mut dest = dir.join(name);
+        let mut n = 2;
+        while dest.exists() {
+            if same_content(zip.by_name(entry_name).ok()?, &dest) {
+                return Some(dest);
+            }
+            let stem = name.file_stem()?.to_string_lossy();
+            dest = match name.extension() {
+                Some(ext) => dir.join(format!("{stem}-{n}.{}", ext.to_string_lossy())),
+                None => dir.join(format!("{stem}-{n}")),
+            };
+            n += 1;
+        }
+        let mut entry = zip.by_name(entry_name).ok()?;
         let mut out = fs::File::create(&dest).ok()?;
         // La taille annoncée peut mentir : on coupe quand même à la limite.
         let copied = std::io::copy(&mut entry.by_ref().take(MAX_FILE + 1), &mut out).ok()?;
@@ -109,6 +125,33 @@ pub fn read(src: &Path, sounds_dir: &Path, images_dir: &Path) -> Result<Config, 
     }
     config.sounds = kept;
     Ok(config)
+}
+
+/// Même contenu qu'un fichier déjà sur le disque ?
+fn same_content(mut entry: impl Read, path: &Path) -> bool {
+    let Ok(mut file) = fs::File::open(path) else { return false };
+    let (mut a, mut b) = (vec![0u8; 64 * 1024], vec![0u8; 64 * 1024]);
+    loop {
+        let Ok(n) = read_full(&mut entry, &mut a) else { return false };
+        let Ok(m) = read_full(&mut file, &mut b) else { return false };
+        if n != m || a[..n] != b[..m] {
+            return false;
+        }
+        if n == 0 {
+            return true;
+        }
+    }
+}
+
+fn read_full(r: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match r.read(&mut buf[filled..])? {
+            0 => break,
+            k => filled += k,
+        }
+    }
+    Ok(filled)
 }
 
 #[cfg(test)]
@@ -172,5 +215,15 @@ mod tests {
         assert_eq!(fs::read(&restored.sounds[1].path).unwrap(), b"deux");
         assert_eq!(restored.sounds[0].image, restored.sounds[0].image_still);
         assert!(restored.sounds[0].image.as_ref().unwrap().exists());
+
+        // Restaurer une 2e fois au même endroit : fichiers identiques repris,
+        // et un fichier différent du même nom n'est pas écrasé.
+        let again = read(&zip, &root.join("b/sounds"), &root.join("b/images")).unwrap();
+        assert_eq!(again.sounds[0].path, restored.sounds[0].path);
+        fs::write(&restored.sounds[1].path, b"autre").unwrap();
+        let third = read(&zip, &root.join("b/sounds"), &root.join("b/images")).unwrap();
+        assert_ne!(third.sounds[1].path, restored.sounds[1].path);
+        assert_eq!(fs::read(&third.sounds[1].path).unwrap(), b"deux");
+        assert_eq!(fs::read(&restored.sounds[1].path).unwrap(), b"autre");
     }
 }
