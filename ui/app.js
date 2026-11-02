@@ -75,6 +75,14 @@ function hotkeyFromEvent(e) {
   return parts.join("+");
 }
 
+const TYPING_KEY = /^(Key|Digit)|^(Space|Enter|Backspace|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash|IntlBackslash)$/;
+
+function blocksTyping(e) {
+  if (e.ctrlKey || e.altKey || e.metaKey || !TYPING_KEY.test(e.code)) return false;
+  toast("Ajoute Ctrl ou Alt : une touche d'écriture seule serait bloquée dans toutes tes applis (pavé numérique et F1 à F12 OK)", true);
+  return true;
+}
+
 function setupHotkeyInput(input) {
   input.addEventListener("focus", () => {
     input.classList.add("listening");
@@ -99,6 +107,9 @@ function setupHotkeyInput(input) {
       return;
     }
     const hk = hotkeyFromEvent(e);
+    // Un raccourci global « avale » la touche dans toutes les applis : une
+    // lettre seule (ou avec Maj) empêcherait d'écrire dans Discord.
+    if (hk && blocksTyping(e)) return;
     if (hk) {
       input.dataset.hotkey = hk;
       input.value = hotkeyLabel(hk);
@@ -654,9 +665,12 @@ function captureHotkey(sound, chip) {
     if (e.key === "Escape") return done();
     const hk = hotkeyFromEvent(e);
     if (!hk) return; // touche de modification seule : on attend la suite
+    if (blocksTyping(e)) return; // on attend une autre combinaison
     done();
     const owner = state.config.sounds.find((s) => s.hotkey === hk && s.id !== sound.id);
     if (owner) return toast(`${hotkeyLabel(hk)} est déjà le raccourci de « ${owner.name} »`, true);
+    if (SETTINGS_HOTKEYS.some((k) => state.config.settings[k] === hk))
+      return toast(`${hotkeyLabel(hk)} est déjà pris par un raccourci des réglages`, true);
     call("update_sound", { sound: { ...sound, hotkey: hk } }).then(
       (res) => res && toast(`« ${sound.name} » : ${hotkeyLabel(hk)}`),
     );

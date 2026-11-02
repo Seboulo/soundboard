@@ -495,6 +495,8 @@ fn pick_random(state: &AppState, category: Option<&str>) -> Option<Sound> {
     Some(sound)
 }
 
+const MAX_SOUND_FILE: u64 = 200 * 1024 * 1024;
+
 fn import_file(src: &Path, sounds_dir: &Path, color_index: usize) -> Result<Sound, String> {
     let ext = src
         .extension()
@@ -509,6 +511,12 @@ fn import_file(src: &Path, sounds_dir: &Path, color_index: usize) -> Result<Soun
         .and_then(|s| s.to_str())
         .unwrap_or("Son")
         .replace(['_', '-'], " ");
+    // Un énorme fichier (enregistrement de plusieurs heures) serait chargé
+    // en entier en mémoire, puis analysé : on refuse avant.
+    let size = fs::metadata(src).map_err(|e| format!("{} : {e}", src.display()))?.len();
+    if size > MAX_SOUND_FILE {
+        return Err(format!("{} : fichier trop gros (200 Mo au plus)", src.display()));
+    }
     let data = fs::read(src).map_err(|e| format!("{} : {e}", src.display()))?;
     store_sound(&data, &ext, name, sounds_dir, color_index)
         .map_err(|e| format!("{} : {e}", src.display()))
@@ -662,6 +670,9 @@ async fn replace_sound_file(app: AppHandle, id: String) -> Result<Option<Snapsho
         .and_then(|e| e.to_str())
         .map(str::to_lowercase)
         .ok_or("fichier sans extension")?;
+    if fs::metadata(&src).map(|m| m.len()).unwrap_or(0) > MAX_SOUND_FILE {
+        return Err("fichier trop gros (200 Mo au plus)".into());
+    }
     let file_id = id.clone();
     let (dest, analysis) = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
         fs::create_dir_all(&sounds_dir).map_err(|e| e.to_string())?;
@@ -1339,14 +1350,21 @@ fn audio_settings(s: &Settings) -> serde_json::Value {
 }
 
 /// Joue le son, ou l'arrête s'il est déjà en cours.
+/// Hors du fil principal : calculer les effets d'un long son prend du temps
+/// et gelait toute la fenêtre pendant ce temps.
 #[tauri::command]
-fn play_sound(state: State<AppState>, id: String) -> Result<PlayOutcome, String> {
-    let sound = find_sound(&state, &id)?;
-    note_play(&state, &sound);
-    state
-        .audio
-        .toggle(play_request(&state, &sound))
-        .inspect_err(|e| journal::write(&format!("Lecture de « {} » : {e}", sound.name)))
+async fn play_sound(app: AppHandle, id: String) -> Result<PlayOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let sound = find_sound(&state, &id)?;
+        note_play(&state, &sound);
+        state
+            .audio
+            .toggle(play_request(&state, &sound))
+            .inspect_err(|e| journal::write(&format!("Lecture de « {} » : {e}", sound.name)))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Taille de l'interface (Réglages > Général, ou Ctrl + / Ctrl −).
@@ -1398,28 +1416,33 @@ fn diagnostic_report(state: State<AppState>) -> String {
 
 /// Pré-écoute dans le casque seulement, avec une découpe pas encore enregistrée.
 #[tauri::command]
-fn preview_sound(
-    state: State<AppState>,
+async fn preview_sound(
+    app: AppHandle,
     id: String,
     start_ms: u64,
     end_ms: Option<u64>,
     volume: f32,
     fx: Option<sound_fx::SoundFx>,
 ) -> Result<(), String> {
-    let mut sound = find_sound(&state, &id)?;
-    sound.start_ms = start_ms;
-    sound.end_ms = end_ms;
-    sound.volume = volume;
-    // Pré-écoute jouée une seule fois : pas de boucle dans la durée.
-    sound.looping = false;
-    if let Some(fx) = fx {
-        sound.fx = fx.sanitized();
-    }
-    let mut req = play_request(&state, &sound);
-    req.id = audio::PREVIEW_ID.into();
-    // Une seule lecture pour suivre le curseur, même pour un son en boucle.
-    req.looping = false;
-    state.audio.preview(req)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let mut sound = find_sound(&state, &id)?;
+        sound.start_ms = start_ms;
+        sound.end_ms = end_ms;
+        sound.volume = volume;
+        // Pré-écoute jouée une seule fois : pas de boucle dans la durée.
+        sound.looping = false;
+        if let Some(fx) = fx {
+            sound.fx = fx.sanitized();
+        }
+        let mut req = play_request(&state, &sound);
+        req.id = audio::PREVIEW_ID.into();
+        // Une seule lecture pour suivre le curseur, même pour un son en boucle.
+        req.looping = false;
+        state.audio.preview(req)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
