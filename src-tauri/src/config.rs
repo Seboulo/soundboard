@@ -260,11 +260,45 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn load(path: &Path) -> Self {
-        fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+    /// Lit la config. Si le fichier est abîmé, il est mis de côté
+    /// (`config.corrupt.json`) et la sauvegarde `config.json.bak` est
+    /// reprise : la soundboard n'est jamais remplacée par une vide.
+    /// Renvoie aussi un message à afficher quand une réparation a eu lieu.
+    pub fn load(path: &Path) -> (Self, Option<String>) {
+        let backup = backup_path(path);
+        let read = |p: &Path| -> Option<Result<Self, ()>> {
+            let text = fs::read_to_string(p).ok()?;
+            Some(serde_json::from_str(&text).map_err(|_| ()))
+        };
+        match read(path) {
+            Some(Ok(config)) => {
+                // Bonne config : on la garde comme sauvegarde de secours,
+                // une fois par lancement.
+                let _ = fs::copy(path, &backup);
+                (config, None)
+            }
+            broken => {
+                if broken.is_some() {
+                    let _ = fs::rename(path, path.with_extension("corrupt.json"));
+                }
+                match read(&backup) {
+                    Some(Ok(config)) => {
+                        let _ = config.save(path);
+                        let msg = if broken.is_some() {
+                            "le fichier des réglages était abîmé, la dernière sauvegarde a été restaurée."
+                        } else {
+                            "le fichier des réglages avait disparu, la dernière sauvegarde a été restaurée."
+                        };
+                        (config, Some(msg.into()))
+                    }
+                    _ if broken.is_some() => (
+                        Self::default(),
+                        Some("le fichier des réglages était abîmé et aucune sauvegarde n'existe. Il a été mis de côté (config.corrupt.json).".into()),
+                    ),
+                    _ => (Self::default(), None),
+                }
+            }
+        }
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -276,5 +310,67 @@ impl Config {
         let tmp = path.with_extension("json.tmp");
         fs::write(&tmp, json).map_err(|e| e.to_string())?;
         fs::rename(&tmp, path).map_err(|e| e.to_string())
+    }
+}
+
+fn backup_path(path: &Path) -> PathBuf {
+    path.with_extension("json.bak")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sb-config-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn one_sound() -> Config {
+        let mut c: Config = serde_json::from_str(
+            r##"{"sounds":[{"id":"a","name":"Pouet","path":"x.mp3","hotkey":null,"volume":1.0,"color":"#fff"}]}"##,
+        )
+        .unwrap();
+        c.settings.master_volume = 0.5;
+        c
+    }
+
+    #[test]
+    fn corrupt_config_restores_backup() {
+        let dir = temp_dir("corrupt");
+        let path = dir.join("config.json");
+        one_sound().save(&path).unwrap();
+        // Premier lancement : la sauvegarde est faite.
+        let (c, note) = Config::load(&path);
+        assert_eq!(c.sounds.len(), 1);
+        assert!(note.is_none());
+        // Fichier abîmé : on retrouve les sons et l'original est mis de côté.
+        fs::write(&path, "{ pas du json").unwrap();
+        let (c, note) = Config::load(&path);
+        assert_eq!(c.sounds.len(), 1);
+        assert!(note.is_some());
+        assert!(dir.join("config.corrupt.json").exists());
+        assert_eq!(Config::load(&path).0.sounds.len(), 1);
+    }
+
+    #[test]
+    fn corrupt_config_without_backup_is_kept_aside() {
+        let dir = temp_dir("nobackup");
+        let path = dir.join("config.json");
+        fs::write(&path, "{ pas du json").unwrap();
+        let (c, note) = Config::load(&path);
+        assert!(c.sounds.is_empty());
+        assert!(note.is_some());
+        assert!(dir.join("config.corrupt.json").exists());
+    }
+
+    #[test]
+    fn first_launch_is_silent() {
+        let dir = temp_dir("first");
+        let (c, note) = Config::load(&dir.join("config.json"));
+        assert!(c.sounds.is_empty());
+        assert!(note.is_none());
     }
 }

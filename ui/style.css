@@ -471,6 +471,7 @@ main { padding-bottom: 32px; }
   white-space: pre-line;
 }
 .toast.error { border-color: var(--danger); }
+.toast button { margin-left: 12px; padding: 3px 10px; font-size: 12px; }
 
 dialog {
   width: min(520px, 92vw);
@@ -830,9 +831,10 @@ input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2
 .image-search .powered { font-size: 11px; text-align: right; margin: 0; }
 
 /* Bandeau d'avertissements avec accès au diagnostic. */
-.warnings { display: flex; align-items: center; gap: 12px; }
-.warnings [data-text] { flex: 1; }
-.warnings button { flex-shrink: 0; font-size: 12px; padding: 5px 10px; }
+.warnings { display: flex; flex-direction: column; gap: 6px; }
+.warning { display: flex; align-items: center; gap: 10px; }
+.warning span { flex: 1; }
+.warning button { flex-shrink: 0; font-size: 12px; padding: 5px 10px; }
 
 /* Diagnostic */
 .checks { display: flex; flex-direction: column; gap: 6px; max-height: 52vh; overflow-y: auto; }

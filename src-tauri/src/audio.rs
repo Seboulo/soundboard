@@ -215,7 +215,7 @@ fn wait<T>(rx: Receiver<Result<T, String>>) -> Result<T, String> {
         .unwrap_or_else(|_| Err("le moteur audio ne répond pas".into()))
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DeviceList {
     pub outputs: Vec<String>,
     pub inputs: Vec<String>,
@@ -407,9 +407,9 @@ impl Engine {
         match find_output(self.settings.monitor_device.as_deref()) {
             Some(dev) => match Output::open(&dev) {
                 Ok(o) => self.monitor = Some(o),
-                Err(e) => errors.push(format!("casque : {e}")),
+                Err(e) => errors.push(format!("le casque ne s'ouvre pas ({e}).")),
             },
-            None => errors.push("casque introuvable".into()),
+            None => errors.push("casque introuvable : il est peut-être débranché. Rebranche-le, le son reprendra tout seul.".into()),
         }
 
         // Sans câble virtuel choisi, on ne joue que dans le casque : jouer deux
@@ -418,22 +418,22 @@ impl Engine {
             match find_output(Some(&name)) {
                 Some(dev) => match Output::open(&dev) {
                     Ok(o) => self.virt = Some(o),
-                    Err(e) => errors.push(format!("câble virtuel : {e}")),
+                    Err(e) => errors.push(format!("le câble virtuel ne s'ouvre pas ({e}).")),
                 },
-                None => errors.push(format!("câble virtuel « {name} » introuvable")),
+                None => errors.push(format!("câble virtuel « {name} » introuvable : Discord n'entend plus les sons. Réinstalle VB-Cable ou choisis un autre câble.")),
             }
         }
 
         if self.settings.mic_enabled && self.virt.is_some() {
             if let Err(e) = self.start_mic() {
-                errors.push(format!("micro : {e}"));
+                errors.push(format!("micro : {e}. Rebranche-le ou choisis-en un autre, ta voix reprendra toute seule."));
             }
         }
 
         if errors.is_empty() {
             Ok(())
         } else {
-            Err(errors.join(" ; "))
+            Err(errors.join("\n"))
         }
     }
 
@@ -520,7 +520,7 @@ impl Engine {
 
     fn start_mic(&mut self) -> Result<(), String> {
         let virt = self.virt.as_ref().ok_or("pas de câble virtuel")?;
-        let device = find_input(self.settings.mic_device.as_deref()).ok_or("micro introuvable")?;
+        let device = find_input(self.settings.mic_device.as_deref()).ok_or("introuvable")?;
         if device.name().is_ok_and(|n| n.contains(VB_CABLE_CAPTURE)) {
             // Le câble renverrait dans lui-même : larsen garanti.
             return Err("le micro choisi est le câble virtuel, choisis ton vrai micro".into());

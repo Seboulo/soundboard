@@ -10,13 +10,24 @@ let state = null; // { config, devices, warnings, vb_cable_url }
 
 // ---------- Utilitaires ----------
 
-function toast(message, isError = false) {
+/** Message en bas de l'écran, avec un bouton facultatif ({ label, run }). */
+function toast(message, isError = false, action = null) {
   const el = $("#toast");
   el.textContent = message;
+  if (action) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = action.label;
+    btn.addEventListener("click", () => {
+      el.hidden = true;
+      action.run();
+    });
+    el.append(btn);
+  }
   el.classList.toggle("error", isError);
   el.hidden = false;
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => (el.hidden = true), isError ? 6000 : 2500);
+  toast.timer = setTimeout(() => (el.hidden = true), action ? 8000 : isError ? 6000 : 2500);
 }
 
 async function call(cmd, args) {
@@ -229,10 +240,55 @@ function renderStatus() {
   pill.textContent = ok ? "● Discord : actif" : "● Micro virtuel non configuré";
 }
 
+/** Bouton adapté à chaque problème : on va droit à ce qui le corrige. */
+function warningAction(w) {
+  const settings = (tab) => ({ label: "Régler", run: () => openSettings().then(() => showSettingsTab(tab)) });
+  if (w.startsWith("Audio : ")) {
+    if (/câble/i.test(w) && !state.devices.vb_cable) return { label: "Installer VB-Cable", run: openWizard };
+    return settings(/micro/i.test(w) ? "mic" : "sound");
+  }
+  if (w.startsWith("Raccourci : ")) return settings("keys");
+  if (w.startsWith("Téléphone : ")) return settings("remote");
+  if (w.startsWith("Démarrage : ")) return settings("general");
+  if (w.startsWith("Réglages : ")) return null;
+  return { label: "Diagnostic", run: openDiagnostics };
+}
+
+// Problèmes masqués par l'utilisateur (reviennent s'ils changent).
+const dismissedWarnings = new Set();
+
 function renderWarnings() {
   const el = $("#warnings");
-  $("[data-text]", el).textContent = state.warnings.join("\n");
-  el.hidden = state.warnings.length === 0;
+  const list = state.warnings.filter((w) => !dismissedWarnings.has(w));
+  el.replaceChildren(
+    ...list.map((w) => {
+      const row = document.createElement("div");
+      row.className = "warning";
+      const text = document.createElement("span");
+      text.textContent = w;
+      row.append(text);
+      const action = warningAction(w);
+      if (action) {
+        const fix = document.createElement("button");
+        fix.type = "button";
+        fix.textContent = action.label;
+        fix.addEventListener("click", action.run);
+        row.append(fix);
+      }
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "ghost";
+      close.title = "Masquer";
+      close.textContent = "✕";
+      close.addEventListener("click", () => {
+        dismissedWarnings.add(w);
+        renderWarnings();
+      });
+      row.append(close);
+      return row;
+    }),
+  );
+  el.hidden = list.length === 0;
 }
 
 /** Icône du jeu d'icônes de index.html. */
@@ -908,7 +964,10 @@ dlgSound.addEventListener("close", () => {
 $('[data-action="delete"]', dlgSound).addEventListener("click", () => {
   if (!editing) return;
   dlgSound.close("delete");
-  call("remove_sound", { id: editing.id });
+  const name = editing.name;
+  call("remove_sound", { id: editing.id }).then((res) => {
+    if (res) toast(`« ${name} » supprimé`, false, { label: "Annuler", run: () => call("restore_sound") });
+  });
 });
 
 // ---------- Dialogue « Réglages » ----------
@@ -1517,7 +1576,6 @@ $("#btn-stop").addEventListener("click", () => call("stop_all"));
 $("#btn-settings").addEventListener("click", openSettings);
 $("#cable-status").addEventListener("click", () => (state.devices.vb_cable ? openDiagnostics() : openWizard()));
 $("#btn-stats").addEventListener("click", openStats);
-$('#warnings [data-action="diagnose"]').addEventListener("click", openDiagnostics);
 $("#search").addEventListener("input", renderGrid);
 $("#search").addEventListener("keydown", (e) => {
   if (e.key === "Escape" && e.target.value) {

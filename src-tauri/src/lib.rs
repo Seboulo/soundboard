@@ -70,6 +70,8 @@ struct AppState {
     youtube_busy: AtomicBool,
     /// Dernier son tiré au hasard, pour ne pas retomber dessus deux fois de suite.
     last_random: Mutex<Option<String>>,
+    /// Dernier son supprimé et sa position, pour « Annuler ».
+    trash: Mutex<Option<(Sound, usize)>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -109,6 +111,7 @@ const WARN_AUDIO: &str = "Audio : ";
 const WARN_HOTKEY: &str = "Raccourci : ";
 const WARN_STARTUP: &str = "Démarrage : ";
 const WARN_PHONE: &str = "Téléphone : ";
+const WARN_CONFIG: &str = "Réglages : ";
 /// Démarre, redémarre ou arrête la page du téléphone selon les réglages.
 fn apply_phone(app: &AppHandle) {
     let state = app.state::<AppState>();
@@ -279,9 +282,46 @@ fn analyze_missing(app: AppHandle) {
 fn apply_audio(state: &AppState, settings: Settings) {
     let warnings = match state.audio.configure(settings) {
         Ok(()) => vec![],
-        Err(e) => vec![e],
+        Err(e) => e.lines().map(String::from).collect(),
     };
     state.set_warnings(WARN_AUDIO, warnings);
+}
+
+/// Ce qui compte pour l'audio : le périphérique réellement utilisé pour le
+/// casque, le câble et le micro, et s'il est branché.
+fn audio_route(settings: &Settings, d: &DeviceList) -> [Option<String>; 3] {
+    let pick = |chosen: &Option<String>, default: &Option<String>, list: &[String]| {
+        match chosen {
+            Some(name) => list.contains(name).then(|| name.clone()),
+            None => default.clone(),
+        }
+    };
+    [
+        pick(&settings.monitor_device, &d.default_output, &d.outputs),
+        settings.virtual_device.as_ref().filter(|n| d.outputs.contains(n)).cloned(),
+        pick(&settings.mic_device, &d.default_input, &d.inputs),
+    ]
+}
+
+/// Surveille les casques et micros : quand l'un est débranché, rebranché ou
+/// que Windows change le périphérique par défaut, l'audio se reconnecte seul.
+fn watch_devices(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        let devices = audio::list_devices();
+        let state = app.state::<AppState>();
+        let before = state.devices.lock().unwrap().clone();
+        if devices == before {
+            continue;
+        }
+        let settings = state.config.lock().unwrap().settings.clone();
+        let changed = audio_route(&settings, &devices) != audio_route(&settings, &before);
+        *state.devices.lock().unwrap() = devices;
+        if changed {
+            apply_audio(&state, settings);
+        }
+        let _ = app.emit("snapshot", state.snapshot());
+    });
 }
 
 fn register_hotkeys(app: &AppHandle) {
@@ -585,17 +625,90 @@ fn remove_sound(app: AppHandle, state: State<AppState>, id: String) -> Result<Sn
         if let Some(pos) = config.sounds.iter().position(|s| s.id == id) {
             let sound = config.sounds.remove(pos);
             // Sous Windows, un fichier en cours de lecture ne peut pas être
-            // supprimé : il resterait pour toujours dans le dossier.
+            // déplacé ni supprimé : on l'arrête d'abord.
             state.audio.stop(&sound.id);
-            if sound.path.starts_with(&state.sounds_dir) {
-                let _ = fs::remove_file(&sound.path);
-            }
-            remove_image_files(&state, &sound);
+            // Le son précédent de la corbeille part pour de bon.
+            empty_trash(&state);
+            let trashed = move_to_trash(&state, sound);
+            *state.trash.lock().unwrap() = Some((trashed, pos));
         }
         state.save(&config)?;
     }
     register_hotkeys(&app);
     Ok(state.snapshot())
+}
+
+/// Remet le dernier son supprimé à sa place (bouton « Annuler »).
+#[tauri::command]
+fn restore_sound(app: AppHandle, state: State<AppState>) -> Result<Snapshot, String> {
+    let Some((mut sound, pos)) = state.trash.lock().unwrap().take() else {
+        return Err("Rien à restaurer".into());
+    };
+    let trash = trash_dir(&state);
+    let back = |path: &mut PathBuf, home: PathBuf| {
+        if path.starts_with(&trash) {
+            if let Some(name) = path.file_name() {
+                let dest = home.join(name);
+                if fs::rename(&*path, &dest).is_ok() {
+                    *path = dest;
+                }
+            }
+        }
+    };
+    back(&mut sound.path, state.sounds_dir.clone());
+    for img in [&mut sound.image, &mut sound.image_still].into_iter().flatten() {
+        back(img, images_dir(&state));
+    }
+    {
+        let mut config = state.config.lock().unwrap();
+        // Un raccourci repris entre-temps par un autre son reste à celui-ci.
+        if let Some(hk) = &sound.hotkey {
+            if config.sounds.iter().any(|s| s.hotkey.as_ref() == Some(hk)) {
+                sound.hotkey = None;
+            }
+        }
+        let pos = pos.min(config.sounds.len());
+        config.sounds.insert(pos, sound);
+        state.save(&config)?;
+    }
+    register_hotkeys(&app);
+    Ok(state.snapshot())
+}
+
+fn trash_dir(state: &AppState) -> PathBuf {
+    state.sounds_dir.with_file_name("corbeille")
+}
+
+/// Déplace les fichiers du son (rangés par l'app) dans la corbeille.
+fn move_to_trash(state: &AppState, mut sound: Sound) -> Sound {
+    let trash = trash_dir(state);
+    let _ = fs::create_dir_all(&trash);
+    let images = images_dir(state);
+    let stash = |path: &mut PathBuf, home: &Path| {
+        if !path.starts_with(home) {
+            return;
+        }
+        if let Some(name) = path.file_name() {
+            let dest = trash.join(name);
+            if fs::rename(&*path, &dest).is_ok() {
+                *path = dest;
+            } else {
+                let _ = fs::remove_file(&*path);
+            }
+        }
+    };
+    let sounds_dir = state.sounds_dir.clone();
+    stash(&mut sound.path, &sounds_dir);
+    for img in [&mut sound.image, &mut sound.image_still].into_iter().flatten() {
+        stash(img, &images);
+    }
+    sound
+}
+
+/// Vide la corbeille (au lancement et à chaque nouvelle suppression).
+fn empty_trash(state: &AppState) {
+    state.trash.lock().unwrap().take();
+    let _ = fs::remove_dir_all(trash_dir(state));
 }
 
 fn images_dir(state: &AppState) -> PathBuf {
@@ -1690,7 +1803,7 @@ pub fn run() {
         .setup(|app| {
             let config_path = app.path().app_config_dir()?.join("config.json");
             let sounds_dir = app.path().app_data_dir()?.join("sounds");
-            let mut config = Config::load(&config_path);
+            let (mut config, config_note) = Config::load(&config_path);
             let devices = audio::list_devices();
 
             // Premier lancement : si VB-Cable est déjà installé, on le choisit d'office.
@@ -1729,11 +1842,26 @@ pub fn run() {
                 waveforms: Mutex::new(HashMap::new()),
                 playing_ids: Mutex::new(Vec::new()),
                 last_random: Mutex::new(None),
+                trash: Mutex::new(None),
             };
-            apply_audio(&state, config.settings.clone());
+            empty_trash(&state);
+            if let Some(note) = config_note {
+                state.set_warnings(WARN_CONFIG, vec![note]);
+            }
             app.manage(state);
             register_hotkeys(app.handle());
-            apply_autostart(app.handle(), config.settings.launch_at_startup);
+            // Ouvrir le casque, le câble et le micro (et charger le
+            // débruiteur) prend du temps : la fenêtre s'affiche sans attendre.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let state = handle.state::<AppState>();
+                // Réglages du moment : ils ont pu changer entre-temps.
+                let settings = state.config.lock().unwrap().settings.clone();
+                apply_autostart(&handle, settings.launch_at_startup);
+                apply_audio(&state, settings);
+                let _ = handle.emit("snapshot", state.snapshot());
+                watch_devices(handle.clone());
+            });
             analyze_missing(app.handle().clone());
             build_tray(app.handle())?;
             apply_phone(app.handle());
@@ -1763,6 +1891,7 @@ pub fn run() {
             pick_sounds,
             update_sound,
             remove_sound,
+            restore_sound,
             move_sound,
             update_settings,
             play_sound,
