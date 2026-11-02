@@ -1124,3 +1124,38 @@ dialog { border-radius: 18px; }
 .pad .add-key.listening { border-style: solid; border-color: var(--accent); color: var(--accent); }
 .adv-toggle { flex-direction: row; justify-content: flex-start; white-space: nowrap; }
 .adv-toggle input { margin: 0; flex-shrink: 0; }
+
+/* Son avec effets en cours de calcul (long son) : le clic a bien été pris. */
+.pad.preparing {
+  cursor: progress;
+  animation: pad-preparing 0.9s ease-in-out infinite alternate;
+}
+.pad.preparing::after {
+  content: "préparation…";
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  transform: translateX(-50%);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+@keyframes pad-preparing {
+  to { opacity: 0.6; }
+}
+
+/* Problème de raccourci, affiché sous le champ concerné. */
+.hotkey-msg {
+  margin: 4px 0 8px;
+  color: var(--danger);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+.set-card .hotkey-msg {
+  padding: 0 14px 10px;
+  margin: -4px 0 0;
+}
