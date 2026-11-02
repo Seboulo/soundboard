@@ -1,4 +1,5 @@
 mod analysis;
+mod backup;
 mod audio;
 mod calibration;
 mod config;
@@ -7,6 +8,7 @@ mod denoise;
 mod dynamics;
 mod effects;
 mod giphy;
+mod journal;
 mod mixer;
 mod resample;
 mod sound_fx;
@@ -83,6 +85,8 @@ struct Snapshot {
     vb_cable_url: &'static str,
     mic_muted: bool,
     version: &'static str,
+    /// Sons dont le fichier a disparu (antivirus, nettoyage…).
+    missing: Vec<String>,
 }
 
 impl AppState {
@@ -91,20 +95,27 @@ impl AppState {
     }
 
     fn snapshot(&self) -> Snapshot {
-        Snapshot {
+        let mut snap = Snapshot {
+            missing: Vec::new(),
             config: self.config.lock().unwrap().clone(),
             devices: self.devices.lock().unwrap().clone(),
             warnings: self.warnings.lock().unwrap().clone(),
             vb_cable_url: VB_CABLE_URL,
             mic_muted: self.mic_muted.load(Ordering::Relaxed),
             version: env!("CARGO_PKG_VERSION"),
-        }
+        };
+        snap.missing = snap.config.sounds.iter().filter(|x| !x.path.exists()).map(|x| x.id.clone()).collect();
+        snap
     }
 
     fn set_warnings(&self, kind: &str, items: Vec<String>) {
         let mut w = self.warnings.lock().unwrap();
+        let fresh: Vec<String> = items.into_iter().map(|m| format!("{kind}{m}")).collect();
+        for m in fresh.iter().filter(|m| !w.contains(m)) {
+            journal::write(m);
+        }
         w.retain(|m| !m.starts_with(kind));
-        w.extend(items.into_iter().map(|m| format!("{kind}{m}")));
+        w.extend(fresh);
     }
 }
 
@@ -587,6 +598,60 @@ async fn pick_sounds(app: AppHandle) -> Result<Snapshot, String> {
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
     add_sounds(app, paths).await
+}
+
+/// Remplace le fichier d'un son (introuvable ou à changer) en gardant son
+/// nom, son raccourci, son image et ses effets.
+#[tauri::command]
+async fn replace_sound_file(app: AppHandle, id: String) -> Result<Option<Snapshot>, String> {
+    let Some(src) = app
+        .dialog()
+        .file()
+        .set_title("Choisir le nouveau fichier du son")
+        .add_filter("Audio", AUDIO_EXTENSIONS)
+        .blocking_pick_file()
+        .and_then(|f| f.into_path().ok())
+    else {
+        return Ok(None);
+    };
+    let state = app.state::<AppState>();
+    let sounds_dir = state.sounds_dir.clone();
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_lowercase)
+        .ok_or("fichier sans extension")?;
+    let file_id = id.clone();
+    let (dest, analysis) = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+        fs::create_dir_all(&sounds_dir).map_err(|e| e.to_string())?;
+        // Nom nouveau : l'ancien fichier peut encore être ouvert par le moteur audio.
+        let dest = sounds_dir.join(format!("{file_id}-{}.{ext}", now_secs()));
+        fs::copy(&src, &dest).map_err(|e| format!("{} : {e}", src.display()))?;
+        match analysis::analyze(&dest) {
+            Ok(a) => Ok((dest, a)),
+            Err(e) => {
+                let _ = fs::remove_file(&dest);
+                Err(e)
+            }
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    state.audio.stop(&id);
+    {
+        let mut config = state.config.lock().unwrap();
+        let sound = config.sounds.iter_mut().find(|s| s.id == id).ok_or("son introuvable")?;
+        let old = std::mem::replace(&mut sound.path, dest);
+        if old.starts_with(&state.sounds_dir) {
+            let _ = fs::remove_file(old);
+        }
+        sound.analysis = Some(analysis);
+        sound.start_ms = 0;
+        sound.end_ms = None;
+        state.save(&config)?;
+    }
+    state.waveforms.lock().unwrap().remove(&id);
+    Ok(Some(state.snapshot()))
 }
 
 #[tauri::command]
@@ -1234,7 +1299,57 @@ fn audio_settings(s: &Settings) -> serde_json::Value {
 fn play_sound(state: State<AppState>, id: String) -> Result<PlayOutcome, String> {
     let sound = find_sound(&state, &id)?;
     note_play(&state, &sound);
-    state.audio.toggle(play_request(&state, &sound))
+    state
+        .audio
+        .toggle(play_request(&state, &sound))
+        .inspect_err(|e| journal::write(&format!("Lecture de « {} » : {e}", sound.name)))
+}
+
+/// Taille de l'interface (Réglages > Général, ou Ctrl + / Ctrl −).
+#[tauri::command]
+fn set_zoom(window: tauri::WebviewWindow, scale: f64) -> Result<(), String> {
+    window.set_zoom(scale.clamp(0.5, 2.0)).map_err(|e| e.to_string())
+}
+
+/// Erreurs de l'interface (JavaScript), notées dans le journal.
+#[tauri::command]
+fn log_ui(message: String) {
+    journal::write(&format!("Interface : {}", message.chars().take(500).collect::<String>()));
+}
+
+/// Rapport à copier-coller quand quelque chose ne marche pas.
+#[tauri::command]
+fn diagnostic_report(state: State<AppState>) -> String {
+    let config = state.config.lock().unwrap().clone();
+    let devices = state.devices.lock().unwrap().clone();
+    let warnings = state.warnings.lock().unwrap().clone();
+    let s = &config.settings;
+    let missing = config.sounds.iter().filter(|x| !x.path.exists()).count();
+    let opt = |o: &Option<String>| o.clone().unwrap_or_else(|| "par défaut".into());
+    format!(
+        "Soundboard v{}\n\
+         Sons : {} (fichiers manquants : {missing})\n\
+         Casque : {} | Câble : {} | Micro : {} (voix envoyée : {})\n\
+         Par défaut : sortie {} / entrée {}\n\
+         VB-Cable : {}\n\
+         Débruitage : {} | Porte : {} | Effet : {:?}\n\
+         Problèmes affichés :\n{}\n\n\
+         Journal :\n{}",
+        env!("CARGO_PKG_VERSION"),
+        config.sounds.len(),
+        opt(&s.monitor_device),
+        opt(&s.virtual_device),
+        opt(&s.mic_device),
+        if s.mic_enabled { "oui" } else { "non" },
+        opt(&devices.default_output),
+        opt(&devices.default_input),
+        devices.vb_cable.as_deref().unwrap_or("absent"),
+        if !s.noise_suppression { "non" } else if s.strong_denoise { "fort" } else { "léger" },
+        if s.voice_gate { "oui" } else { "non" },
+        s.voice_effect,
+        if warnings.is_empty() { "  aucun".to_string() } else { warnings.iter().map(|w| format!("  - {w}")).collect::<Vec<_>>().join("\n") },
+        journal::tail(150),
+    )
 }
 
 /// Pré-écoute dans le casque seulement, avec une découpe pas encore enregistrée.
@@ -1750,6 +1865,61 @@ async fn import_pack(app: AppHandle) -> Result<Option<ImportResult>, String> {
     }))
 }
 
+/// Sauvegarde complète (sons, images, réglages) dans un seul fichier.
+#[tauri::command]
+async fn export_backup(app: AppHandle) -> Result<Option<usize>, String> {
+    let Some(dest) = app
+        .dialog()
+        .file()
+        .set_title("Sauvegarder toute ma soundboard")
+        .set_file_name("Soundboard-sauvegarde.zip")
+        .add_filter("Sauvegarde", &["zip"])
+        .blocking_save_file()
+        .and_then(|f| f.into_path().ok())
+    else {
+        return Ok(None);
+    };
+    let config = app.state::<AppState>().config.lock().unwrap().clone();
+    tauri::async_runtime::spawn_blocking(move || backup::write(&dest, &config))
+        .await
+        .map_err(|e| e.to_string())?
+        .map(Some)
+}
+
+/// Remplace la soundboard actuelle par une sauvegarde.
+#[tauri::command]
+async fn import_backup(app: AppHandle) -> Result<Option<Snapshot>, String> {
+    let Some(src) = app
+        .dialog()
+        .file()
+        .set_title("Restaurer une sauvegarde")
+        .add_filter("Sauvegarde", &["zip"])
+        .blocking_pick_file()
+        .and_then(|f| f.into_path().ok())
+    else {
+        return Ok(None);
+    };
+    let state = app.state::<AppState>();
+    let (sounds_dir, images) = (state.sounds_dir.clone(), images_dir(&state));
+    let restored = tauri::async_runtime::spawn_blocking(move || backup::read(&src, &sounds_dir, &images))
+        .await
+        .map_err(|e| e.to_string())??;
+    state.audio.stop_all();
+    empty_trash(&state);
+    let settings = restored.settings.clone();
+    {
+        let mut config = state.config.lock().unwrap();
+        *config = restored;
+        state.save(&config)?;
+    }
+    state.waveforms.lock().unwrap().clear();
+    journal::write("Sauvegarde restaurée");
+    apply_audio(&state, settings);
+    register_hotkeys(&app);
+    apply_phone(&app);
+    Ok(Some(state.snapshot()))
+}
+
 #[tauri::command]
 fn open_vb_cable_page(app: AppHandle) -> Result<(), String> {
     app.opener()
@@ -1815,6 +1985,7 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            journal::init(app.path().app_data_dir()?);
             let config_path = app.path().app_config_dir()?.join("config.json");
             let sounds_dir = app.path().app_data_dir()?.join("sounds");
             let (mut config, config_note) = Config::load(&config_path);
@@ -1906,6 +2077,12 @@ pub fn run() {
             update_sound,
             remove_sound,
             restore_sound,
+            export_backup,
+            import_backup,
+            replace_sound_file,
+            log_ui,
+            set_zoom,
+            diagnostic_report,
             move_sound,
             update_settings,
             play_sound,

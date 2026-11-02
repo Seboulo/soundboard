@@ -1041,3 +1041,45 @@ dialog { border-radius: 18px; }
 
 /* Réglage sans effet (dépend d'un autre interrupteur). */
 .set-row:has(input:disabled), .set-field:has(input:disabled) { opacity: .5; }
+
+/* Son dont le fichier a disparu */
+.pad.missing, :root.contrast .pad.missing { border: 2px dashed var(--danger); }
+.pad.missing .icon { filter: grayscale(1); opacity: .45; }
+.missing-tag { font-size: 11px; font-weight: 600; color: var(--danger); }
+
+/* Contraste renforcé (Réglages > Général) */
+:root.contrast {
+  --text: #000000;
+  --muted: #2f3440;
+  --border: #6b7280;
+  --accent: #3730a3;
+  --tint-amount: 10%;
+  --chip: #ffffff;
+}
+:root.contrast[data-theme="dark"] {
+  --text: #ffffff;
+  --muted: #d4d7de;
+  --border: #9ca3af;
+  --accent: #a5b4fc;
+  --on-accent: #0b0b0f;
+  --chip: #000000;
+}
+:root.contrast .pad { border: 2px solid var(--border); }
+:root.contrast .pad.playing { border-color: var(--text); }
+:root.contrast :focus-visible { outline-width: 3px !important; outline-offset: 2px; }
+
+/* Moins d'animations (Réglages > Général, ou option de Windows) */
+:root.reduce-motion *,
+:root.reduce-motion *::before,
+:root.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* Contraste élevé de Windows : on laisse le système choisir les couleurs. */
+@media (forced-colors: active) {
+  .pad, button, .warning { border: 1px solid CanvasText; }
+  .pad.playing { outline: 3px solid Highlight; }
+}

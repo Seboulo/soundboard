@@ -352,6 +352,18 @@
           <label class="set-row"><span class="txt"><b>Lancer au démarrage de Windows</b><small>Discrètement, près de l'horloge.</small></span><input name="launch_at_startup" type="checkbox" class="switch"></label>
           <label class="set-row"><span class="txt"><b>Garder l'app près de l'horloge à la fermeture</b><small>Les raccourcis restent actifs.</small></span><input name="close_to_tray" type="checkbox" class="switch"></label>
           </div>
+          <h3>Affichage</h3>
+          <div class="set-card">
+          <label class="set-row"><span class="txt"><b>Taille de l'interface</b><small>Aussi avec Ctrl + et Ctrl − (Ctrl 0 pour revenir à 100 %).</small></span>
+            <select data-pref="zoom"><option value="1">100 %</option><option value="1.1">110 %</option><option value="1.25">125 %</option><option value="1.5">150 %</option></select></label>
+          <label class="set-row"><span class="txt"><b>Contraste renforcé</b><small>Texte plus foncé et bordures plus nettes.</small></span><input data-pref="contrast" type="checkbox" class="switch"></label>
+          <label class="set-row"><span class="txt"><b>Réduire les animations</b><small>GIF figés et pas de clignotement. Suit aussi l'option de Windows « Afficher les animations ».</small></span><input data-pref="reduceMotion" type="checkbox" class="switch"></label>
+          </div>
+          <h3>Sauvegarde</h3>
+          <div class="set-card">
+            <div class="set-row"><span class="txt"><b>Sauvegarder toute ma soundboard</b><small>Sons, images, raccourcis et réglages dans un seul fichier, pour changer de PC ou être tranquille.</small></span><button type="button" data-action="backup-export">Sauvegarder</button></div>
+            <div class="set-row"><span class="txt"><b>Restaurer une sauvegarde</b><small>Remplace ta soundboard actuelle par celle du fichier.</small></span><button type="button" data-action="backup-import">Restaurer</button></div>
+          </div>
           <h3>Recherche en ligne</h3>
           <div class="set-card">
           <label class="set-field">Clé Freesound (pour chercher sur freesound.org)
@@ -427,6 +439,7 @@
       </div>
       <div class="actions">
         <button type="button" data-action="rerun">Relancer</button>
+        <button type="button" data-action="report" title="Copie un rapport (réglages, problèmes, journal d'erreurs) à coller dans un message">Copier le rapport</button>
         <div class="spacer"></div>
         <button type="button" class="primary" data-action="close">Fermer</button>
       </div>

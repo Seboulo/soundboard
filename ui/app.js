@@ -8,6 +8,11 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 let state = null; // { config, devices, warnings, vb_cable_url }
 
+// Les erreurs de l'interface vont dans le journal (« Copier le rapport »).
+const logUi = (msg) => invoke("log_ui", { message: String(msg) }).catch(() => {});
+window.addEventListener("error", (e) => logUi(`${e.message} (${e.filename?.split("/").pop()}:${e.lineno})`));
+window.addEventListener("unhandledrejection", (e) => logUi(e.reason?.stack || e.reason));
+
 // ---------- Utilitaires ----------
 
 /** Message en bas de l'écran, avec un bouton facultatif ({ label, run }). */
@@ -37,6 +42,7 @@ async function call(cmd, args) {
     return res;
   } catch (e) {
     toast(String(e), true);
+    logUi(`${cmd} : ${e}`);
     // L'état a pu changer partiellement (ex. certains fichiers ajoutés).
     if (cmd !== "get_state") render(await invoke("get_state"));
     return null;
@@ -345,7 +351,8 @@ function renderPlaying() {
     const sound = img && soundById(id);
     // Seulement quand l'image change : remettre la même adresse 10 fois par
     // seconde fait redémarrer le GIF (il « vibre »).
-    const src = sound?.image && fileSrc(p ? sound.image : sound.image_still || sound.image);
+    const animate = p && !reducedMotion();
+    const src = sound?.image && fileSrc(animate ? sound.image : sound.image_still || sound.image);
     if (src && img.getAttribute("src") !== src) img.src = src;
     let ratio = 0;
     if (p && p.duration_ms) {
@@ -589,10 +596,23 @@ function padElement(sound, index) {
   progress.className = "progress";
   pad.append(num, eq, icon, label, key, dur, fav, edit, progress);
 
+  const missing = state.missing?.includes(sound.id);
+  if (missing) {
+    pad.classList.add("missing");
+    const warn = document.createElement("span");
+    warn.className = "missing-tag";
+    warn.textContent = "Fichier manquant";
+    key.replaceChildren(warn);
+  }
+  const keyHint = sound.hotkey ? `, raccourci ${hotkeyLabel(sound.hotkey)}` : "";
+  pad.setAttribute("aria-label", `${sound.name}${missing ? ", fichier manquant" : ""}${keyHint}`);
+  pad.title = missing ? "Le fichier de ce son a disparu : clique pour en choisir un autre" : "";
+
   pad.addEventListener("click", (e) => {
     if (reorder.justDropped) return;
     if (edit.contains(e.target)) return openSoundDialog(sound);
     if (fav.contains(e.target)) return call("toggle_favorite", { id: sound.id });
+    if (missing) return replaceSoundFile(sound);
     flash(sound.id);
     call("play_sound", { id: sound.id }); // joue, ou arrête s'il est déjà en cours
   });
@@ -603,6 +623,11 @@ function padElement(sound, index) {
 
   pad.addEventListener("pointerdown", (e) => startReorder(e, pad, sound));
   return pad;
+}
+
+async function replaceSoundFile(sound) {
+  const res = await call("replace_sound_file", { id: sound.id });
+  if (res) toast(`« ${sound.name} » a un nouveau fichier`);
 }
 
 // Réorganisation à la souris : on glisse un pad sur un autre. Le glisser-déposer
@@ -644,6 +669,7 @@ function startReorder(e, pad, sound) {
 }
 
 function flash(id) {
+  if (reducedMotion()) return;
   const pad = document.querySelector(`.pad[data-id="${CSS.escape(id)}"]`);
   if (!pad) return;
   pad.classList.add("flash");
@@ -983,11 +1009,13 @@ dlgSound.addEventListener("close", () => {
 $('[data-action="delete"]', dlgSound).addEventListener("click", () => {
   if (!editing) return;
   dlgSound.close("delete");
-  const name = editing.name;
-  call("remove_sound", { id: editing.id }).then((res) => {
-    if (res) toast(`« ${name} » supprimé`, false, { label: "Annuler", run: () => call("restore_sound") });
-  });
+  deleteSound(editing);
 });
+
+async function deleteSound(sound) {
+  const res = await call("remove_sound", { id: sound.id });
+  if (res) toast(`« ${sound.name} » supprimé`, false, { label: "Annuler", run: () => call("restore_sound") });
+}
 
 // ---------- Effets du son ----------
 
@@ -1424,6 +1452,120 @@ $('[data-action="finish"]', dlgWizard).addEventListener("click", async () => {
 
 // ---------- Mode nuit ----------
 
+// ---------- Affichage : taille, contraste, animations ----------
+// Préférences gardées sur ce PC (comme le thème).
+
+const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+const PREF_DEFAULTS = { zoom: "1", contrast: false, reduceMotion: false };
+const ZOOMS = ["0.9", "1", "1.1", "1.25", "1.5"];
+const prefs = { ...PREF_DEFAULTS };
+try {
+  Object.assign(prefs, JSON.parse(localStorage.getItem("soundboard.display") || "{}"));
+} catch {}
+const reducedMotion = () => prefs.reduceMotion || motionQuery.matches;
+
+function applyDisplay() {
+  const root = document.documentElement;
+  // Zoom de la fenêtre elle-même (comme Ctrl + dans un navigateur).
+  invoke("set_zoom", { scale: Number(prefs.zoom) || 1 }).catch(() => {});
+  root.classList.toggle("contrast", !!prefs.contrast);
+  root.classList.toggle("reduce-motion", reducedMotion());
+  for (const el of $$("[data-pref]", dlgSettings)) {
+    if (el.type === "checkbox") el.checked = !!prefs[el.dataset.pref];
+    else el.value = prefs[el.dataset.pref];
+  }
+  if (state) renderPlaying();
+}
+function setPref(key, value) {
+  prefs[key] = value;
+  try {
+    localStorage.setItem("soundboard.display", JSON.stringify(prefs));
+  } catch {}
+  applyDisplay();
+}
+for (const el of $$("[data-pref]", dlgSettings)) {
+  // Appliqué tout de suite, sans attendre « Enregistrer ».
+  el.addEventListener("change", () => setPref(el.dataset.pref, el.type === "checkbox" ? el.checked : el.value));
+}
+motionQuery.addEventListener("change", applyDisplay);
+document.addEventListener("keydown", (e) => {
+  if (!e.ctrlKey || e.altKey) return;
+  const i = Math.max(0, ZOOMS.indexOf(String(prefs.zoom)));
+  let next = null;
+  if (e.key === "+" || e.key === "=") next = ZOOMS[Math.min(ZOOMS.length - 1, i + 1)];
+  else if (e.key === "-") next = ZOOMS[Math.max(0, i - 1)];
+  else if (e.key === "0") next = "1";
+  if (next == null) return;
+  e.preventDefault();
+  setPref("zoom", next);
+  toast(`Taille : ${Math.round(Number(next) * 100)} %`);
+});
+applyDisplay();
+
+// ---------- Sauvegarde complète ----------
+
+$('[data-action="backup-export"]', dlgSettings).addEventListener("click", async () => {
+  const n = await call("export_backup");
+  if (n != null) toast(`Sauvegarde enregistrée (${n} son${n > 1 ? "s" : ""})`);
+});
+$('[data-action="backup-import"]', dlgSettings).addEventListener("click", async () => {
+  if (!confirm("Remplacer ta soundboard actuelle par celle de la sauvegarde ?\nPense à sauvegarder l'actuelle avant si tu veux la garder.")) return;
+  const res = await call("import_backup");
+  if (res) {
+    dlgSettings.close();
+    toast(`Sauvegarde restaurée (${res.config.sounds.length} sons)`);
+  }
+});
+
+// ---------- Clavier ----------
+
+// Flèches pour passer d'un pad à l'autre, Entrée ou Espace pour jouer,
+// F2 pour modifier, Suppr pour supprimer (avec « Annuler »).
+$("#grid").addEventListener("keydown", (e) => {
+  const pad = e.target.closest?.(".pad");
+  if (!pad || e.ctrlKey || e.altKey || e.metaKey) return;
+  const pads = $$("#grid .pad");
+  const i = pads.indexOf(pad);
+  const sound = soundById(pad.dataset.id);
+  let next = null;
+  if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+    next = pads[i + (e.key === "ArrowRight" ? 1 : -1)];
+  } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    // Même colonne sur la ligne voisine (en liste : pad suivant / précédent).
+    const x = pad.offsetLeft;
+    const dir = e.key === "ArrowDown" ? 1 : -1;
+    for (let j = i + dir; j >= 0 && j < pads.length; j += dir) {
+      if (pads[j].offsetTop !== pad.offsetTop && Math.abs(pads[j].offsetLeft - x) < 4) {
+        next = pads[j];
+        break;
+      }
+    }
+    next ??= pads[i + dir];
+  } else if (e.key === "Home") next = pads[0];
+  else if (e.key === "End") next = pads[pads.length - 1];
+  else if (e.key === "F2" && sound) {
+    e.preventDefault();
+    return openSoundDialog(sound);
+  } else if (e.key === "Delete" && sound) {
+    e.preventDefault();
+    return deleteSound(sound);
+  }
+  if (next) {
+    e.preventDefault();
+    next.focus();
+  }
+});
+
+// Boutons avec seulement une icône : on leur donne un nom lisible par
+// les lecteurs d'écran (celui de l'infobulle).
+function labelIconButtons(root = document) {
+  for (const b of $$("button[title]:not([aria-label])", root)) {
+    if (!b.textContent.trim()) b.setAttribute("aria-label", b.title);
+  }
+}
+labelIconButtons();
+new MutationObserver(() => labelIconButtons()).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["title"] });
+
 // « auto » suit le thème de Windows ; le choix est gardé sur ce PC.
 const THEMES = ["auto", "light", "dark"];
 const THEME_ICONS = { auto: "auto", light: "sun", dark: "moon" };
@@ -1618,6 +1760,14 @@ function openDiagnostics() {
 }
 
 $('[data-action="rerun"]', dlgDiag).addEventListener("click", runDiagnostics);
+$('[data-action="report"]', dlgDiag).addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(await invoke("diagnostic_report"));
+    toast("Rapport copié : colle-le dans ton message (Ctrl + V)");
+  } catch (e) {
+    toast(String(e), true);
+  }
+});
 $('[data-action="close"]', dlgDiag).addEventListener("click", () => dlgDiag.close());
 $('[data-action="listen"]', dlgDiag).addEventListener("click", () => setListening(!listening));
 dlgDiag.addEventListener("close", () => listening && setListening(false));
