@@ -111,7 +111,12 @@
       </label>
       <p class="hint">Astuce : le pavé numérique (Num 1, Num 2…) ou F13–F24 évitent les conflits avec les jeux. Retour arrière pour effacer.</p>
       <div class="trim">
-        <span class="label">Découpe : glisse les poignées pour couper le début et la fin</span>
+        <div class="trim-head">
+          <span class="label">Découpe : glisse les poignées pour couper le début et la fin</span>
+          <div class="spacer"></div>
+          <button type="button" class="hist-btn" data-action="undo" title="Annuler (Ctrl+Z)" aria-label="Annuler">↶</button>
+          <button type="button" class="hist-btn" data-action="redo" title="Rétablir (Ctrl+Y)" aria-label="Rétablir">↷</button>
+        </div>
         <canvas id="wave" width="1200" height="180"></canvas>
         <div class="trim-bar">
           <span id="trim-info"></span>
@@ -119,6 +124,51 @@
           <button type="button" data-action="preview">▶ Écouter</button>
           <button type="button" data-action="reset-trim">Tout garder</button>
         </div>
+      </div>
+      <div class="fx">
+        <div class="fx-head">
+          <span class="label">Effets</span>
+          <span class="hint">Le fichier d'origine n'est jamais modifié.</span>
+          <div class="spacer"></div>
+          <button type="button" data-action="fx-reset">Sans effet</button>
+        </div>
+        <div class="fx-presets">
+          <button type="button" data-preset="chipmunk">🐿️ Écureuil</button>
+          <button type="button" data-preset="demon">😈 Démon</button>
+          <button type="button" data-preset="slow">🐢 Ralenti</button>
+          <button type="button" data-preset="fast">⚡ Accéléré</button>
+          <button type="button" data-preset="cave">🏔️ Caverne</button>
+          <button type="button" data-preset="radio">📻 Radio</button>
+          <button type="button" data-preset="wall">🧱 Derrière un mur</button>
+          <button type="button" data-preset="bass">🔊 Basses</button>
+          <button type="button" data-preset="reverse">🔁 À l'envers</button>
+        </div>
+        <div class="fx-grid">
+          <label>Vitesse <span class="value" data-fxv="speed"></span>
+            <input type="range" data-fx="speed" min="0.5" max="2" step="0.05">
+          </label>
+          <label>Hauteur <span class="value" data-fxv="pitch"></span>
+            <input type="range" data-fx="pitch" min="-12" max="12" step="1">
+          </label>
+          <label>Écho <span class="value" data-fxv="echo"></span>
+            <input type="range" data-fx="echo" min="0" max="1" step="0.05">
+          </label>
+          <label>Couleur du son
+            <select data-fx="tone">
+              <option value="normal">Normale</option>
+              <option value="radio">Radio / talkie</option>
+              <option value="muffled">Étouffée (derrière un mur)</option>
+              <option value="bass">Basses renforcées</option>
+            </select>
+          </label>
+          <label>Fondu au début <span class="value" data-fxv="fade_in_ms"></span>
+            <input type="range" data-fx="fade_in_ms" min="0" max="3000" step="100">
+          </label>
+          <label>Fondu à la fin <span class="value" data-fxv="fade_out_ms"></span>
+            <input type="range" data-fx="fade_out_ms" min="0" max="3000" step="100">
+          </label>
+        </div>
+        <label class="set-row"><span class="txt"><b>À l'envers</b><small>Le passage découpé est joué de la fin vers le début.</small></span><input type="checkbox" class="switch" data-fx="reverse"></label>
       </div>
       <label>Volume <span class="value" data-for="volume"></span>
         <input name="volume" type="range" min="0" max="2" step="0.05">
