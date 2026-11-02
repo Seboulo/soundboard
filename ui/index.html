@@ -92,7 +92,11 @@
     <div id="empty" class="empty" hidden>
       <div class="empty-icon">🎧</div>
       <p class="big">Aucun son pour l'instant</p>
-      <p>Glisse des fichiers audio (MP3, WAV, OGG, FLAC…) dans la fenêtre, ou clique sur « Ajouter des sons ».</p>
+      <ol class="start-steps">
+        <li data-step="cable"><span class="mark"></span><span class="txt"><b>Installer le micro virtuel</b><small>Pour que Discord entende les sons.</small></span><button type="button" data-action="start-wizard">Assistant</button></li>
+        <li data-step="discord"><span class="mark"></span><span class="txt"><b>Régler Discord</b><small>Choisir « CABLE Output » comme micro.</small></span><button type="button" data-action="start-wizard">Assistant</button></li>
+        <li data-step="sound"><span class="mark"></span><span class="txt"><b>Ajouter ton premier son</b><small>Glisse des fichiers audio dans la fenêtre, ou :</small></span><button type="button" class="primary" data-action="start-add">Ajouter des sons</button></li>
+      </ol>
     </div>
   </main>
 
@@ -229,6 +233,7 @@
           <button type="button" data-tab="keys"><svg class="ico"><use href="#i-keyboard"/></svg> Raccourcis</button>
           <button type="button" data-tab="remote"><svg class="ico"><use href="#i-phone"/></svg> Téléphone</button>
           <button type="button" data-tab="general"><svg class="ico"><use href="#i-gear"/></svg> Général</button>
+          <label class="adv-toggle" title="Montre les réglages techniques (filtres du micro, normalisation, clés…)"><input type="checkbox" class="switch" data-action="advanced"> Réglages avancés</label>
         </nav>
         <div class="set-panes">
         <section data-pane="sound">
@@ -241,7 +246,7 @@
             <select name="virtual_device"></select>
           </label>
           </div>
-          <div class="set-card">
+          <div class="advanced set-card">
             <div class="set-row"><span class="txt"><b>🎧 Écouter comme Discord</b><small>Entends ce qui part vraiment dans le câble pour vérifier volume et grésillements.</small></span><button type="button" data-action="listen-settings">Écouter le câble</button></div>
           </div>
           <h3>Volume</h3>
@@ -252,8 +257,8 @@
           <label class="set-field">Volume des sons dans ton casque <span class="value" data-for="monitor_volume"></span>
             <input name="monitor_volume" type="range" min="0" max="1.5" step="0.05">
           </label>
-          <label class="set-row"><span class="txt"><b>Égaliser le volume des sons</b><small>Mesure chaque son comme à la télé (norme EBU R128) et calme les cris et les pics.</small></span><input name="normalize" type="checkbox" class="switch"></label>
-          <label class="set-row"><span class="txt"><b>Niveau des sons face à ta voix</b><small>Si les sons couvrent encore les voix, choisis « Plus bas ».</small></span>
+          <label class="advanced set-row"><span class="txt"><b>Égaliser le volume des sons</b><small>Mesure chaque son comme à la télé (norme EBU R128) et calme les cris et les pics.</small></span><input name="normalize" type="checkbox" class="switch"></label>
+          <label class="advanced set-row"><span class="txt"><b>Niveau des sons face à ta voix</b><small>Si les sons couvrent encore les voix, choisis « Plus bas ».</small></span>
             <select name="loudness_target">
               <option value="-31">Plus bas</option>
               <option value="-28">Recommandé</option>
@@ -282,7 +287,7 @@
               <option value="echo">Écho</option>
             </select>
           </label>
-          <label class="set-field">Couleur de ta voix (égaliseur)
+          <label class="advanced set-field">Couleur de ta voix (égaliseur)
             <select name="voice_eq">
               <option value="natural">Naturelle : aucune correction</option>
               <option value="warm">Chaude : plus de corps, aigus adoucis</option>
@@ -291,19 +296,19 @@
             </select>
           </label>
           </div>
-          <h3>Bruits et silences</h3>
+          <h3>Tester ta voix</h3>
           <div class="set-card">
-          <label class="set-row"><span class="txt"><b>Réduction des bruits</b><small>Clavier, souris, ventilateur… Forte : IA DeepFilterNet. Légère : RNNoise, pour les vieux PC.</small></span>
+          <label class="advanced set-row"><span class="txt"><b>Réduction des bruits</b><small>Clavier, souris, ventilateur… Forte : IA DeepFilterNet. Légère : RNNoise, pour les vieux PC.</small></span>
             <select name="denoise_mode">
               <option value="strong">Forte</option>
               <option value="light">Légère</option>
               <option value="off">Désactivée</option>
             </select>
           </label>
-          <label class="set-row"><span class="txt"><b>Traitement studio de la voix</b><small>Volume constant, compresseur doux et dé-esseur (S et CH moins sifflants), comme à la radio.</small></span><input name="voice_leveler" type="checkbox" class="switch"></label>
-          <label class="set-row"><span class="txt"><b>Couper ton micro quand tu ne parles pas</b></span><input name="voice_gate" type="checkbox" class="switch"></label>
-          <label class="set-row"><span class="txt"><b>Sensibilité automatique</b><small>Comme sur Discord : le micro apprend le bruit de ta pièce et ne s'ouvre que quand tu parles.</small></span><input name="gate_auto" type="checkbox" class="switch"></label>
-          <label class="set-field">Seuil manuel de détection de la voix <span class="value" data-for="gate_threshold"></span>
+          <label class="advanced set-row"><span class="txt"><b>Traitement studio de la voix</b><small>Volume constant, compresseur doux et dé-esseur (S et CH moins sifflants), comme à la radio.</small></span><input name="voice_leveler" type="checkbox" class="switch"></label>
+          <label class="advanced set-row"><span class="txt"><b>Couper ton micro quand tu ne parles pas</b></span><input name="voice_gate" type="checkbox" class="switch"></label>
+          <label class="advanced set-row"><span class="txt"><b>Sensibilité automatique</b><small>Comme sur Discord : le micro apprend le bruit de ta pièce et ne s'ouvre que quand tu parles.</small></span><input name="gate_auto" type="checkbox" class="switch"></label>
+          <label class="advanced set-field">Seuil manuel de détection de la voix <span class="value" data-for="gate_threshold"></span>
             <input name="gate_threshold" type="range" min="0.1" max="0.95" step="0.05">
           </label>
           <div class="set-row"><span class="txt"><b>🎙️ Tester et calibrer ma voix</b><small>10 secondes : 5 de silence, puis 5 où tu parles. L'app mesure ta pièce et ton micro, se règle toute seule et garde un enregistrement avant/après.</small></span><button type="button" data-action="calibrate">Lancer le test</button></div>
@@ -318,7 +323,7 @@
             <div class="meter-row"><span>Voix</span><div class="bar"><div class="fill voice" data-voice></div><div class="mark" data-threshold></div></div></div>
             <div class="meter-state" data-state>Parle pour tester ton micro…</div>
           </div>
-          <p class="hint">Ces filtres ne touchent que ton micro, jamais les sons. En automatique, laisse-lui quelques secondes pour apprendre ta pièce. En manuel : début des phrases coupé, baisse le seuil (le petit trait) ; bruits qui passent, monte-le. L'indicateur montre les réglages enregistrés.</p>
+          <p class="advanced hint">Ces filtres ne touchent que ton micro, jamais les sons. En automatique, laisse-lui quelques secondes pour apprendre ta pièce. En manuel : début des phrases coupé, baisse le seuil (le petit trait) ; bruits qui passent, monte-le. L'indicateur montre les réglages enregistrés.</p>
           </div>
         </section>
         <section data-pane="keys" hidden>
@@ -343,7 +348,7 @@
                 <button type="button" data-action="phone-token">Nouveau code (invalide l'ancien lien)</button>
               </div>
             </div>
-            <label class="set-row"><span class="txt"><b>Port</b><small>À changer seulement si une autre app l'utilise déjà.</small></span><input name="phone_port" type="number" min="1024" max="65535" class="port"></label>
+            <label class="advanced set-row"><span class="txt"><b>Port</b><small>À changer seulement si une autre app l'utilise déjà.</small></span><input name="phone_port" type="number" min="1024" max="65535" class="port"></label>
           </div>
 </section>
         <section data-pane="general" hidden>
@@ -364,8 +369,8 @@
             <div class="set-row"><span class="txt"><b>Sauvegarder toute ma soundboard</b><small>Sons, images, raccourcis et réglages dans un seul fichier, pour changer de PC ou être tranquille.</small></span><button type="button" data-action="backup-export">Sauvegarder</button></div>
             <div class="set-row"><span class="txt"><b>Restaurer une sauvegarde</b><small>Remplace ta soundboard actuelle par celle du fichier.</small></span><button type="button" data-action="backup-import">Restaurer</button></div>
           </div>
-          <h3>Recherche en ligne</h3>
-          <div class="set-card">
+          <h3 class="advanced">Recherche en ligne</h3>
+          <div class="advanced set-card">
           <label class="set-field">Clé Freesound (pour chercher sur freesound.org)
             <input name="freesound_key" autocomplete="off" spellcheck="false" placeholder="Colle ta clé ici">
           </label>

@@ -326,6 +326,7 @@ function renderGrid() {
   if (viewMode === "list" && pads.length) pads.unshift(listHeader());
   grid.replaceChildren(...pads);
   $("#empty").hidden = state.config.sounds.length > 0;
+  renderStartSteps();
   $("#recent-empty").hidden = !(currentTab === RECENT_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
   $("#search-empty").hidden = !(q && sounds.length === 0 && state.config.sounds.length > 0);
   renderPlaying();
@@ -579,10 +580,18 @@ function padElement(sound, index) {
     loop.textContent = "↻ boucle";
     key.append(loop);
   }
+  let addKey = null;
   if (sound.hotkey) {
     const kbd = document.createElement("kbd");
     kbd.textContent = hotkeyLabel(sound.hotkey);
     key.append(kbd);
+  } else {
+    // Visible au survol : poser un raccourci sans ouvrir la fiche.
+    addKey = document.createElement("span");
+    addKey.className = "add-key";
+    addKey.textContent = "+ Raccourci";
+    addKey.title = "Choisir une touche pour jouer ce son de n'importe où";
+    key.append(addKey);
   }
   const edit = document.createElement("span");
   edit.className = "edit";
@@ -612,6 +621,7 @@ function padElement(sound, index) {
     if (reorder.justDropped) return;
     if (edit.contains(e.target)) return openSoundDialog(sound);
     if (fav.contains(e.target)) return call("toggle_favorite", { id: sound.id });
+    if (addKey?.contains(e.target)) return captureHotkey(sound, addKey);
     if (missing) return replaceSoundFile(sound);
     flash(sound.id);
     call("play_sound", { id: sound.id }); // joue, ou arrête s'il est déjà en cours
@@ -623,6 +633,36 @@ function padElement(sound, index) {
 
   pad.addEventListener("pointerdown", (e) => startReorder(e, pad, sound));
   return pad;
+}
+
+/** « + Raccourci » : la prochaine touche appuyée devient le raccourci du son. */
+function captureHotkey(sound, chip) {
+  chip.classList.add("listening");
+  chip.textContent = "Appuie sur une touche… (Échap : annuler)";
+  const done = () => {
+    window.removeEventListener("keydown", onKey, true);
+    window.removeEventListener("pointerdown", cancel, true);
+    chip.classList.remove("listening");
+    chip.textContent = "+ Raccourci";
+  };
+  const cancel = (e) => {
+    if (e.target !== chip) done();
+  };
+  const onKey = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "Escape") return done();
+    const hk = hotkeyFromEvent(e);
+    if (!hk) return; // touche de modification seule : on attend la suite
+    done();
+    const owner = state.config.sounds.find((s) => s.hotkey === hk && s.id !== sound.id);
+    if (owner) return toast(`${hotkeyLabel(hk)} est déjà le raccourci de « ${owner.name} »`, true);
+    call("update_sound", { sound: { ...sound, hotkey: hk } }).then(
+      (res) => res && toast(`« ${sound.name} » : ${hotkeyLabel(hk)}`),
+    );
+  };
+  window.addEventListener("keydown", onKey, true);
+  window.addEventListener("pointerdown", cancel, true);
 }
 
 async function replaceSoundFile(sound) {
@@ -1213,6 +1253,18 @@ function nearestTarget(v) {
   const options = [-31, -28, -25];
   return options.reduce((best, o) => (Math.abs(o - v) < Math.abs(best - v) ? o : best), -28);
 }
+
+// Réglages avancés : cachés par défaut, le choix est gardé sur ce PC.
+const advToggle = $('[data-action="advanced"]', dlgSettings);
+function applyAdvanced(on) {
+  dlgSettings.classList.toggle("show-advanced", on);
+  advToggle.checked = on;
+}
+try { applyAdvanced(localStorage.getItem("soundboard.advanced") === "1"); } catch { applyAdvanced(false); }
+advToggle.addEventListener("change", () => {
+  applyAdvanced(advToggle.checked);
+  try { localStorage.setItem("soundboard.advanced", advToggle.checked ? "1" : "0"); } catch {}
+});
 
 // Onglets des réglages (le dernier ouvert est retenu).
 function showSettingsTab(tab) {
@@ -1880,6 +1932,25 @@ $('[data-action="reset"]', dlgStats).addEventListener("click", async () => {
 // ---------- Barre du haut ----------
 
 $("#btn-add").addEventListener("click", () => call("pick_sounds"));
+
+// Écran vide : les 3 étapes, cochées au fur et à mesure (l'assistant fait le détail).
+function renderStartSteps() {
+  const s = state.config.settings;
+  const done = {
+    cable: !!state.devices.vb_cable,
+    discord: !!state.devices.vb_cable && !!s.virtual_device && !!s.setup_done,
+    sound: state.config.sounds.length > 0,
+  };
+  for (const li of $$("#empty [data-step]")) {
+    const ok = done[li.dataset.step];
+    li.classList.toggle("done", ok);
+    $(".mark", li).textContent = ok ? "✓" : String([...li.parentNode.children].indexOf(li) + 1);
+    const btn = $("button", li);
+    if (btn) btn.hidden = ok;
+  }
+}
+for (const b of $$('#empty [data-action="start-wizard"]')) b.addEventListener("click", () => openWizard());
+$('#empty [data-action="start-add"]').addEventListener("click", () => call("pick_sounds"));
 $("#btn-stop").addEventListener("click", () => call("stop_all"));
 $("#btn-settings").addEventListener("click", openSettings);
 $("#cable-status").addEventListener("click", () => (state.devices.vb_cable ? openDiagnostics() : openWizard()));

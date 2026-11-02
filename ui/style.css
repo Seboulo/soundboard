@@ -1083,3 +1083,44 @@ dialog { border-radius: 18px; }
   .pad, button, .warning { border: 1px solid CanvasText; }
   .pad.playing { outline: 3px solid Highlight; }
 }
+
+/* Réglages : l'essentiel d'abord, le technique sur demande */
+#dlg-settings:not(.show-advanced) .advanced { display: none; }
+.adv-toggle {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+/* Écran vide : premiers pas */
+.start-steps { list-style: none; margin: 18px auto 0; padding: 0; width: min(460px, 100%); display: flex; flex-direction: column; gap: 8px; text-align: left; }
+.start-steps li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; }
+.start-steps .mark { width: 26px; height: 26px; flex-shrink: 0; display: grid; place-items: center; border-radius: 50%; background: var(--panel-2); color: var(--text); font-weight: 600; font-size: 13px; }
+.start-steps li.done .mark { background: var(--ok); color: #fff; }
+.start-steps li.done b { color: var(--muted); text-decoration: line-through; }
+.start-steps .txt { flex: 1; display: flex; flex-direction: column; }
+.start-steps .txt small { color: var(--muted); }
+.start-steps button { flex-shrink: 0; font-size: 12px; padding: 6px 12px; }
+
+/* « + Raccourci » au survol d'un pad sans raccourci */
+.pad .add-key {
+  pointer-events: auto;
+  cursor: pointer;
+  visibility: hidden;
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px dashed var(--muted);
+  border-radius: 6px;
+  color: var(--muted);
+  background: var(--chip);
+}
+.pad:hover .add-key, .pad:focus-visible .add-key, .pad .add-key.listening { visibility: visible; }
+.pad .add-key:hover { color: var(--text); border-color: var(--text); }
+.pad .add-key.listening { border-style: solid; border-color: var(--accent); color: var(--accent); }
+.adv-toggle { flex-direction: row; justify-content: flex-start; white-space: nowrap; }
+.adv-toggle input { margin: 0; flex-shrink: 0; }
