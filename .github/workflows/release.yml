@@ -53,6 +53,17 @@ jobs:
 
       # Sur un tag vX.Y.Z, ou un commit de main dont le message contient
       # [release] : crée la release GitHub vX.Y.Z (version de tauri.conf.json).
+      - name: Notes de version
+        id: notes
+        if: env.RELEASE == 'true'
+        shell: bash
+        run: |
+          {
+            echo 'body<<EOF_NOTES'
+            cat NOUVEAUTES.md
+            echo 'EOF_NOTES'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build et release
         if: env.RELEASE == 'true'
         uses: tauri-apps/tauri-action@v0
@@ -61,36 +72,8 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: Soundboard v__VERSION__
-          releaseBody: |
-            Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
-            Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
-
-            Nouveautés de la 1.3 :
-            - Plus aucune micro-coupure en fin de mots : l'antibruit IA ne coupe plus net les syllabes douces (mesuré sur de vrais enregistrements).
-            - Son de qualité studio : conversion de fréquence pro (aigus intacts, plus de souffle métallique) et traitement en 32 bits flottants de bout en bout.
-            - Les sons trop forts ne sont plus écrêtés, et leur limiteur anticipe les crêtes au lieu de les écraser.
-            - Égaliseur « Sur mesure » calculé par le test de voix, dé-esseur plus doux, volume automatique qui remonte mieux les voix faibles.
-            - Le test de voix repère un micro déjà filtré par un autre logiciel.
-
-            Nouveautés de la 1.2 :
-            - Voix plus naturelle : plus de R rugueux ni de syllabes coupées par l'antibruit.
-            - Traitement studio de la voix : compresseur doux, dé-esseur (S et CH moins sifflants) et limiteur qui évite le grésillement sur les éclats de voix.
-            - Test de voix : 5 s de silence puis 5 s de parole, l'app mesure ta pièce et ton micro, se règle toute seule et garde un enregistrement avant/après.
-            - Couleur de ta voix (égaliseur) : Naturelle, Chaude ou Claire.
-            - Assistant : conseil pour couper le contrôle automatique du gain de Discord.
-
-            Nouveautés de la 1.1.1 :
-            - Plus de phrases coupées avec la détection automatique de la parole : une voix douce dans une pièce bruyante passe, le micro reste ouvert entre les mots et la première syllabe n'est plus mangée.
-
-            Nouveautés de la 1.1 :
-            - Micro sans micro-coupures : traitement de la voix dans son propre fil et rattrapage en douceur des horloges micro/câble.
-            - Détection automatique de la parole, comme sur Discord : le micro apprend le bruit de ta pièce et ignore les clics de clavier.
-            - Volume de voix automatique : voix douce remontée, cris adoucis.
-            - Antibruit IA plus naturel (fins de mots préservées).
-            - Bouton « M'écouter » pour entendre ta voix comme tes potes la reçoivent.
-            - Plus de saturation quand plusieurs sons et ta voix se cumulent (table de mixage avec limiteur), aigus plus nets.
-            - GIF qui ne « vibrent » plus pendant la lecture.
-            - Corrections : réglages qui coupaient le son, import de nombreux fichiers qui figeait l'appli, fichiers de sons supprimés qui restaient sur le disque.
+          # Texte de la page de version : fichier NOUVEAUTES.md à la racine.
+          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: false
           args: ${{ env.BUILD_ARGS }}
 
@@ -106,3 +89,21 @@ jobs:
         with:
           name: soundboard-windows
           path: src-tauri/target/release/bundle/nsis/*.exe
+
+  # Commit sur main avec [notes] (sans [release]) : la page de la version
+  # actuelle reprend le texte de NOUVEAUTES.md, sans republier.
+  notes:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[notes]') && !contains(github.event.head_commit.message, '[release]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mettre à jour le texte de la version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+            gh release edit "v$VERSION" --notes-file NOUVEAUTES.md
+          else
+            echo "Pas encore de version v$VERSION : rien à mettre à jour."
+          fi
