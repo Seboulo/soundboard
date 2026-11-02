@@ -386,7 +386,8 @@ try {
 function playDuration(sound) {
   const total = sound.analysis?.duration_ms;
   if (total == null) return null;
-  return Math.max(0, Math.min(sound.end_ms ?? total, total) - sound.start_ms);
+  const ms = Math.max(0, Math.min(sound.end_ms ?? total, total) - sound.start_ms);
+  return ms / (sound.fx?.speed ?? 1);
 }
 
 function formatDuration(ms) {
@@ -618,6 +619,7 @@ function openSoundDialog(sound) {
   $("#image-search").hidden = true;
   $("#image-results").replaceChildren();
   $("#image-query").value = sound.name;
+  setFx(sound.fx);
   dlgSound.returnValue = "";
   dlgSound.showModal();
   openTrim(sound);
@@ -741,10 +743,11 @@ async function openTrim(sound) {
   const box = $(".trim", dlgSound);
   trim.duration = sound.analysis?.duration_ms ?? 0;
   box.hidden = !trim.duration;
-  if (!trim.duration) return;
+  if (!trim.duration) return resetHistory();
   trim.start = sound.start_ms ?? 0;
   trim.end = Math.min(sound.end_ms ?? trim.duration, trim.duration);
   trim.peaks = [];
+  resetHistory();
   drawTrim();
   try {
     trim.peaks = await invoke("get_waveform", { id: sound.id });
@@ -818,7 +821,11 @@ canvas.addEventListener("pointerdown", (e) => {
   moveHandle(ms);
 });
 canvas.addEventListener("pointermove", (e) => trim.drag && moveHandle(msAt(e)));
-canvas.addEventListener("pointerup", () => (trim.drag = null));
+canvas.addEventListener("pointerup", () => {
+  if (!trim.drag) return;
+  trim.drag = null;
+  commitEdit();
+});
 
 function moveHandle(ms) {
   if (trim.drag === "start") trim.start = Math.min(ms, trim.end - MIN_TRIM_MS);
@@ -832,6 +839,7 @@ $('[data-action="reset-trim"]', dlgSound).addEventListener("click", () => {
   trim.start = 0;
   trim.end = trim.duration;
   drawTrim();
+  commitEdit();
 });
 
 const PREVIEW_ID = "__preview";
@@ -846,14 +854,21 @@ previewBtn.addEventListener("click", () => {
     invoke("stop_preview");
     return;
   }
-  playhead.from = trim.start;
+  startPreview();
+});
+
+function startPreview() {
+  playhead.fx = currentFx();
+  playhead.elapsed = 0;
+  playhead.at = performance.now();
   call("preview_sound", {
     id: editing.id,
     startMs: trim.start,
     endMs: trim.end >= trim.duration ? null : trim.end,
     volume: Number(formSound.volume.value),
+    fx: playhead.fx,
   });
-});
+}
 
 function updatePlayhead(status) {
   const p = status.find((s) => s.id === PREVIEW_ID);
@@ -870,10 +885,13 @@ function updatePlayhead(status) {
   if (!wasActive) animatePlayhead();
 }
 
+/** Position dans le fichier d'origine (la vitesse et l'envers comptent). */
 function playheadMs() {
   if (!playhead.active) return null;
-  const ms = playhead.from + playhead.elapsed + (performance.now() - playhead.at);
-  return Math.min(ms, trim.end);
+  const fx = playhead.fx ?? FX_DEFAULT;
+  const moved = (playhead.elapsed + (performance.now() - playhead.at)) * fx.speed;
+  const ms = fx.reverse ? trim.end - moved : trim.start + moved;
+  return Math.min(Math.max(ms, trim.start), trim.end);
 }
 
 function animatePlayhead() {
@@ -900,6 +918,7 @@ dlgSound.addEventListener("close", () => {
       looping: formSound.looping.checked,
       keep_playing: formSound.keep_playing.checked,
       emoji: formSound.emoji.value.trim() || null,
+      fx: currentFx(),
       ...trimValues(),
     },
   });
@@ -909,6 +928,145 @@ $('[data-action="delete"]', dlgSound).addEventListener("click", () => {
   if (!editing) return;
   dlgSound.close("delete");
   call("remove_sound", { id: editing.id });
+});
+
+// ---------- Effets du son ----------
+
+const FX_DEFAULT = { speed: 1, pitch: 0, reverse: false, tone: "normal", echo: 0, fade_in_ms: 0, fade_out_ms: 0 };
+const FX_PRESETS = {
+  chipmunk: { pitch: 7, speed: 1.15 },
+  demon: { pitch: -7 },
+  slow: { speed: 0.7 },
+  fast: { speed: 1.5 },
+  cave: { echo: 0.6 },
+  radio: { tone: "radio" },
+  wall: { tone: "muffled" },
+  bass: { tone: "bass" },
+  reverse: { reverse: true },
+};
+const fxBox = $(".fx", dlgSound);
+const fxInputs = [...fxBox.querySelectorAll("[data-fx]")];
+
+function fmtFx(key, v) {
+  if (key === "speed") return `× ${Number(v).toFixed(2).replace(/0$/, "")}`;
+  if (key === "pitch") return v == 0 ? "normale" : `${v > 0 ? "+" : ""}${v} demi-ton${Math.abs(v) > 1 ? "s" : ""}`;
+  if (key === "echo") return v == 0 ? "aucun" : Math.round(v * 100) + " %";
+  return v == 0 ? "aucun" : (v / 1000).toFixed(1).replace(".", ",") + " s";
+}
+
+function currentFx() {
+  const fx = { ...FX_DEFAULT };
+  for (const el of fxInputs) {
+    const k = el.dataset.fx;
+    fx[k] = el.type === "checkbox" ? el.checked : el.tagName === "SELECT" ? el.value : Number(el.value);
+  }
+  return fx;
+}
+
+function setFx(fx) {
+  fx = { ...FX_DEFAULT, ...(fx ?? {}) };
+  for (const el of fxInputs) {
+    const v = fx[el.dataset.fx];
+    if (el.type === "checkbox") el.checked = !!v;
+    else el.value = v;
+  }
+  refreshFx();
+}
+
+function refreshFx() {
+  const fx = currentFx();
+  for (const span of fxBox.querySelectorAll("[data-fxv]")) span.textContent = fmtFx(span.dataset.fxv, fx[span.dataset.fxv]);
+  for (const b of fxBox.querySelectorAll("[data-preset]")) {
+    const preset = FX_PRESETS[b.dataset.preset];
+    b.classList.toggle("active", Object.entries(preset).every(([k, v]) => fx[k] === v));
+  }
+}
+
+for (const el of fxInputs) {
+  el.addEventListener("input", refreshFx);
+  el.addEventListener("change", commitEdit);
+}
+
+fxBox.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-preset]");
+  if (!b) return;
+  const preset = FX_PRESETS[b.dataset.preset];
+  const fx = currentFx();
+  // Un effet actif se retire au second clic ; sinon il s'ajoute aux autres.
+  const on = b.classList.contains("active");
+  for (const [k, v] of Object.entries(preset)) fx[k] = on ? FX_DEFAULT[k] : v;
+  setFx(fx);
+  commitEdit();
+});
+
+$('[data-action="fx-reset"]', dlgSound).addEventListener("click", () => {
+  setFx(FX_DEFAULT);
+  commitEdit();
+});
+
+// ---------- Annuler / rétablir dans l'éditeur ----------
+
+const editHistory = { stack: [], at: 0 };
+const undoBtn = $('[data-action="undo"]', dlgSound);
+const redoBtn = $('[data-action="redo"]', dlgSound);
+
+function editState() {
+  return JSON.stringify({ start: trim.start, end: trim.end, volume: formSound.volume.value, fx: currentFx() });
+}
+
+function resetHistory() {
+  editHistory.stack = [editState()];
+  editHistory.at = 0;
+  updateHistoryButtons();
+}
+
+function updateHistoryButtons() {
+  undoBtn.disabled = editHistory.at <= 0;
+  redoBtn.disabled = editHistory.at >= editHistory.stack.length - 1;
+}
+
+/** Enregistre l'état courant comme une étape (si quelque chose a changé). */
+function commitEdit() {
+  const now = editState();
+  if (now === editHistory.stack[editHistory.at]) return;
+  editHistory.stack.length = editHistory.at + 1;
+  editHistory.stack.push(now);
+  if (editHistory.stack.length > 100) editHistory.stack.shift();
+  editHistory.at = editHistory.stack.length - 1;
+  updateHistoryButtons();
+  // La pré-écoute en cours repart avec le nouveau réglage.
+  if (playhead.active) startPreview();
+}
+
+function stepHistory(delta) {
+  const at = editHistory.at + delta;
+  if (at < 0 || at >= editHistory.stack.length) return;
+  editHistory.at = at;
+  const st = JSON.parse(editHistory.stack[at]);
+  trim.start = st.start;
+  trim.end = st.end;
+  formSound.volume.value = st.volume;
+  formSound.volume.update();
+  setFx(st.fx);
+  drawTrim();
+  updateHistoryButtons();
+  if (playhead.active) startPreview();
+}
+
+undoBtn.addEventListener("click", () => stepHistory(-1));
+redoBtn.addEventListener("click", () => stepHistory(1));
+formSound.volume.addEventListener("change", commitEdit);
+
+dlgSound.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  // Dans un champ texte, Ctrl+Z garde son rôle normal.
+  const t = e.target;
+  if (t.tagName === "INPUT" && !["range", "checkbox"].includes(t.type) && !t.readOnly) return;
+  const key = e.key.toLowerCase();
+  if (key === "z" && !e.shiftKey) stepHistory(-1);
+  else if (key === "y" || (key === "z" && e.shiftKey)) stepHistory(1);
+  else return;
+  e.preventDefault();
 });
 
 // ---------- Dialogue « Réglages » ----------

@@ -44,6 +44,11 @@ impl Kernel {
             return k.clone();
         }
         let kernel = Arc::new(Self::new(ratio));
+        // Les effets de vitesse créent des rapports variés : on garde les
+        // derniers seulement.
+        if cache.len() >= 24 {
+            cache.remove(0);
+        }
         cache.push((key, kernel.clone()));
         kernel
     }

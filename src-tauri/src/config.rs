@@ -54,6 +54,9 @@ pub struct Sound {
     pub played_ms: u64,
     #[serde(default)]
     pub last_played: u64,
+    /// Effets de l'éditeur (vitesse, hauteur, écho…), appliqués à la lecture.
+    #[serde(default)]
+    pub fx: crate::sound_fx::SoundFx,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -80,7 +83,7 @@ impl Sound {
     pub fn play_duration_ms(&self) -> Option<u64> {
         let total = self.analysis?.duration_ms;
         let end = self.end_ms.unwrap_or(total).min(total);
-        Some(end.saturating_sub(self.start_ms))
+        Some(self.fx.output_ms(end.saturating_sub(self.start_ms), self.looping))
     }
 
     /// Gain qui amène le son à un volume ressenti commun sans saturer.

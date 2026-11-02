@@ -9,6 +9,7 @@ mod effects;
 mod giphy;
 mod mixer;
 mod resample;
+mod sound_fx;
 mod online;
 mod phone;
 mod youtube;
@@ -219,6 +220,7 @@ fn play_request(state: &AppState, sound: &Sound) -> PlayRequest {
         duration_ms: sound.play_duration_ms(),
         looping: sound.looping,
         keep_playing: sound.keep_playing,
+        fx: sound.fx,
     }
 }
 
@@ -461,6 +463,7 @@ fn store_sound(
         plays: 0,
         played_ms: 0,
         last_played: 0,
+        fx: Default::default(),
     })
 }
 
@@ -565,6 +568,7 @@ fn update_sound(app: AppHandle, state: State<AppState>, sound: Sound) -> Result<
         existing.emoji = clean_emoji(sound.emoji);
         existing.favorite = sound.favorite;
         existing.keep_playing = sound.keep_playing;
+        existing.fx = sound.fx.sanitized();
         let total = existing.analysis.map(|a| a.duration_ms).unwrap_or(u64::MAX);
         existing.start_ms = sound.start_ms.min(total);
         // Une fin au bout du fichier revient à « pas de découpe ».
@@ -1128,11 +1132,17 @@ fn preview_sound(
     start_ms: u64,
     end_ms: Option<u64>,
     volume: f32,
+    fx: Option<sound_fx::SoundFx>,
 ) -> Result<(), String> {
     let mut sound = find_sound(&state, &id)?;
     sound.start_ms = start_ms;
     sound.end_ms = end_ms;
     sound.volume = volume;
+    // Pré-écoute jouée une seule fois : pas de boucle dans la durée.
+    sound.looping = false;
+    if let Some(fx) = fx {
+        sound.fx = fx.sanitized();
+    }
     let mut req = play_request(&state, &sound);
     req.id = audio::PREVIEW_ID.into();
     // Une seule lecture pour suivre le curseur, même pour un son en boucle.
@@ -1415,6 +1425,8 @@ struct PackSound {
     favorite: bool,
     #[serde(default)]
     keep_playing: bool,
+    #[serde(default)]
+    fx: sound_fx::SoundFx,
 }
 
 fn one() -> f32 {
@@ -1454,6 +1466,7 @@ fn write_pack(dest: &Path, sounds: &[Sound]) -> Result<usize, String> {
             emoji: s.emoji.clone(),
             favorite: s.favorite,
             keep_playing: s.keep_playing,
+            fx: s.fx,
         });
     }
     zip.start_file("pack.json", options).map_err(|e| e.to_string())?;
@@ -1539,6 +1552,7 @@ fn read_pack(src: &Path, config: &Config, sounds_dir: &Path) -> Result<(Vec<Soun
                 sound.emoji = clean_emoji(p.emoji);
                 sound.favorite = p.favorite;
                 sound.keep_playing = p.keep_playing;
+                sound.fx = p.fx.sanitized();
                 added.push(sound);
             }
             Err(e) => errors.push(format!("{} : {e}", p.name)),

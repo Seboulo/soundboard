@@ -12,6 +12,7 @@ use crate::config::Settings;
 use crate::denoise::{self, MicFilters, MicLevel, MicMeter, MicProcessor, Recording};
 use crate::dynamics::LookaheadLimiter;
 use crate::resample::{self, Kernel, SincWindow};
+use crate::sound_fx::{self, Rendered, RenderedSource, SoundFx};
 use rodio::cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rodio::cpal::{self, SampleFormat};
 use crate::decoder::AudioFile;
@@ -48,6 +49,8 @@ pub struct PlayRequest {
     pub looping: bool,
     /// Pas coupé quand un autre son démarre (option « un nouveau son coupe les autres »).
     pub keep_playing: bool,
+    /// Effets de l'éditeur.
+    pub fx: SoundFx,
 }
 
 /// Durée des fondus des sons en boucle.
@@ -358,7 +361,22 @@ struct Engine {
     hear_voice: Option<Voice>,
     /// Test de voix, partagé avec le fil du micro.
     mic_record: Option<Arc<Mutex<RecordSlot>>>,
+    /// Derniers sons avec effets déjà calculés.
+    fx_cache: VecDeque<(FxKey, Rendered)>,
 }
+
+/// Ce qui change le résultat d'un son avec effets.
+#[derive(PartialEq)]
+struct FxKey {
+    path: PathBuf,
+    start_ms: u64,
+    end_ms: Option<u64>,
+    looping: bool,
+    fx: SoundFx,
+}
+
+const FX_CACHE: usize = 12;
+const FX_CACHE_SAMPLES: usize = 16 << 20;
 
 fn run(rx: Receiver<Command>, meter_on: Arc<AtomicBool>, on_event: impl Fn(AudioEvent)) {
     let mut engine = Engine::default();
@@ -699,6 +717,8 @@ impl Engine {
     }
 
     fn start(&mut self, req: PlayRequest, monitor_only: bool) -> Result<(), String> {
+        // Effets : calculés une fois, partagés par le casque et le câble.
+        let rendered = if req.fx.is_neutral() { None } else { Some(self.rendered(&req)?) };
         let mut targets = Vec::new();
         // Pendant l'écoute du câble, le son arrive déjà au casque par là.
         if self.cable_voice.is_none() || monitor_only {
@@ -714,7 +734,13 @@ impl Engine {
         let mut voices = Vec::new();
         for (output, out_volume) in targets {
             let Some(output) = output else { continue };
-            let source = open_source(&req, output.rate())?;
+            let source = match &rendered {
+                Some(r) => Box::new(Resample::new(
+                    Leveler::new(RenderedSource::new(r.clone(), req.looping), req.gain),
+                    output.rate(),
+                )),
+                None => open_source(&req, output.rate())?,
+            };
             let source: Box<dyn Source<Item = f32> + Send> = match &fade_target {
                 Some(target) => Box::new(Fader::new(source, target.clone())),
                 None => source,
@@ -735,6 +761,34 @@ impl Engine {
             stopping: None,
         });
         Ok(())
+    }
+
+    /// Le son découpé avec ses effets, calculé une fois puis gardé en cache.
+    fn rendered(&mut self, req: &PlayRequest) -> Result<Rendered, String> {
+        let key = FxKey {
+            path: req.path.clone(),
+            start_ms: req.start_ms,
+            end_ms: req.end_ms,
+            looping: req.looping,
+            fx: req.fx,
+        };
+        if let Some(i) = self.fx_cache.iter().position(|(k, _)| *k == key) {
+            let entry = self.fx_cache.remove(i).unwrap();
+            let r = entry.1.clone();
+            self.fx_cache.push_back(entry);
+            return Ok(r);
+        }
+        let mut decoder = AudioFile::open(&req.path)?;
+        decoder.seek_ms(req.start_ms);
+        let r = sound_fx::render(decoder, req.start_ms, req.end_ms, &req.fx, req.looping);
+        // Au plus ~64 Mo d'échantillons gardés.
+        let mut total: usize = self.fx_cache.iter().map(|(_, r)| r.data.len()).sum::<usize>() + r.data.len();
+        while total > FX_CACHE_SAMPLES || self.fx_cache.len() >= FX_CACHE {
+            let Some((_, old)) = self.fx_cache.pop_front() else { break };
+            total -= old.data.len();
+        }
+        self.fx_cache.push_back((key, r.clone()));
+        Ok(r)
     }
 
     /// Arrête un son ; renvoie vrai s'il était en cours.
