@@ -1,7 +1,7 @@
 //! Lecture complète d'un fichier pour connaître sa durée, son niveau et
 //! dessiner sa forme d'onde dans l'éditeur.
 
-use crate::config::Analysis;
+use crate::config::{Analysis, SegmentKey};
 use crate::decoder::AudioFile;
 use rodio::Source;
 use std::path::Path;
@@ -93,8 +93,22 @@ fn loudness(blocks: &[f64]) -> (f32, f32, f32) {
 
 pub fn analyze(path: &Path) -> Result<Analysis, String> {
     let decoder = decode(path)?;
-    let channels = decoder.channels().max(1) as usize;
-    let rate = decoder.sample_rate().max(1) as u64;
+    let (channels, rate) = (decoder.channels(), decoder.sample_rate());
+    analyze_samples(decoder, channels, rate)
+}
+
+/// Mesure le passage tel qu'il est joué : découpé, avec ses effets.
+pub fn analyze_segment(path: &Path, key: &SegmentKey) -> Result<Analysis, String> {
+    let mut decoder = decode(path)?;
+    decoder.seek_ms(key.start_ms);
+    let r = crate::sound_fx::render(decoder, key.start_ms, key.end_ms, &key.fx, false);
+    analyze_samples(r.data.iter().copied(), r.channels, r.rate)
+}
+
+fn analyze_samples(samples: impl Iterator<Item = f32>, channels: u16, rate: u32) -> Result<Analysis, String> {
+    let decoder = samples;
+    let channels = channels.max(1) as usize;
+    let rate = rate.max(1) as u64;
     // Tranches de 50 ms : celles plus faibles que -40 dB comptent comme du
     // silence et ne baissent pas le niveau moyen.
     const GATE: f64 = 0.01 * 0.01;

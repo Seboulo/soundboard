@@ -8,15 +8,31 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 let state = null; // { config, devices, warnings, vb_cable_url }
 
+// Les erreurs de l'interface vont dans le journal (« Copier le rapport »).
+const logUi = (msg) => invoke("log_ui", { message: String(msg) }).catch(() => {});
+window.addEventListener("error", (e) => logUi(`${e.message} (${e.filename?.split("/").pop()}:${e.lineno})`));
+window.addEventListener("unhandledrejection", (e) => logUi(e.reason?.stack || e.reason));
+
 // ---------- Utilitaires ----------
 
-function toast(message, isError = false) {
+/** Message en bas de l'écran, avec un bouton facultatif ({ label, run }). */
+function toast(message, isError = false, action = null) {
   const el = $("#toast");
   el.textContent = message;
+  if (action) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = action.label;
+    btn.addEventListener("click", () => {
+      el.hidden = true;
+      action.run();
+    });
+    el.append(btn);
+  }
   el.classList.toggle("error", isError);
   el.hidden = false;
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => (el.hidden = true), isError ? 6000 : 2500);
+  toast.timer = setTimeout(() => (el.hidden = true), action ? 8000 : isError ? 6000 : 2500);
 }
 
 async function call(cmd, args) {
@@ -26,6 +42,7 @@ async function call(cmd, args) {
     return res;
   } catch (e) {
     toast(String(e), true);
+    logUi(`${cmd} : ${e}`);
     // L'état a pu changer partiellement (ex. certains fichiers ajoutés).
     if (cmd !== "get_state") render(await invoke("get_state"));
     return null;
@@ -58,7 +75,46 @@ function hotkeyFromEvent(e) {
   return parts.join("+");
 }
 
-function setupHotkeyInput(input) {
+const TYPING_KEY = /^(Key|Digit)|^(Space|Enter|Backspace|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash|IntlBackslash)$/;
+
+const TYPING_MSG = "Ajoute Ctrl ou Alt : une touche d'écriture seule serait bloquée dans toutes tes applis (pavé numérique et F1 à F12 OK).";
+const SETTING_LABELS = { stop_hotkey: "Tout arrêter", mute_hotkey: "Couper le micro", random_hotkey: "Son au hasard" };
+
+function blocksTyping(e, quiet = false) {
+  if (e.ctrlKey || e.altKey || e.metaKey || !TYPING_KEY.test(e.code)) return false;
+  if (!quiet) toast(TYPING_MSG, true);
+  return true;
+}
+
+/** Qui utilise déjà ce raccourci (hors `self` : { soundId } ou { setting }) ? */
+function hotkeyOwner(hk, self = {}) {
+  const sound = state.config.sounds.find((s) => s.hotkey === hk && s.id !== self.soundId);
+  if (sound) return `le son « ${sound.name} »`;
+  for (const k of Object.keys(SETTING_LABELS)) {
+    if (k === self.setting) continue;
+    // Dans les réglages ouverts, on compare à ce qui est tapé (pas encore enregistré).
+    const field = formSettings?.[k];
+    const value = field?.isConnected && dlgSettings.open ? field.dataset.hotkey : state.config.settings[k];
+    if (value === hk) return `« ${SETTING_LABELS[k]} »`;
+  }
+  return null;
+}
+
+/** Message affiché juste sous le champ du raccourci (vide = on l'enlève). */
+function hotkeyMessage(input, text) {
+  const row = input.closest("label") ?? input;
+  let msg = row.nextElementSibling?.classList.contains("hotkey-msg") ? row.nextElementSibling : null;
+  if (!text) return msg?.remove();
+  if (!msg) {
+    msg = document.createElement("p");
+    msg.className = "hotkey-msg";
+    msg.setAttribute("role", "alert");
+    row.after(msg);
+  }
+  msg.textContent = text;
+}
+
+function setupHotkeyInput(input, self = () => ({})) {
   input.addEventListener("focus", () => {
     input.classList.add("listening");
     input.placeholder = "Appuie sur une touche…";
@@ -75,6 +131,7 @@ function setupHotkeyInput(input) {
     if (noMods && (e.key === "Backspace" || e.key === "Delete")) {
       input.dataset.hotkey = "";
       input.value = "";
+      hotkeyMessage(input, "");
       return;
     }
     if (noMods && e.key === "Escape") {
@@ -82,16 +139,21 @@ function setupHotkeyInput(input) {
       return;
     }
     const hk = hotkeyFromEvent(e);
-    if (hk) {
-      input.dataset.hotkey = hk;
-      input.value = hotkeyLabel(hk);
-    }
+    if (!hk) return;
+    // Un raccourci global « avale » la touche dans toutes les applis : une
+    // lettre seule (ou avec Maj) empêcherait d'écrire dans Discord.
+    if (blocksTyping(e, true)) return hotkeyMessage(input, TYPING_MSG);
+    input.dataset.hotkey = hk;
+    input.value = hotkeyLabel(hk);
+    const owner = hotkeyOwner(hk, self());
+    hotkeyMessage(input, owner ? `Déjà utilisé par ${owner} : l'un des deux ne marchera pas.` : "");
   });
 }
 
 function setHotkeyInput(input, hotkey) {
   input.dataset.hotkey = hotkey ?? "";
   input.value = hotkeyLabel(hotkey);
+  hotkeyMessage(input, "");
 }
 
 function bindRangeLabels(form) {
@@ -229,10 +291,55 @@ function renderStatus() {
   pill.textContent = ok ? "● Discord : actif" : "● Micro virtuel non configuré";
 }
 
+/** Bouton adapté à chaque problème : on va droit à ce qui le corrige. */
+function warningAction(w) {
+  const settings = (tab) => ({ label: "Régler", run: () => openSettings().then(() => showSettingsTab(tab)) });
+  if (w.startsWith("Audio : ")) {
+    if (/câble/i.test(w) && !state.devices.vb_cable) return { label: "Installer VB-Cable", run: openWizard };
+    return settings(/micro/i.test(w) ? "mic" : "sound");
+  }
+  if (w.startsWith("Raccourci : ")) return settings("keys");
+  if (w.startsWith("Téléphone : ")) return settings("remote");
+  if (w.startsWith("Démarrage : ")) return settings("general");
+  if (w.startsWith("Réglages : ")) return null;
+  return { label: "Diagnostic", run: openDiagnostics };
+}
+
+// Problèmes masqués par l'utilisateur (reviennent s'ils changent).
+const dismissedWarnings = new Set();
+
 function renderWarnings() {
   const el = $("#warnings");
-  $("[data-text]", el).textContent = state.warnings.join("\n");
-  el.hidden = state.warnings.length === 0;
+  const list = state.warnings.filter((w) => !dismissedWarnings.has(w));
+  el.replaceChildren(
+    ...list.map((w) => {
+      const row = document.createElement("div");
+      row.className = "warning";
+      const text = document.createElement("span");
+      text.textContent = w;
+      row.append(text);
+      const action = warningAction(w);
+      if (action) {
+        const fix = document.createElement("button");
+        fix.type = "button";
+        fix.textContent = action.label;
+        fix.addEventListener("click", action.run);
+        row.append(fix);
+      }
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "ghost";
+      close.title = "Masquer";
+      close.textContent = "✕";
+      close.addEventListener("click", () => {
+        dismissedWarnings.add(w);
+        renderWarnings();
+      });
+      row.append(close);
+      return row;
+    }),
+  );
+  el.hidden = list.length === 0;
 }
 
 /** Icône du jeu d'icônes de index.html. */
@@ -264,6 +371,7 @@ function renderGrid() {
   if (viewMode === "list" && pads.length) pads.unshift(listHeader());
   grid.replaceChildren(...pads);
   $("#empty").hidden = state.config.sounds.length > 0;
+  renderStartSteps();
   $("#recent-empty").hidden = !(currentTab === RECENT_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
   $("#search-empty").hidden = !(q && sounds.length === 0 && state.config.sounds.length > 0);
   renderPlaying();
@@ -289,7 +397,8 @@ function renderPlaying() {
     const sound = img && soundById(id);
     // Seulement quand l'image change : remettre la même adresse 10 fois par
     // seconde fait redémarrer le GIF (il « vibre »).
-    const src = sound?.image && fileSrc(p ? sound.image : sound.image_still || sound.image);
+    const animate = p && !reducedMotion();
+    const src = sound?.image && fileSrc(animate ? sound.image : sound.image_still || sound.image);
     if (src && img.getAttribute("src") !== src) img.src = src;
     let ratio = 0;
     if (p && p.duration_ms) {
@@ -516,10 +625,18 @@ function padElement(sound, index) {
     loop.textContent = "↻ boucle";
     key.append(loop);
   }
+  let addKey = null;
   if (sound.hotkey) {
     const kbd = document.createElement("kbd");
     kbd.textContent = hotkeyLabel(sound.hotkey);
     key.append(kbd);
+  } else {
+    // Visible au survol : poser un raccourci sans ouvrir la fiche.
+    addKey = document.createElement("span");
+    addKey.className = "add-key";
+    addKey.textContent = "+ Raccourci";
+    addKey.title = "Choisir une touche pour jouer ce son de n'importe où";
+    key.append(addKey);
   }
   const edit = document.createElement("span");
   edit.className = "edit";
@@ -533,12 +650,26 @@ function padElement(sound, index) {
   progress.className = "progress";
   pad.append(num, eq, icon, label, key, dur, fav, edit, progress);
 
+  const missing = state.missing?.includes(sound.id);
+  if (missing) {
+    pad.classList.add("missing");
+    const warn = document.createElement("span");
+    warn.className = "missing-tag";
+    warn.textContent = "Fichier manquant";
+    key.replaceChildren(warn);
+  }
+  const keyHint = sound.hotkey ? `, raccourci ${hotkeyLabel(sound.hotkey)}` : "";
+  pad.setAttribute("aria-label", `${sound.name}${missing ? ", fichier manquant" : ""}${keyHint}`);
+  pad.title = missing ? "Le fichier de ce son a disparu : clique pour en choisir un autre" : "";
+
   pad.addEventListener("click", (e) => {
     if (reorder.justDropped) return;
     if (edit.contains(e.target)) return openSoundDialog(sound);
     if (fav.contains(e.target)) return call("toggle_favorite", { id: sound.id });
+    if (addKey?.contains(e.target)) return captureHotkey(sound, addKey);
+    if (missing) return replaceSoundFile(sound);
     flash(sound.id);
-    call("play_sound", { id: sound.id }); // joue, ou arrête s'il est déjà en cours
+    playSound(sound.id); // joue, ou arrête s'il est déjà en cours
   });
   pad.addEventListener("contextmenu", (e) => {
     e.preventDefault();
@@ -547,6 +678,55 @@ function padElement(sound, index) {
 
   pad.addEventListener("pointerdown", (e) => startReorder(e, pad, sound));
   return pad;
+}
+
+/** « + Raccourci » : la prochaine touche appuyée devient le raccourci du son. */
+function captureHotkey(sound, chip) {
+  chip.classList.add("listening");
+  chip.textContent = "Appuie sur une touche… (Échap : annuler)";
+  const done = () => {
+    window.removeEventListener("keydown", onKey, true);
+    window.removeEventListener("pointerdown", cancel, true);
+    chip.classList.remove("listening");
+    chip.textContent = "+ Raccourci";
+  };
+  const cancel = (e) => {
+    if (e.target !== chip) done();
+  };
+  const onKey = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "Escape") return done();
+    const hk = hotkeyFromEvent(e);
+    if (!hk) return; // touche de modification seule : on attend la suite
+    if (blocksTyping(e)) return; // on attend une autre combinaison
+    done();
+    const owner = hotkeyOwner(hk, { soundId: sound.id });
+    if (owner) return toast(`${hotkeyLabel(hk)} est déjà utilisé par ${owner}`, true);
+    call("update_sound", { sound: { ...sound, hotkey: hk } }).then(
+      (res) => res && toast(`« ${sound.name} » : ${hotkeyLabel(hk)}`),
+    );
+  };
+  window.addEventListener("keydown", onKey, true);
+  window.addEventListener("pointerdown", cancel, true);
+}
+
+/** Joue un son ; si ses effets mettent du temps à se calculer, le pad
+ *  affiche « préparation… » pour montrer que le clic a bien été pris. */
+async function playSound(id) {
+  const padOf = () => document.querySelector(`#grid .pad[data-id="${CSS.escape(id)}"]`);
+  const timer = setTimeout(() => padOf()?.classList.add("preparing"), 150);
+  try {
+    await call("play_sound", { id });
+  } finally {
+    clearTimeout(timer);
+    padOf()?.classList.remove("preparing");
+  }
+}
+
+async function replaceSoundFile(sound) {
+  const res = await call("replace_sound_file", { id: sound.id });
+  if (res) toast(`« ${sound.name} » a un nouveau fichier`);
 }
 
 // Réorganisation à la souris : on glisse un pad sur un autre. Le glisser-déposer
@@ -588,6 +768,7 @@ function startReorder(e, pad, sound) {
 }
 
 function flash(id) {
+  if (reducedMotion()) return;
   const pad = document.querySelector(`.pad[data-id="${CSS.escape(id)}"]`);
   if (!pad) return;
   pad.classList.add("flash");
@@ -599,7 +780,7 @@ function flash(id) {
 const dlgSound = $("#dlg-sound");
 const formSound = $("form", dlgSound);
 let editing = null;
-setupHotkeyInput(formSound.hotkey);
+setupHotkeyInput(formSound.hotkey, () => ({ soundId: editing?.id }));
 bindRangeLabels(formSound);
 enterSaves(dlgSound);
 
@@ -927,8 +1108,13 @@ dlgSound.addEventListener("close", () => {
 $('[data-action="delete"]', dlgSound).addEventListener("click", () => {
   if (!editing) return;
   dlgSound.close("delete");
-  call("remove_sound", { id: editing.id });
+  deleteSound(editing);
 });
+
+async function deleteSound(sound) {
+  const res = await call("remove_sound", { id: sound.id });
+  if (res) toast(`« ${sound.name} » supprimé`, false, { label: "Annuler", run: () => call("restore_sound", { id: sound.id }) });
+}
 
 // ---------- Effets du son ----------
 
@@ -1074,7 +1260,7 @@ dlgSound.addEventListener("keydown", (e) => {
 const dlgSettings = $("#dlg-settings");
 const formSettings = $("form", dlgSettings);
 const SETTINGS_HOTKEYS = ["stop_hotkey", "mute_hotkey", "random_hotkey"];
-for (const k of SETTINGS_HOTKEYS) setupHotkeyInput(formSettings[k]);
+for (const k of SETTINGS_HOTKEYS) setupHotkeyInput(formSettings[k], () => ({ setting: k }));
 bindRangeLabels(formSettings);
 enterSaves(dlgSettings);
 
@@ -1126,6 +1312,18 @@ function nearestTarget(v) {
   const options = [-31, -28, -25];
   return options.reduce((best, o) => (Math.abs(o - v) < Math.abs(best - v) ? o : best), -28);
 }
+
+// Réglages avancés : cachés par défaut, le choix est gardé sur ce PC.
+const advToggle = $('[data-action="advanced"]', dlgSettings);
+function applyAdvanced(on) {
+  dlgSettings.classList.toggle("show-advanced", on);
+  advToggle.checked = on;
+}
+try { applyAdvanced(localStorage.getItem("soundboard.advanced") === "1"); } catch { applyAdvanced(false); }
+advToggle.addEventListener("change", () => {
+  applyAdvanced(advToggle.checked);
+  try { localStorage.setItem("soundboard.advanced", advToggle.checked ? "1" : "0"); } catch {}
+});
 
 // Onglets des réglages (le dernier ouvert est retenu).
 function showSettingsTab(tab) {
@@ -1365,6 +1563,122 @@ $('[data-action="finish"]', dlgWizard).addEventListener("click", async () => {
 
 // ---------- Mode nuit ----------
 
+// ---------- Affichage : taille, contraste, animations ----------
+// Préférences gardées sur ce PC (comme le thème).
+
+const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+const PREF_DEFAULTS = { zoom: "1", contrast: false, reduceMotion: false };
+const ZOOMS = ["0.9", "1", "1.1", "1.25", "1.5"];
+const prefs = { ...PREF_DEFAULTS };
+try {
+  Object.assign(prefs, JSON.parse(localStorage.getItem("soundboard.display") || "{}"));
+} catch {}
+const reducedMotion = () => prefs.reduceMotion || motionQuery.matches;
+
+function applyDisplay() {
+  const root = document.documentElement;
+  // Zoom de la fenêtre elle-même (comme Ctrl + dans un navigateur).
+  invoke("set_zoom", { scale: Number(prefs.zoom) || 1 }).catch(() => {});
+  root.classList.toggle("contrast", !!prefs.contrast);
+  root.classList.toggle("reduce-motion", reducedMotion());
+  for (const el of $$("[data-pref]", dlgSettings)) {
+    if (el.type === "checkbox") el.checked = !!prefs[el.dataset.pref];
+    else el.value = prefs[el.dataset.pref];
+  }
+  if (state) renderPlaying();
+}
+function setPref(key, value) {
+  prefs[key] = value;
+  try {
+    localStorage.setItem("soundboard.display", JSON.stringify(prefs));
+  } catch {}
+  applyDisplay();
+}
+for (const el of $$("[data-pref]", dlgSettings)) {
+  // Appliqué tout de suite, sans attendre « Enregistrer ».
+  el.addEventListener("change", () => setPref(el.dataset.pref, el.type === "checkbox" ? el.checked : el.value));
+}
+motionQuery.addEventListener("change", applyDisplay);
+document.addEventListener("keydown", (e) => {
+  if (!e.ctrlKey || e.altKey) return;
+  const i = Math.max(0, ZOOMS.indexOf(String(prefs.zoom)));
+  let next = null;
+  if (e.key === "+" || e.key === "=") next = ZOOMS[Math.min(ZOOMS.length - 1, i + 1)];
+  else if (e.key === "-") next = ZOOMS[Math.max(0, i - 1)];
+  else if (e.key === "0") next = "1";
+  if (next == null) return;
+  e.preventDefault();
+  setPref("zoom", next);
+  toast(`Taille : ${Math.round(Number(next) * 100)} %`);
+});
+applyDisplay();
+
+// ---------- Sauvegarde complète ----------
+
+$('[data-action="backup-export"]', dlgSettings).addEventListener("click", async () => {
+  const n = await call("export_backup");
+  if (n != null) toast(`Sauvegarde enregistrée (${n} son${n > 1 ? "s" : ""})`);
+});
+$('[data-action="backup-import"]', dlgSettings).addEventListener("click", async () => {
+  if (await restoreBackup()) dlgSettings.close();
+});
+
+async function restoreBackup(path) {
+  if (!confirm("Remplacer ta soundboard actuelle par celle de la sauvegarde ?\nPense à sauvegarder l'actuelle avant si tu veux la garder.")) return false;
+  const res = await call("import_backup", { path });
+  if (res) toast(`Sauvegarde restaurée (${res.config.sounds.length} sons)`);
+  return !!res;
+}
+
+// ---------- Clavier ----------
+
+// Flèches pour passer d'un pad à l'autre, Entrée ou Espace pour jouer,
+// F2 pour modifier, Suppr pour supprimer (avec « Annuler »).
+$("#grid").addEventListener("keydown", (e) => {
+  const pad = e.target.closest?.(".pad");
+  if (!pad || e.ctrlKey || e.altKey || e.metaKey) return;
+  const pads = $$("#grid .pad");
+  const i = pads.indexOf(pad);
+  const sound = soundById(pad.dataset.id);
+  let next = null;
+  if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+    next = pads[i + (e.key === "ArrowRight" ? 1 : -1)];
+  } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    // Même colonne sur la ligne voisine (en liste : pad suivant / précédent).
+    const x = pad.offsetLeft;
+    const dir = e.key === "ArrowDown" ? 1 : -1;
+    for (let j = i + dir; j >= 0 && j < pads.length; j += dir) {
+      if (pads[j].offsetTop !== pad.offsetTop && Math.abs(pads[j].offsetLeft - x) < 4) {
+        next = pads[j];
+        break;
+      }
+    }
+    next ??= pads[i + dir];
+  } else if (e.key === "Home") next = pads[0];
+  else if (e.key === "End") next = pads[pads.length - 1];
+  else if (e.key === "F2" && sound) {
+    e.preventDefault();
+    return openSoundDialog(sound);
+  } else if (e.key === "Delete" && sound) {
+    e.preventDefault();
+    return deleteSound(sound);
+  }
+  if (next) {
+    e.preventDefault();
+    next.focus();
+  }
+});
+
+// Boutons avec seulement une icône : on leur donne un nom lisible par
+// les lecteurs d'écran (celui de l'infobulle).
+function labelIconButtons(root = document) {
+  for (const b of $$("button[title]:not([aria-label])", root)) {
+    if (!b.textContent.trim()) b.setAttribute("aria-label", b.title);
+  }
+}
+labelIconButtons();
+new MutationObserver(() => labelIconButtons()).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["title"] });
+
 // « auto » suit le thème de Windows ; le choix est gardé sur ce PC.
 const THEMES = ["auto", "light", "dark"];
 const THEME_ICONS = { auto: "auto", light: "sun", dark: "moon" };
@@ -1559,6 +1873,14 @@ function openDiagnostics() {
 }
 
 $('[data-action="rerun"]', dlgDiag).addEventListener("click", runDiagnostics);
+$('[data-action="report"]', dlgDiag).addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(await invoke("diagnostic_report"));
+    toast("Rapport copié : colle-le dans ton message (Ctrl + V)");
+  } catch (e) {
+    toast(String(e), true);
+  }
+});
 $('[data-action="close"]', dlgDiag).addEventListener("click", () => dlgDiag.close());
 $('[data-action="listen"]', dlgDiag).addEventListener("click", () => setListening(!listening));
 dlgDiag.addEventListener("close", () => listening && setListening(false));
@@ -1671,11 +1993,29 @@ $('[data-action="reset"]', dlgStats).addEventListener("click", async () => {
 // ---------- Barre du haut ----------
 
 $("#btn-add").addEventListener("click", () => call("pick_sounds"));
+
+// Écran vide : les 3 étapes, cochées au fur et à mesure (l'assistant fait le détail).
+function renderStartSteps() {
+  const s = state.config.settings;
+  const done = {
+    cable: !!state.devices.vb_cable,
+    discord: !!state.devices.vb_cable && !!s.virtual_device && !!s.setup_done,
+    sound: state.config.sounds.length > 0,
+  };
+  for (const li of $$("#empty [data-step]")) {
+    const ok = done[li.dataset.step];
+    li.classList.toggle("done", ok);
+    $(".mark", li).textContent = ok ? "✓" : String([...li.parentNode.children].indexOf(li) + 1);
+    const btn = $("button", li);
+    if (btn) btn.hidden = ok;
+  }
+}
+for (const b of $$('#empty [data-action="start-wizard"]')) b.addEventListener("click", () => openWizard());
+$('#empty [data-action="start-add"]').addEventListener("click", () => call("pick_sounds"));
 $("#btn-stop").addEventListener("click", () => call("stop_all"));
 $("#btn-settings").addEventListener("click", openSettings);
 $("#cable-status").addEventListener("click", () => (state.devices.vb_cable ? openDiagnostics() : openWizard()));
 $("#btn-stats").addEventListener("click", openStats);
-$('#warnings [data-action="diagnose"]').addEventListener("click", openDiagnostics);
 $("#search").addEventListener("input", renderGrid);
 $("#search").addEventListener("keydown", (e) => {
   if (e.key === "Escape" && e.target.value) {
@@ -1702,13 +2042,15 @@ $("#btn-export").addEventListener("click", async () => {
   if (n) toast(n > 1 ? `Pack enregistré (${n} sons)` : "Pack enregistré (1 son)");
 });
 
-$("#btn-import").addEventListener("click", async () => {
-  const res = await call("import_pack");
+$("#btn-import").addEventListener("click", () => importPack());
+
+async function importPack(path) {
+  const res = await call("import_pack", { path });
   if (!res) return;
   render(res.snapshot);
   if (res.errors.length) toast(`${res.added} son(s) ajouté(s). Problèmes :\n${res.errors.join("\n")}`, true);
   else toast(res.added > 1 ? `${res.added} sons ajoutés` : `${res.added} son ajouté`);
-});
+}
 
 // ---------- Taille des pads ----------
 
@@ -1860,7 +2202,16 @@ listen("tauri://drag-enter", () => (overlay.hidden = false));
 listen("tauri://drag-leave", () => (overlay.hidden = true));
 listen("tauri://drag-drop", async (event) => {
   overlay.hidden = true;
-  const paths = event.payload?.paths ?? [];
+  const all = event.payload?.paths ?? [];
+  // Un .zip glissé : pack de sons ou sauvegarde complète, reconnu tout seul.
+  const zips = all.filter((p) => /\.zip$/i.test(p));
+  const paths = all.filter((p) => !/\.zip$/i.test(p));
+  for (const zip of zips) {
+    const kind = await invoke("zip_kind", { path: zip });
+    if (kind === "pack") await importPack(zip);
+    else if (kind === "backup") await restoreBackup(zip);
+    else toast("Ce .zip n'est ni un pack de sons ni une sauvegarde de la soundboard", true);
+  }
   if (paths.length === 0) return;
   const res = await call("add_sounds", { paths });
   if (res) toast(paths.length > 1 ? `${paths.length} sons ajoutés` : "Son ajouté");

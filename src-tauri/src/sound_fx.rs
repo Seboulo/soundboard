@@ -297,10 +297,16 @@ fn echo(mut data: Vec<f32>, ch: usize, rate: f32, fx: &SoundFx, looping: bool) -
     data
 }
 
+/// Fondu minimal aux bords d'un son, contre les clics.
+pub const DECLICK_MS: f32 = 5.0;
+
 fn fades(data: &mut [f32], ch: usize, rate: f32, fx: &SoundFx) {
     let frames = data.len() / ch;
-    let fin = ((fx.fade_in_ms as f32 * rate / 1000.0) as usize).min(frames);
-    let fout = ((fx.fade_out_ms as f32 * rate / 1000.0) as usize).min(frames);
+    // Au moins 5 ms à chaque bord : une coupe au milieu d'une onde ne
+    // claque plus (« clic » de découpe), sans que le fondu s'entende.
+    let declick = (DECLICK_MS * rate / 1000.0) as usize;
+    let fin = ((fx.fade_in_ms as f32 * rate / 1000.0) as usize).max(declick).min(frames / 2);
+    let fout = ((fx.fade_out_ms as f32 * rate / 1000.0) as usize).max(declick).min(frames / 2);
     for i in 0..fin {
         let g = (i as f32 / fin as f32).powi(2);
         data[i * ch..(i + 1) * ch].iter_mut().for_each(|s| *s *= g);
@@ -398,7 +404,10 @@ mod tests {
         let fx = SoundFx { speed: 2.0, reverse: true, ..Default::default() };
         let r = render(SamplesBuffer::new(1, rate, ramp), 0, None, &fx, false);
         assert_eq!(r.rate, rate * 2);
-        assert!(r.data[0] > 0.99 && *r.data.last().unwrap() < 0.01);
+        // Après le fondu anti-clic de 5 ms, le son commence par la fin de la rampe.
+        let after_declick = (r.rate as f32 * 0.006) as usize;
+        assert!(r.data[after_declick] > 0.98 && *r.data.last().unwrap() < 0.01);
+        assert_eq!(r.data[0], 0.0, "le premier échantillon est fondu");
         assert_eq!(fx.output_ms(1000, false), 500);
     }
 

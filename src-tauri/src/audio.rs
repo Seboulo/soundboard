@@ -55,6 +55,8 @@ pub struct PlayRequest {
 
 /// Durée des fondus des sons en boucle.
 const FADE: Duration = Duration::from_millis(400);
+/// Fondu quand on coupe un son qui n'est pas en boucle (anti-clic).
+const STOP_FADE: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -218,7 +220,7 @@ fn wait<T>(rx: Receiver<Result<T, String>>) -> Result<T, String> {
         .unwrap_or_else(|_| Err("le moteur audio ne répond pas".into()))
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DeviceList {
     pub outputs: Vec<String>,
     pub inputs: Vec<String>,
@@ -331,13 +333,15 @@ struct Playing {
     keep_playing: bool,
     /// Volume visé par les fondus (bits d'un f32), partagé avec les sources.
     fade_target: Option<Arc<AtomicU32>>,
+    /// Durée du fondu d'arrêt.
+    fade: Duration,
     /// Arrêt en fondu en cours depuis cet instant.
     stopping: Option<Instant>,
 }
 
 impl Playing {
     fn is_finished(&self) -> bool {
-        self.voices.iter().all(Voice::is_done) || self.stopping.is_some_and(|t| t.elapsed() > FADE + Duration::from_millis(50))
+        self.voices.iter().all(Voice::is_done) || self.stopping.is_some_and(|t| t.elapsed() > self.fade + Duration::from_millis(50))
     }
 }
 
@@ -425,9 +429,9 @@ impl Engine {
         match find_output(self.settings.monitor_device.as_deref()) {
             Some(dev) => match Output::open(&dev) {
                 Ok(o) => self.monitor = Some(o),
-                Err(e) => errors.push(format!("casque : {e}")),
+                Err(e) => errors.push(format!("le casque ne s'ouvre pas ({e}).")),
             },
-            None => errors.push("casque introuvable".into()),
+            None => errors.push("casque introuvable : il est peut-être débranché. Rebranche-le, le son reprendra tout seul.".into()),
         }
 
         // Sans câble virtuel choisi, on ne joue que dans le casque : jouer deux
@@ -436,22 +440,22 @@ impl Engine {
             match find_output(Some(&name)) {
                 Some(dev) => match Output::open(&dev) {
                     Ok(o) => self.virt = Some(o),
-                    Err(e) => errors.push(format!("câble virtuel : {e}")),
+                    Err(e) => errors.push(format!("le câble virtuel ne s'ouvre pas ({e}).")),
                 },
-                None => errors.push(format!("câble virtuel « {name} » introuvable")),
+                None => errors.push(format!("câble virtuel « {name} » introuvable : Discord n'entend plus les sons. Réinstalle VB-Cable ou choisis un autre câble.")),
             }
         }
 
         if self.settings.mic_enabled && self.virt.is_some() {
             if let Err(e) = self.start_mic() {
-                errors.push(format!("micro : {e}"));
+                errors.push(format!("micro : {e}. Rebranche-le ou choisis-en un autre, ta voix reprendra toute seule."));
             }
         }
 
         if errors.is_empty() {
             Ok(())
         } else {
-            Err(errors.join(" ; "))
+            Err(errors.join("\n"))
         }
     }
 
@@ -538,7 +542,7 @@ impl Engine {
 
     fn start_mic(&mut self) -> Result<(), String> {
         let virt = self.virt.as_ref().ok_or("pas de câble virtuel")?;
-        let device = find_input(self.settings.mic_device.as_deref()).ok_or("micro introuvable")?;
+        let device = find_input(self.settings.mic_device.as_deref()).ok_or("introuvable")?;
         if device.name().is_ok_and(|n| n.contains(VB_CABLE_CAPTURE)) {
             // Le câble renverrait dans lui-même : larsen garanti.
             return Err("le micro choisi est le câble virtuel, choisis ton vrai micro".into());
@@ -722,17 +726,17 @@ impl Engine {
         let mut targets = Vec::new();
         // Pendant l'écoute du câble, le son arrive déjà au casque par là.
         if self.cable_voice.is_none() || monitor_only {
-            targets.push((&self.monitor, self.settings.monitor_volume));
+            targets.push((&self.monitor, self.settings.monitor_volume, false));
         }
         if !monitor_only {
-            targets.push((&self.virt, self.settings.master_volume));
+            targets.push((&self.virt, self.settings.master_volume, true));
         }
-        // Les sons en boucle démarrent et s'arrêtent en douceur.
-        let fade_target = req
-            .looping
-            .then(|| Arc::new(AtomicU32::new(1.0f32.to_bits())));
+        // Les sons en boucle démarrent et s'arrêtent en douceur ; les autres
+        // ont un fondu très court, pour ne pas claquer quand on les coupe.
+        let fade = if req.looping { FADE } else { STOP_FADE };
+        let fade_target = Some(Arc::new(AtomicU32::new(1.0f32.to_bits())));
         let mut voices = Vec::new();
-        for (output, out_volume) in targets {
+        for (output, out_volume, to_discord) in targets {
             let Some(output) = output else { continue };
             let source = match &rendered {
                 Some(r) => Box::new(Resample::new(
@@ -742,9 +746,13 @@ impl Engine {
                 None => open_source(&req, output.rate())?,
             };
             let source: Box<dyn Source<Item = f32> + Send> = match &fade_target {
-                Some(target) => Box::new(Fader::new(source, target.clone())),
+                Some(target) => Box::new(Fader::new(source, target.clone(), fade)),
                 None => source,
             };
+            // Discord envoie le micro en mono : on replie le son nous-mêmes,
+            // sans laisser les passages en opposition de phase s'annuler.
+            let source: Box<dyn Source<Item = f32> + Send> =
+                if to_discord && source.channels() == 2 { Box::new(MonoSafe::new(source)) } else { source };
             voices.push(output.bus.add(source, out_volume));
         }
         if voices.is_empty() {
@@ -758,6 +766,7 @@ impl Engine {
             looping: req.looping,
             keep_playing: req.keep_playing,
             fade_target,
+            fade,
             stopping: None,
         });
         Ok(())
@@ -830,7 +839,9 @@ fn open_source(req: &PlayRequest, rate: u32) -> Result<Box<dyn Source<Item = f32
     };
     let mut decoder = decoder;
     decoder.seek_ms(req.start_ms);
-    let source = Leveler::new(decoder.take_duration(length), req.gain);
+    // Fondu de 5 ms à la fin du passage : une découpe ne claque plus.
+    let frames = req.duration_ms.map(|ms| ms * decoder.sample_rate() as u64 / 1000);
+    let source = Leveler::new(EndFade::new(decoder.take_duration(length), frames), req.gain);
     if req.looping {
         // Gardé en mémoire pour pouvoir le rejouer sans relire le fichier.
         Ok(Box::new(Resample::new(source.buffered().repeat_infinite(), rate)))
@@ -1103,6 +1114,122 @@ impl<S: Source<Item = f32>> Source for Resample<S> {
 }
 
 /// Applique un fondu qui suit `target` (0 à 1), échantillon par échantillon.
+/// Repli stéréo → mono qui résiste aux opposition de phase.
+///
+/// Un mélange (G + D) / 2 efface ce qui est en opposition de phase entre
+/// les deux canaux (basses « élargies », certaines réverbs, vieux memes mal
+/// mixés) : le son devient creux ou disparaît chez les autres. Ici, quand
+/// la différence G − D porte nettement plus d'énergie que la somme, on
+/// bascule en douceur vers la différence. Les deux canaux de sortie
+/// reçoivent le même signal.
+struct MonoSafe<S> {
+    inner: S,
+    pending: Option<f32>,
+    sum_energy: f32,
+    diff_energy: f32,
+    weight: f32,
+    smooth: f32,
+}
+
+impl<S: Source<Item = f32>> MonoSafe<S> {
+    fn new(inner: S) -> Self {
+        // Énergies lissées sur ~50 ms, bascule sur ~30 ms.
+        let rate = inner.sample_rate().max(1) as f32;
+        Self { inner, pending: None, sum_energy: 0.0, diff_energy: 0.0, weight: 0.0, smooth: (-1.0 / (rate * 0.05)).exp() }
+    }
+
+    /// Mélange d'une trame, et mise à jour des mesures.
+    fn fold(&mut self, l: f32, r: f32) -> f32 {
+        let (sum, diff) = ((l + r) * 0.5, (l - r) * 0.5);
+        let a = self.smooth;
+        self.sum_energy = a * self.sum_energy + (1.0 - a) * sum * sum;
+        self.diff_energy = a * self.diff_energy + (1.0 - a) * diff * diff;
+        // Opposition de phase marquée : la différence est 4× plus forte (6 dB).
+        let target = if self.diff_energy > 4.0 * self.sum_energy + 1e-9 { 1.0 } else { 0.0 };
+        self.weight += (target - self.weight) * (1.0 - a.powf(1.6));
+        sum * (1.0 - self.weight) + diff * self.weight
+    }
+}
+
+impl<S: Source<Item = f32>> Iterator for MonoSafe<S> {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        if let Some(v) = self.pending.take() {
+            return Some(v);
+        }
+        let l = self.inner.next()?;
+        let r = self.inner.next().unwrap_or(l);
+        let m = self.fold(l, r);
+        self.pending = Some(m);
+        Some(m)
+    }
+}
+
+impl<S: Source<Item = f32>> Source for MonoSafe<S> {
+    fn current_frame_len(&self) -> Option<usize> {
+        self.inner.current_frame_len()
+    }
+    fn channels(&self) -> u16 {
+        2
+    }
+    fn sample_rate(&self) -> u32 {
+        self.inner.sample_rate()
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
+    }
+}
+
+/// Petit fondu de sortie sur les dernières millisecondes d'un passage dont
+/// la longueur est connue.
+struct EndFade<S> {
+    inner: S,
+    pos: u64,
+    fade_from: u64,
+    total: u64,
+}
+
+impl<S: Source<Item = f32>> EndFade<S> {
+    fn new(inner: S, frames: Option<u64>) -> Self {
+        let ch = inner.channels().max(1) as u64;
+        let total = frames.map_or(u64::MAX, |f| f * ch);
+        let fade = (crate::sound_fx::DECLICK_MS * inner.sample_rate() as f32 / 1000.0) as u64 * ch;
+        Self { inner, pos: 0, fade_from: total.saturating_sub(fade), total }
+    }
+}
+
+impl<S: Source<Item = f32>> Iterator for EndFade<S> {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        let s = self.inner.next()?;
+        let pos = self.pos;
+        self.pos += 1;
+        if pos < self.fade_from {
+            return Some(s);
+        }
+        let left = self.total.saturating_sub(pos) as f32;
+        let span = (self.total - self.fade_from).max(1) as f32;
+        Some(s * (left / span).powi(2))
+    }
+}
+
+impl<S: Source<Item = f32>> Source for EndFade<S> {
+    fn current_frame_len(&self) -> Option<usize> {
+        self.inner.current_frame_len()
+    }
+    fn channels(&self) -> u16 {
+        self.inner.channels()
+    }
+    fn sample_rate(&self) -> u32 {
+        self.inner.sample_rate()
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
+    }
+}
+
 struct Fader<S> {
     inner: S,
     gain: f32,
@@ -1111,10 +1238,10 @@ struct Fader<S> {
 }
 
 impl<S: Source<Item = f32>> Fader<S> {
-    fn new(inner: S, target: Arc<AtomicU32>) -> Self {
+    fn new(inner: S, target: Arc<AtomicU32>, fade: Duration) -> Self {
         let per_second = inner.sample_rate() as f32 * inner.channels() as f32;
         Self {
-            step: 1.0 / (per_second * FADE.as_secs_f32()).max(1.0),
+            step: 1.0 / (per_second * fade.as_secs_f32()).max(1.0),
             inner,
             gain: 0.0,
             target,
@@ -1334,6 +1461,23 @@ impl Source for MicSource {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn mono_fold_survives_phase_inversion() {
+        let rate = 48_000;
+        let tone: Vec<f32> = (0..rate).flat_map(|i| {
+            let v = (i as f32 * 0.05).sin() * 0.5;
+            [v, -v] // canaux en opposition de phase
+        }).collect();
+        let src = rodio::buffer::SamplesBuffer::new(2, rate as u32, tone);
+        let out: Vec<f32> = MonoSafe::new(src).collect();
+        let tail = &out[out.len() / 2..];
+        let rms = (tail.iter().map(|v| v * v).sum::<f32>() / tail.len() as f32).sqrt();
+        // Un simple (G + D) / 2 donnerait du silence ; ici on garde le son.
+        assert!(rms > 0.3, "rms {rms}");
+        assert!(tail.chunks(2).all(|f| f[0] == f[1]));
+    }
+
     use super::*;
     use rodio::buffer::SamplesBuffer;
 
