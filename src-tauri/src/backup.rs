@@ -7,7 +7,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-const CONFIG_ENTRY: &str = "soundboard-sauvegarde.json";
+pub const CONFIG_ENTRY: &str = "soundboard-sauvegarde.json";
 /// Limites à la lecture, contre un .zip piégé qui remplirait le disque.
 const MAX_CONFIG: u64 = 16 * 1024 * 1024;
 const MAX_FILE: u64 = 200 * 1024 * 1024;

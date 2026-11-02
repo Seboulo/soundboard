@@ -77,13 +77,44 @@ function hotkeyFromEvent(e) {
 
 const TYPING_KEY = /^(Key|Digit)|^(Space|Enter|Backspace|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash|IntlBackslash)$/;
 
-function blocksTyping(e) {
+const TYPING_MSG = "Ajoute Ctrl ou Alt : une touche d'écriture seule serait bloquée dans toutes tes applis (pavé numérique et F1 à F12 OK).";
+const SETTING_LABELS = { stop_hotkey: "Tout arrêter", mute_hotkey: "Couper le micro", random_hotkey: "Son au hasard" };
+
+function blocksTyping(e, quiet = false) {
   if (e.ctrlKey || e.altKey || e.metaKey || !TYPING_KEY.test(e.code)) return false;
-  toast("Ajoute Ctrl ou Alt : une touche d'écriture seule serait bloquée dans toutes tes applis (pavé numérique et F1 à F12 OK)", true);
+  if (!quiet) toast(TYPING_MSG, true);
   return true;
 }
 
-function setupHotkeyInput(input) {
+/** Qui utilise déjà ce raccourci (hors `self` : { soundId } ou { setting }) ? */
+function hotkeyOwner(hk, self = {}) {
+  const sound = state.config.sounds.find((s) => s.hotkey === hk && s.id !== self.soundId);
+  if (sound) return `le son « ${sound.name} »`;
+  for (const k of Object.keys(SETTING_LABELS)) {
+    if (k === self.setting) continue;
+    // Dans les réglages ouverts, on compare à ce qui est tapé (pas encore enregistré).
+    const field = formSettings?.[k];
+    const value = field?.isConnected && dlgSettings.open ? field.dataset.hotkey : state.config.settings[k];
+    if (value === hk) return `« ${SETTING_LABELS[k]} »`;
+  }
+  return null;
+}
+
+/** Message affiché juste sous le champ du raccourci (vide = on l'enlève). */
+function hotkeyMessage(input, text) {
+  const row = input.closest("label") ?? input;
+  let msg = row.nextElementSibling?.classList.contains("hotkey-msg") ? row.nextElementSibling : null;
+  if (!text) return msg?.remove();
+  if (!msg) {
+    msg = document.createElement("p");
+    msg.className = "hotkey-msg";
+    msg.setAttribute("role", "alert");
+    row.after(msg);
+  }
+  msg.textContent = text;
+}
+
+function setupHotkeyInput(input, self = () => ({})) {
   input.addEventListener("focus", () => {
     input.classList.add("listening");
     input.placeholder = "Appuie sur une touche…";
@@ -100,6 +131,7 @@ function setupHotkeyInput(input) {
     if (noMods && (e.key === "Backspace" || e.key === "Delete")) {
       input.dataset.hotkey = "";
       input.value = "";
+      hotkeyMessage(input, "");
       return;
     }
     if (noMods && e.key === "Escape") {
@@ -107,19 +139,21 @@ function setupHotkeyInput(input) {
       return;
     }
     const hk = hotkeyFromEvent(e);
+    if (!hk) return;
     // Un raccourci global « avale » la touche dans toutes les applis : une
     // lettre seule (ou avec Maj) empêcherait d'écrire dans Discord.
-    if (hk && blocksTyping(e)) return;
-    if (hk) {
-      input.dataset.hotkey = hk;
-      input.value = hotkeyLabel(hk);
-    }
+    if (blocksTyping(e, true)) return hotkeyMessage(input, TYPING_MSG);
+    input.dataset.hotkey = hk;
+    input.value = hotkeyLabel(hk);
+    const owner = hotkeyOwner(hk, self());
+    hotkeyMessage(input, owner ? `Déjà utilisé par ${owner} : l'un des deux ne marchera pas.` : "");
   });
 }
 
 function setHotkeyInput(input, hotkey) {
   input.dataset.hotkey = hotkey ?? "";
   input.value = hotkeyLabel(hotkey);
+  hotkeyMessage(input, "");
 }
 
 function bindRangeLabels(form) {
@@ -635,7 +669,7 @@ function padElement(sound, index) {
     if (addKey?.contains(e.target)) return captureHotkey(sound, addKey);
     if (missing) return replaceSoundFile(sound);
     flash(sound.id);
-    call("play_sound", { id: sound.id }); // joue, ou arrête s'il est déjà en cours
+    playSound(sound.id); // joue, ou arrête s'il est déjà en cours
   });
   pad.addEventListener("contextmenu", (e) => {
     e.preventDefault();
@@ -667,16 +701,27 @@ function captureHotkey(sound, chip) {
     if (!hk) return; // touche de modification seule : on attend la suite
     if (blocksTyping(e)) return; // on attend une autre combinaison
     done();
-    const owner = state.config.sounds.find((s) => s.hotkey === hk && s.id !== sound.id);
-    if (owner) return toast(`${hotkeyLabel(hk)} est déjà le raccourci de « ${owner.name} »`, true);
-    if (SETTINGS_HOTKEYS.some((k) => state.config.settings[k] === hk))
-      return toast(`${hotkeyLabel(hk)} est déjà pris par un raccourci des réglages`, true);
+    const owner = hotkeyOwner(hk, { soundId: sound.id });
+    if (owner) return toast(`${hotkeyLabel(hk)} est déjà utilisé par ${owner}`, true);
     call("update_sound", { sound: { ...sound, hotkey: hk } }).then(
       (res) => res && toast(`« ${sound.name} » : ${hotkeyLabel(hk)}`),
     );
   };
   window.addEventListener("keydown", onKey, true);
   window.addEventListener("pointerdown", cancel, true);
+}
+
+/** Joue un son ; si ses effets mettent du temps à se calculer, le pad
+ *  affiche « préparation… » pour montrer que le clic a bien été pris. */
+async function playSound(id) {
+  const padOf = () => document.querySelector(`#grid .pad[data-id="${CSS.escape(id)}"]`);
+  const timer = setTimeout(() => padOf()?.classList.add("preparing"), 150);
+  try {
+    await call("play_sound", { id });
+  } finally {
+    clearTimeout(timer);
+    padOf()?.classList.remove("preparing");
+  }
 }
 
 async function replaceSoundFile(sound) {
@@ -735,7 +780,7 @@ function flash(id) {
 const dlgSound = $("#dlg-sound");
 const formSound = $("form", dlgSound);
 let editing = null;
-setupHotkeyInput(formSound.hotkey);
+setupHotkeyInput(formSound.hotkey, () => ({ soundId: editing?.id }));
 bindRangeLabels(formSound);
 enterSaves(dlgSound);
 
@@ -1068,7 +1113,7 @@ $('[data-action="delete"]', dlgSound).addEventListener("click", () => {
 
 async function deleteSound(sound) {
   const res = await call("remove_sound", { id: sound.id });
-  if (res) toast(`« ${sound.name} » supprimé`, false, { label: "Annuler", run: () => call("restore_sound") });
+  if (res) toast(`« ${sound.name} » supprimé`, false, { label: "Annuler", run: () => call("restore_sound", { id: sound.id }) });
 }
 
 // ---------- Effets du son ----------
@@ -1215,7 +1260,7 @@ dlgSound.addEventListener("keydown", (e) => {
 const dlgSettings = $("#dlg-settings");
 const formSettings = $("form", dlgSettings);
 const SETTINGS_HOTKEYS = ["stop_hotkey", "mute_hotkey", "random_hotkey"];
-for (const k of SETTINGS_HOTKEYS) setupHotkeyInput(formSettings[k]);
+for (const k of SETTINGS_HOTKEYS) setupHotkeyInput(formSettings[k], () => ({ setting: k }));
 bindRangeLabels(formSettings);
 enterSaves(dlgSettings);
 
@@ -1575,13 +1620,15 @@ $('[data-action="backup-export"]', dlgSettings).addEventListener("click", async 
   if (n != null) toast(`Sauvegarde enregistrée (${n} son${n > 1 ? "s" : ""})`);
 });
 $('[data-action="backup-import"]', dlgSettings).addEventListener("click", async () => {
-  if (!confirm("Remplacer ta soundboard actuelle par celle de la sauvegarde ?\nPense à sauvegarder l'actuelle avant si tu veux la garder.")) return;
-  const res = await call("import_backup");
-  if (res) {
-    dlgSettings.close();
-    toast(`Sauvegarde restaurée (${res.config.sounds.length} sons)`);
-  }
+  if (await restoreBackup()) dlgSettings.close();
 });
+
+async function restoreBackup(path) {
+  if (!confirm("Remplacer ta soundboard actuelle par celle de la sauvegarde ?\nPense à sauvegarder l'actuelle avant si tu veux la garder.")) return false;
+  const res = await call("import_backup", { path });
+  if (res) toast(`Sauvegarde restaurée (${res.config.sounds.length} sons)`);
+  return !!res;
+}
 
 // ---------- Clavier ----------
 
@@ -1995,13 +2042,15 @@ $("#btn-export").addEventListener("click", async () => {
   if (n) toast(n > 1 ? `Pack enregistré (${n} sons)` : "Pack enregistré (1 son)");
 });
 
-$("#btn-import").addEventListener("click", async () => {
-  const res = await call("import_pack");
+$("#btn-import").addEventListener("click", () => importPack());
+
+async function importPack(path) {
+  const res = await call("import_pack", { path });
   if (!res) return;
   render(res.snapshot);
   if (res.errors.length) toast(`${res.added} son(s) ajouté(s). Problèmes :\n${res.errors.join("\n")}`, true);
   else toast(res.added > 1 ? `${res.added} sons ajoutés` : `${res.added} son ajouté`);
-});
+}
 
 // ---------- Taille des pads ----------
 
@@ -2153,7 +2202,16 @@ listen("tauri://drag-enter", () => (overlay.hidden = false));
 listen("tauri://drag-leave", () => (overlay.hidden = true));
 listen("tauri://drag-drop", async (event) => {
   overlay.hidden = true;
-  const paths = event.payload?.paths ?? [];
+  const all = event.payload?.paths ?? [];
+  // Un .zip glissé : pack de sons ou sauvegarde complète, reconnu tout seul.
+  const zips = all.filter((p) => /\.zip$/i.test(p));
+  const paths = all.filter((p) => !/\.zip$/i.test(p));
+  for (const zip of zips) {
+    const kind = await invoke("zip_kind", { path: zip });
+    if (kind === "pack") await importPack(zip);
+    else if (kind === "backup") await restoreBackup(zip);
+    else toast("Ce .zip n'est ni un pack de sons ni une sauvegarde de la soundboard", true);
+  }
   if (paths.length === 0) return;
   const res = await call("add_sounds", { paths });
   if (res) toast(paths.length > 1 ? `${paths.length} sons ajoutés` : "Son ajouté");

@@ -764,9 +764,14 @@ fn remove_sound(app: AppHandle, state: State<AppState>, id: String) -> Result<Sn
 
 /// Remet le dernier son supprimé à sa place (bouton « Annuler »).
 #[tauri::command]
-fn restore_sound(app: AppHandle, state: State<AppState>) -> Result<Snapshot, String> {
-    let Some((mut sound, pos)) = state.trash.lock().unwrap().take() else {
-        return Err("Rien à restaurer".into());
+fn restore_sound(app: AppHandle, state: State<AppState>, id: Option<String>) -> Result<Snapshot, String> {
+    let (mut sound, pos) = {
+        let mut trash = state.trash.lock().unwrap();
+        // Le bouton « Annuler » d'un son ne doit jamais en ramener un autre.
+        if id.is_some() && trash.as_ref().map(|(s, _)| &s.id) != id.as_ref() {
+            return Err("Ce son ne peut plus être restauré : seule la dernière suppression s'annule".into());
+        }
+        trash.take().ok_or("Rien à restaurer")?
     };
     let trash = trash_dir(&state);
     let back = |path: &mut PathBuf, home: PathBuf| {
@@ -1901,14 +1906,15 @@ struct ImportResult {
 }
 
 #[tauri::command]
-async fn import_pack(app: AppHandle) -> Result<Option<ImportResult>, String> {
-    let Some(src) = app
+async fn import_pack(app: AppHandle, path: Option<String>) -> Result<Option<ImportResult>, String> {
+    // `path` : fichier glissé sur la fenêtre ; sinon on demande lequel.
+    let Some(src) = path.map(PathBuf::from).or_else(|| app
         .dialog()
         .file()
         .set_title("Importer un pack de sons")
         .add_filter("Pack de sons", &["zip"])
         .blocking_pick_file()
-        .and_then(|f| f.into_path().ok())
+        .and_then(|f| f.into_path().ok()))
     else {
         return Ok(None);
     };
@@ -1955,14 +1961,14 @@ async fn export_backup(app: AppHandle) -> Result<Option<usize>, String> {
 
 /// Remplace la soundboard actuelle par une sauvegarde.
 #[tauri::command]
-async fn import_backup(app: AppHandle) -> Result<Option<Snapshot>, String> {
-    let Some(src) = app
+async fn import_backup(app: AppHandle, path: Option<String>) -> Result<Option<Snapshot>, String> {
+    let Some(src) = path.map(PathBuf::from).or_else(|| app
         .dialog()
         .file()
         .set_title("Restaurer une sauvegarde")
         .add_filter("Sauvegarde", &["zip"])
         .blocking_pick_file()
-        .and_then(|f| f.into_path().ok())
+        .and_then(|f| f.into_path().ok()))
     else {
         return Ok(None);
     };
@@ -1988,6 +1994,21 @@ async fn import_backup(app: AppHandle) -> Result<Option<Snapshot>, String> {
     apply_phone(&app);
     measure_segments(app.clone());
     Ok(Some(state.snapshot()))
+}
+
+/// Nature d'un .zip glissé sur la fenêtre : « pack », « backup » ou rien.
+#[tauri::command]
+fn zip_kind(path: String) -> Option<&'static str> {
+    let file = fs::File::open(path).ok()?;
+    let zip = zip::ZipArchive::new(file).ok()?;
+    let has = |name: &str| zip.file_names().any(|n| n == name);
+    if has(backup::CONFIG_ENTRY) {
+        Some("backup")
+    } else if has("pack.json") {
+        Some("pack")
+    } else {
+        None
+    }
 }
 
 #[tauri::command]
@@ -2150,6 +2171,7 @@ pub fn run() {
             restore_sound,
             export_backup,
             import_backup,
+            zip_kind,
             replace_sound_file,
             log_ui,
             set_zoom,
