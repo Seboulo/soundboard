@@ -39,9 +39,25 @@ const HOLD_FRAMES: u32 = 50;
 /// En dessous de -55 dBFS, le micro ne capte rien d'assez fort pour ouvrir
 /// la porte, même si ça ressemble à de la voix.
 const OPEN_FLOOR: f32 = 0.0018;
-/// Réduction maximale de DeepFilterNet. Plus fort, il mange les fins de mots
-/// et les syllabes douces (micro-coupures) ; 30 dB suffisent avec la porte.
+/// Réduction maximale de DeepFilterNet, en attendant de connaître le bruit
+/// de la pièce. Plus fort, il mange les fins de mots et les syllabes douces.
 const DF_ATTEN_LIMIT_DB: f32 = 30.0;
+/// Ensuite, la réduction suit le bruit de fond : juste assez pour le
+/// ramener vers -85 dBFS. Dans une pièce calme, moins de réduction = voix
+/// plus naturelle ; dans une pièce bruyante, on va jusqu'à 35 dB.
+const DF_ATTEN_MIN_DB: f32 = 20.0;
+const DF_ATTEN_MAX_DB: f32 = 35.0;
+const DF_RESIDUAL_DB: f32 = -85.0;
+/// Post-filtre de DeepFilterNet (valeur conseillée par ses auteurs) : il
+/// baisse encore le petit bruit qui reste entre les syllabes, sans dépasser
+/// la réduction maximale.
+const DF_POST_FILTER: f32 = 0.02;
+/// DeepFilterNet rend le son avec trois trames (30 ms) de retard.
+const DF_LAG_FRAMES: usize = 3;
+/// Rapport voix/bruit estimé par DeepFilterNet (dB) au-dessus duquel la
+/// porte reste ouverte : l'IA reconnaît la voix dans le bruit bien mieux que
+/// le détecteur de RNNoise.
+const DF_KEEP_LSNR_DB: f32 = 6.0;
 /// Par défaut, DeepFilterNet saute une partie du calcul selon le rapport
 /// voix/bruit de chaque trame de 10 ms : rien au-dessus de 30 dB, pas de
 /// 2ᵉ étage au-dessus de 20 dB, silence total en dessous de -10 dB. Sur une
@@ -154,6 +170,13 @@ pub struct MicProcessor {
     /// Trame d'entrée précédente : RNNoise rend le son avec une trame de
     /// retard, c'est elle qu'on mélange à sa sortie.
     prev_in: Vec<f32>,
+    /// Trames d'entrée récentes, au retard de DeepFilterNet : si l'IA rate
+    /// une trame, on rend le son d'origine au bon moment (pas de saut).
+    dry_hist: VecDeque<Vec<f32>>,
+    /// Réduction actuelle de DeepFilterNet (dB) et dernier rapport voix/bruit.
+    atten_db: f32,
+    lsnr: f32,
+    frames: u32,
     deep_in: Vec<f32>,
     deep_out: Vec<f32>,
     /// Trames en attente : la porte décide sur le son qui entre et
@@ -305,6 +328,7 @@ fn load_deep_filter() -> Option<Box<DeepFilter>> {
     let (min, erb, df) = DF_THRESHOLDS;
     let params = RuntimeParams::default_with_ch(1)
         .with_atten_lim(DF_ATTEN_LIMIT_DB)
+        .with_post_filter(DF_POST_FILTER)
         .with_thresholds(min, erb, df);
     match DfTract::new(DfParams::default(), &params) {
         Ok(df) if df.hop_size == FRAME && df.sr == RATE as usize => Some(Box::new(DeepFilter(df))),
@@ -358,6 +382,10 @@ impl MicProcessor {
             frame_in: Vec::with_capacity(FRAME),
             frame_out: vec![0.0; FRAME],
             prev_in: vec![0.0; FRAME],
+            dry_hist: VecDeque::with_capacity(DF_LAG_FRAMES + 1),
+            atten_db: DF_ATTEN_LIMIT_DB,
+            lsnr: -15.0,
+            frames: 0,
             deep_in: vec![0.0; FRAME],
             deep_out: vec![0.0; FRAME],
             delay: VecDeque::with_capacity(delay_frames + 1),
@@ -456,9 +484,17 @@ impl MicProcessor {
             }
             let noisy = ArrayView2::from_shape((1, FRAME), &self.deep_in).expect("trame");
             let enhanced = ArrayViewMut2::from_shape((1, FRAME), &mut self.deep_out).expect("trame");
+            self.dry_hist.push_back(self.frame_in.clone());
+            let dry = if self.dry_hist.len() > DF_LAG_FRAMES { self.dry_hist.pop_front() } else { None };
             match df.0.process(noisy, enhanced) {
-                Ok(_) => self.deep_out.iter().map(|s| s * 32768.0).collect(),
-                Err(_) => self.frame_out.clone(),
+                Ok(lsnr) => {
+                    self.lsnr = lsnr;
+                    self.deep_out.iter().map(|s| s * 32768.0).collect()
+                }
+                Err(_) => {
+                    self.lsnr = -15.0;
+                    dry.unwrap_or_else(|| vec![0.0; FRAME])
+                }
             }
         } else {
             self.frame_out
@@ -468,17 +504,36 @@ impl MicProcessor {
                 .collect()
         };
         self.prev_in.copy_from_slice(&self.frame_in);
+        if !(self.filters.gate && self.filters.gate_auto) {
+            // La porte automatique suit déjà le bruit de fond ; sinon on le
+            // suit ici, pour régler la réduction.
+            self.track_floor(voice, 20.0 * input_rms.max(1e-6).log10());
+        }
+        self.frames = self.frames.wrapping_add(1);
+        if self.frames.is_multiple_of(50) && !self.floor_db.is_nan() {
+            if let Some(df) = self.deep.as_mut() {
+                // Le souffle anti-trous (-64 dBFS) compte comme du bruit.
+                let wanted = (self.floor_db.max(-64.0) - DF_RESIDUAL_DB)
+                    .clamp(DF_ATTEN_MIN_DB, DF_ATTEN_MAX_DB)
+                    .round();
+                if (wanted - self.atten_db).abs() >= 1.0 {
+                    self.atten_db = wanted;
+                    df.0.set_atten_lim(wanted);
+                }
+            }
+        }
+        let ai_voice = self.deep.is_some() && self.filters.denoise && self.lsnr >= DF_KEEP_LSNR_DB;
 
         let target = if !self.filters.gate {
             1.0
         } else {
             let open = if self.filters.gate_auto {
-                self.auto_gate(voice, input_rms)
+                self.auto_gate(voice, input_rms) || (self.hold > 0 && ai_voice)
             } else {
                 let threshold = self.filters.gate_threshold;
                 let opening = self.hold == 0;
                 (opening && voice >= threshold && input_rms >= OPEN_FLOOR)
-                    || (!opening && voice >= threshold * 0.5)
+                    || (!opening && (voice >= threshold * 0.5 || ai_voice))
             };
             if open {
                 self.hold = HOLD_FRAMES;
@@ -582,6 +637,16 @@ impl MicProcessor {
         } else {
             (above >= AUTO_KEEP_DB && voice >= 0.1) || voice >= 0.5
         };
+        self.track_floor(voice, db);
+        open
+    }
+
+    /// Bruit de fond de la pièce : descend vite sur les silences, remonte
+    /// lentement, bouge à peine pendant que tu parles.
+    fn track_floor(&mut self, voice: f32, db: f32) {
+        if self.floor_db.is_nan() {
+            self.floor_db = db;
+        }
         let rate = if db < self.floor_db {
             0.1
         } else if voice >= 0.5 {
@@ -592,7 +657,6 @@ impl MicProcessor {
             0.003
         };
         self.floor_db = (self.floor_db + (db - self.floor_db) * rate).clamp(-90.0, -20.0);
-        open
     }
 }
 
@@ -980,6 +1044,21 @@ mod tests {
             longest = longest.max(run_len);
         }
         assert!(longest < 48, "trou de {longest} échantillons");
+    }
+
+    #[test]
+    fn deep_filter_reduction_follows_room_noise() {
+        let filters = MicFilters { denoise: true, strong: true, ..OFF };
+        let atten = |amp: f32| {
+            let mut p = MicProcessor::new(1, 48_000, filters, VoiceEffect::None, Default::default());
+            let mut out = Vec::new();
+            p.process(noise(48_000 * 3, amp).into_iter(), &mut out);
+            p.atten_db
+        };
+        // Micro muet (déjà filtré) : le souffle anti-trous suffit, 21 dB.
+        assert_eq!(atten(0.0), 21.0);
+        // Pièce bruyante (-45 dBFS) : réduction maximale.
+        assert_eq!(atten(0.01), DF_ATTEN_MAX_DB);
     }
 
     #[test]
