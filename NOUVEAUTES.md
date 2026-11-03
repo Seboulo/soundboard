@@ -1,6 +1,16 @@
 Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
 Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
+Nouveautés de la 1.5 :
+- Voix plus naturelle : l'antibruit IA s'adapte au bruit de ta pièce (moins fort au calme, plus fort dans le bruit) et nettoie mieux le petit souffle entre les syllabes.
+- Moins de mots coupés : l'IA aide la porte à rester ouverte tant que tu parles, même doucement dans le bruit.
+- Plus de souffle qui monte dans les pauses : entre deux phrases, le son baisse en douceur.
+- Traitement de la voix remis dans le bon ordre, comme en studio : volume auto, égaliseur, compresseur et dé-esseur ne se gênent plus entre eux.
+- Réduction de bruit légère plus douce : fini l'effet « voix sous l'eau ».
+- Sons : un meme mono et un meme stéréo sortent au même volume chez tes potes (tes sons sont remesurés une fois au lancement). Le curseur de volume d'un son agit vraiment jusqu'à 200 %, et les 3 réglages de volume ressenti sonnent pareil, juste plus ou moins fort.
+- Test de voix : repère les micros qui coupent les aigus (casque Bluetooth en « mains libres ») et ne remonte plus du souffle avec l'égaliseur sur mesure.
+- Assistant Discord : nouveaux conseils pour que Discord et Windows ne baissent plus les sons de l'app pendant un appel (Atténuation à 0 %, onglet Communications de Windows sur « Ne rien faire »), et pour garder l'annulation d'écho si tu joues sur enceintes.
+
 Nouveautés de la 1.4 :
 - Éditeur de son : change la vitesse, rends la voix aiguë ou grave, ajoute de l'écho, un effet radio ou « derrière un mur », joue le son à l'envers, avec des préréglages en un clic. Le fichier d'origine n'est jamais modifié, et tu peux annuler / rétablir (Ctrl+Z / Ctrl+Y).
 - Plus fiable : tes réglages sont sauvegardés et réparés tout seuls s'ils s'abîment, « Annuler » après la suppression d'un son, le casque et le micro se reconnectent tout seuls, et un bandeau t'explique les problèmes avec un bouton pour les régler.
