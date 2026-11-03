@@ -571,9 +571,10 @@ impl MicProcessor {
         self.meter.open.store(target > 0.0, Ordering::Relaxed);
 
         // Pauses : la voix qui entre (en avance) et celle qui sort sont
-        // toutes deux absentes depuis 100 ms.
+        // toutes deux absentes depuis 100 ms, et l'IA n'entend pas de voix
+        // non plus (une voix douce dans le bruit ne doit pas baisser).
         let pause = self.filters.level && self.filters.gate;
-        if pause && voice.max(voice_out) < PAUSE_VOICE {
+        if pause && voice.max(voice_out) < PAUSE_VOICE && !ai_voice {
             self.quiet_frames = self.quiet_frames.saturating_add(1);
         } else {
             self.quiet_frames = 0;
