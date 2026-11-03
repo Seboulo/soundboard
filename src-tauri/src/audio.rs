@@ -40,8 +40,12 @@ type PlayReply = Sender<Result<PlayOutcome, String>>;
 pub struct PlayRequest {
     pub id: String,
     pub path: PathBuf,
-    /// Volume du son × égalisation.
+    /// Gain de l'égalisation (volume ressenti commun).
     pub gain: f32,
+    /// Curseur de volume du son (0–2), appliqué après le compresseur.
+    pub volume: f32,
+    /// Volume ressenti visé (LUFS) : le compresseur et le limiteur s'y calent.
+    pub target_lufs: f32,
     pub start_ms: u64,
     pub end_ms: Option<u64>,
     /// Durée jouée, pour la barre de progression.
@@ -740,7 +744,7 @@ impl Engine {
             let Some(output) = output else { continue };
             let source = match &rendered {
                 Some(r) => Box::new(Resample::new(
-                    Leveler::new(RenderedSource::new(r.clone(), req.looping), req.gain),
+                    Leveler::new(RenderedSource::new(r.clone(), req.looping), Levels::of(&req)),
                     output.rate(),
                 )),
                 None => open_source(&req, output.rate())?,
@@ -841,7 +845,7 @@ fn open_source(req: &PlayRequest, rate: u32) -> Result<Box<dyn Source<Item = f32
     decoder.seek_ms(req.start_ms);
     // Fondu de 5 ms à la fin du passage : une découpe ne claque plus.
     let frames = req.duration_ms.map(|ms| ms * decoder.sample_rate() as u64 / 1000);
-    let source = Leveler::new(EndFade::new(decoder.take_duration(length), frames), req.gain);
+    let source = Leveler::new(EndFade::new(decoder.take_duration(length), frames), Levels::of(req));
     if req.looping {
         // Gardé en mémoire pour pouvoir le rejouer sans relire le fichier.
         Ok(Box::new(Resample::new(source.buffered().repeat_infinite(), rate)))
@@ -853,14 +857,20 @@ fn open_source(req: &PlayRequest, rate: u32) -> Result<Box<dyn Source<Item = f32
 /// Applique le gain du son puis aplatit ce qui dépasse encore.
 ///
 /// L'égalisation règle un seul gain par son ; ici, un compresseur doux
-/// (3:1 au-dessus de -18 dBFS) calme les cris au milieu d'un son, et un
-/// limiteur à anticipation (2 ms) empêche tout pic de dépasser -5 dBFS sans
-/// déformer l'onde. Tout est en flottant : un MP3 dont les crêtes dépassent
+/// (3:1, 10 dB au-dessus du volume visé : -18 dBFS pour -28 LUFS) calme les
+/// cris au milieu d'un son. Puis vient le curseur de volume du son, que le
+/// compresseur ne reprend donc plus, et un limiteur à anticipation (2 ms)
+/// qui empêche tout pic de dépasser 23 dB au-dessus du volume visé (-5 dBFS
+/// pour -28 LUFS ; plus haut si le curseur dépasse 100 %, jamais au-delà
+/// de -1 dBFS) sans déformer l'onde. Les trois réglages de volume ressenti
+/// sonnent ainsi pareil, juste plus ou moins fort. Tout est en flottant : un MP3 dont les crêtes dépassent
 /// 0 dBFS n'est plus écrêté au décodage.
 struct Leveler<S> {
     inner: S,
     channels: usize,
     gain: f32,
+    volume: f32,
+    threshold: f32,
     /// Enveloppe des pics (suit vite la montée, redescend en 50 ms).
     env: f32,
     /// Réduction du compresseur, lissée (attaque 2 ms, relâche 200 ms).
@@ -878,12 +888,37 @@ struct Leveler<S> {
     skip: usize,
 }
 
-const COMP_THRESHOLD: f32 = 0.126;
+const COMP_ABOVE_TARGET_DB: f32 = 10.0;
 const COMP_RATIO: f32 = 3.0;
-const LIMIT_CEILING: f32 = 0.56;
+const LIMIT_ABOVE_TARGET_DB: f32 = 23.0;
+/// Plafond absolu des sons : -1 dBFS.
+const LIMIT_MAX: f32 = 0.891;
+
+/// Réglages de niveau d'un son joué.
+#[derive(Clone, Copy)]
+struct Levels {
+    gain: f32,
+    volume: f32,
+    target_lufs: f32,
+}
+
+impl Levels {
+    fn of(req: &PlayRequest) -> Self {
+        Self { gain: req.gain, volume: req.volume.max(0.0), target_lufs: req.target_lufs.clamp(-40.0, -14.0) }
+    }
+
+    fn threshold(&self) -> f32 {
+        10f32.powf((self.target_lufs + COMP_ABOVE_TARGET_DB) / 20.0)
+    }
+
+    fn ceiling(&self) -> f32 {
+        let base = 10f32.powf((self.target_lufs + LIMIT_ABOVE_TARGET_DB) / 20.0);
+        (base * self.volume.max(1.0)).min(LIMIT_MAX)
+    }
+}
 
 impl<S: Source<Item = f32>> Leveler<S> {
-    fn new(inner: S, gain: f32) -> Self {
+    fn new(inner: S, levels: Levels) -> Self {
         let channels = inner.channels().max(1) as usize;
         let rate = inner.sample_rate().max(1) as f32;
         // Le compresseur avance par échantillon (canaux entrelacés), le
@@ -891,11 +926,13 @@ impl<S: Source<Item = f32>> Leveler<S> {
         let per_second = rate * channels as f32;
         let coef = |seconds: f32| (-1.0 / (per_second * seconds)).exp();
         let lookahead = (rate * 0.002).round() as usize;
-        let limiter = LookaheadLimiter::new(channels, lookahead, LIMIT_CEILING, (-1.0 / (rate * 0.08)).exp());
+        let limiter = LookaheadLimiter::new(channels, lookahead, levels.ceiling(), (-1.0 / (rate * 0.08)).exp());
         Self {
             inner,
             channels,
-            gain,
+            gain: levels.gain,
+            volume: levels.volume,
+            threshold: levels.threshold(),
             env: 0.0,
             reduce: 1.0,
             env_release: coef(0.05),
@@ -913,14 +950,14 @@ impl<S: Source<Item = f32>> Leveler<S> {
         let x = x * self.gain;
         let level = x.abs();
         self.env = if level > self.env { level } else { level + (self.env - level) * self.env_release };
-        let wanted = if self.env > COMP_THRESHOLD {
-            (self.env / COMP_THRESHOLD).powf(1.0 / COMP_RATIO - 1.0)
+        let wanted = if self.env > self.threshold {
+            (self.env / self.threshold).powf(1.0 / COMP_RATIO - 1.0)
         } else {
             1.0
         };
         let coef = if wanted < self.reduce { self.attack } else { self.release };
         self.reduce = wanted + (self.reduce - wanted) * coef;
-        x * self.reduce
+        x * self.reduce * self.volume
     }
 
     /// Trame suivante, passée par le compresseur puis le limiteur.
@@ -1491,11 +1528,28 @@ mod tests {
             [v, -v]
         }).collect();
         let len = data.len();
-        let out: Vec<f32> = Leveler::new(SamplesBuffer::new(2, 44_100, data), 1.0).collect();
+        let levels = Levels { gain: 1.0, volume: 1.0, target_lufs: -28.0 };
+        let ceiling = levels.ceiling();
+        assert!((ceiling - 0.56).abs() < 0.01);
+        let out: Vec<f32> = Leveler::new(SamplesBuffer::new(2, 44_100, data), levels).collect();
         assert_eq!(out.len(), len);
         let peak = out.iter().fold(0.0f32, |m, v| m.max(v.abs()));
-        assert!(peak <= LIMIT_CEILING + 1e-4, "peak {peak}");
-        assert!(peak > LIMIT_CEILING * 0.9);
+        assert!(peak <= ceiling + 1e-4, "peak {peak}");
+        assert!(peak > ceiling * 0.9);
+    }
+
+    #[test]
+    fn volume_slider_is_not_eaten_by_the_compressor() {
+        // Un son déjà au-dessus du seuil du compresseur : 200 % doit donner
+        // vraiment +6 dB (avant : à peine +2 dB).
+        let tone = |volume: f32| {
+            let data: Vec<f32> = (0..44_100).map(|i| (i as f32 * 0.05).sin() * 0.2).collect();
+            let levels = Levels { gain: 1.0, volume, target_lufs: -28.0 };
+            let out: Vec<f32> = Leveler::new(SamplesBuffer::new(1, 44_100, data), levels).collect();
+            (out[22_050..].iter().map(|v| v * v).sum::<f32>() / 22_050.0).sqrt()
+        };
+        let db = 20.0 * (tone(2.0) / tone(1.0)).log10();
+        assert!((db - 6.0).abs() < 0.5, "{db}");
     }
 
     #[test]

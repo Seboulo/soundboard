@@ -58,6 +58,11 @@ const DF_THRESHOLDS: (f32, f32, f32) = (-100.0, 100.0, 100.0);
 /// Un souffle imperceptible (-64 dBFS, que DeepFilterNet retire ensuite de
 /// 30 dB) le garde toujours au travail.
 const DF_DITHER: f32 = 0.0011;
+/// RNNoise n'a pas de limite : il peut retirer 60 dB et plus, ce qui donne
+/// le son « sous l'eau » sur les fins de mots. On remet donc une part du son
+/// d'origine, comme DeepFilterNet : au plus 30 dB de réduction (la porte
+/// s'occupe des silences).
+const RNN_DRY: f32 = 0.0316;
 /// Détection automatique : plus RNNoise est sûr que c'est de la voix, moins
 /// elle a besoin de dépasser le bruit de fond. Une voix douce dans une pièce
 /// bruyante ne dépasse souvent le bruit que de 6 à 9 dB : exiger 10 dB
@@ -146,6 +151,9 @@ pub struct MicProcessor {
     acc_n: usize,
     frame_in: Vec<f32>,
     frame_out: Vec<f32>,
+    /// Trame d'entrée précédente : RNNoise rend le son avec une trame de
+    /// retard, c'est elle qu'on mélange à sa sortie.
+    prev_in: Vec<f32>,
     deep_in: Vec<f32>,
     deep_out: Vec<f32>,
     /// Trames en attente : la porte décide sur le son qui entre et
@@ -349,6 +357,7 @@ impl MicProcessor {
             acc_n: 0,
             frame_in: Vec::with_capacity(FRAME),
             frame_out: vec![0.0; FRAME],
+            prev_in: vec![0.0; FRAME],
             deep_in: vec![0.0; FRAME],
             deep_out: vec![0.0; FRAME],
             delay: VecDeque::with_capacity(delay_frames + 1),
@@ -452,8 +461,13 @@ impl MicProcessor {
                 Err(_) => self.frame_out.clone(),
             }
         } else {
-            self.frame_out.clone()
+            self.frame_out
+                .iter()
+                .zip(&self.prev_in)
+                .map(|(wet, dry)| wet * (1.0 - RNN_DRY) + dry * RNN_DRY)
+                .collect()
         };
+        self.prev_in.copy_from_slice(&self.frame_in);
 
         let target = if !self.filters.gate {
             1.0
@@ -812,6 +826,16 @@ mod tests {
         let tail = &out[out.len() / 2..];
         // Au moins 20 dB de moins sur un souffle constant.
         assert!(rms(tail) < rms(&input) * 0.1, "{} vs {}", rms(tail), rms(&input));
+    }
+
+    #[test]
+    fn light_denoise_is_capped_at_30_db() {
+        // Un souffle faible, que RNNoise seul retire presque entièrement.
+        let input = noise(48_000 * 2, 0.0005);
+        let filters = MicFilters { denoise: true, strong: false, ..OFF };
+        let out = run(filters, 48_000, 1, &input);
+        let db = 20.0 * (rms(&out[out.len() / 2..]) / rms(&input)).log10();
+        assert!(db > -30.0, "{db}");
     }
 
     #[test]

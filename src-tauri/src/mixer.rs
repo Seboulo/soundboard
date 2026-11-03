@@ -8,6 +8,7 @@
 //! est déjà connu quand on joue celui-ci : le limiteur voit venir les pics
 //! et n'a jamais besoin de couper net.
 
+use crate::dynamics::TruePeak;
 use rodio::Source;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -78,6 +79,7 @@ impl Bus {
             release_step: block as f32 / (rate as f32 * RELEASE_SECONDS),
             frame: Vec::with_capacity(8),
             primed: false,
+            meters: vec![TruePeak::default(); channels.max(1) as usize],
         };
         (Self { tracks, rate }, source)
     }
@@ -123,6 +125,7 @@ pub struct BusSource {
     release_step: f32,
     frame: Vec<f32>,
     primed: bool,
+    meters: Vec<TruePeak>,
 }
 
 impl BusSource {
@@ -171,7 +174,11 @@ impl BusSource {
                 !stopped && !t.voice.done.load(Ordering::Relaxed)
             });
         }
-        let peak = self.mix.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        // Vrais pics, comme les limiteurs de la voix et des sons.
+        let mut peak = 0.0f32;
+        for (i, &v) in self.mix.iter().enumerate() {
+            peak = peak.max(self.meters[i % ch].push(v));
+        }
         if peak > CEILING {
             CEILING / peak
         } else {

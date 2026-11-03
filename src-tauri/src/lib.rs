@@ -228,7 +228,9 @@ fn play_request(state: &AppState, sound: &Sound) -> PlayRequest {
     PlayRequest {
         id: sound.id.clone(),
         path: sound.path.clone(),
-        gain: sound.volume * gain,
+        gain,
+        volume: sound.volume,
+        target_lufs: target,
         start_ms: sound.start_ms,
         end_ms: sound.end_ms,
         duration_ms: sound.play_duration_ms(),
@@ -315,7 +317,7 @@ fn analyze_missing(app: AppHandle) {
             .unwrap()
             .sounds
             .iter()
-            .filter(|s| s.analysis.is_none_or(|a| a.loudness <= 0.0 || a.lufs >= 0.0))
+            .filter(|s| s.analysis.is_none_or(|a| a.loudness <= 0.0 || a.lufs >= 0.0 || !a.mono_fold))
             .map(|s| (s.id.clone(), s.path.clone()))
             .collect();
         if todo.is_empty() {

@@ -80,6 +80,10 @@ pub struct Analysis {
     pub max_momentary: f32,
     #[serde(default)]
     pub max_short: f32,
+    /// Mesuré sur le repli mono envoyé à Discord (depuis la 1.5). Les
+    /// mesures plus anciennes sont refaites au lancement.
+    #[serde(default)]
+    pub mono_fold: bool,
 }
 
 /// Découpe et effets pour lesquels un niveau a été mesuré.
@@ -108,7 +112,7 @@ impl Sound {
 
     /// Le passage découpé n'a pas encore de mesure à jour.
     pub fn needs_segment(&self) -> bool {
-        self.segment_key().is_some_and(|k| self.segment.is_none_or(|s| s.key != k))
+        self.segment_key().is_some_and(|k| self.segment.is_none_or(|s| s.key != k || !s.analysis.mono_fold))
     }
 
     /// Mesure à utiliser pour le volume : celle du passage joué si elle est
