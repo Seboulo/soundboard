@@ -676,13 +676,13 @@ fn to_db(power: f32) -> f32 {
 ///    (seulement quand tu parles) et on règle lentement le gain pour viser
 ///    -20 dBFS (de -6 à +18 dB). Une voix douce n'arrive plus trop bas, un
 ///    cri ne sature plus.
-/// 2. Dé-esseur : quand l'aigu (au-dessus de 5 kHz) prend le dessus, comme
-///    sur les S, CH et Z, on ne baisse que cet aigu, de 6 dB au plus. Le
-///    reste de la voix ne bouge pas.
-/// 3. Compresseur : il mesure l'énergie moyenne (RMS sur 10 ms) et non
+/// 2. Compresseur : il mesure l'énergie moyenne (RMS sur 10 ms) et non
 ///    chaque crête, avec un genou doux autour de -18 dBFS et un rapport
 ///    2:1. Il resserre la voix sans écraser les voyelles ni faire ressortir
 ///    les consonnes. Attaque 10 ms, relâche 150 ms, réglés en dB.
+/// 3. Dé-esseur : quand l'aigu (au-dessus de 5 kHz) prend le dessus, comme
+///    sur les S, CH et Z, on ne baisse que cet aigu, de 6 dB au plus. Le
+///    reste de la voix ne bouge pas.
 ///
 /// Le plafond de sécurité est à part (`Limiter`) et toujours actif.
 struct VoiceLeveler {
@@ -763,23 +763,9 @@ impl VoiceLeveler {
         let x = x * gain;
         let side = side * gain;
 
-        // Dé-esseur en égaliseur dynamique : on retire une part de la bande
-        // aiguë. Sans S, rien n'est retiré et le son passe intact.
-        let high = self.band.run(x);
-        let side_high = self.side_band.run(side);
-        let c = smoothing(0.002);
-        self.high_power = self.high_power * c + side_high * side_high * (1.0 - c);
-        self.full_power = self.full_power * c + side * side * (1.0 - c);
-        let high_db = to_db(self.high_power);
-        let excess = high_db - to_db(self.full_power) - ESS_THRESHOLD_DB;
-        let wanted = if high_db > ESS_FLOOR_DB { excess.clamp(0.0, ESS_MAX_DB) } else { 0.0 };
-        let c = if wanted > self.ess_db { smoothing(0.001) } else { smoothing(0.06) };
-        self.ess_db = wanted + (self.ess_db - wanted) * c;
-        let y = x - high * (1.0 - 10f32.powf(-self.ess_db / 20.0));
-
         // Compresseur RMS à genou doux.
         let c = smoothing(0.01);
-        self.power = self.power * c + y * y * (1.0 - c);
+        self.power = self.power * c + x * x * (1.0 - c);
         let over = to_db(self.power) - COMP_THRESHOLD_DB;
         let slope = 1.0 / COMP_RATIO - 1.0;
         let wanted = if over <= -COMP_KNEE_DB / 2.0 {
@@ -791,7 +777,24 @@ impl VoiceLeveler {
         };
         let c = if wanted < self.comp_db { smoothing(0.01) } else { smoothing(0.15) };
         self.comp_db = wanted + (self.comp_db - wanted) * c;
-        y * 10f32.powf(self.comp_db / 20.0)
+        let comp = 10f32.powf(self.comp_db / 20.0);
+        let x = x * comp;
+        let side = side * comp;
+
+        // Dé-esseur en égaliseur dynamique, après le compresseur comme en
+        // studio : la compression fait ressortir les S, on les calme ensuite.
+        // On retire une part de la bande aiguë ; sans S, rien n'est retiré.
+        let high = self.band.run(x);
+        let side_high = self.side_band.run(side);
+        let c = smoothing(0.002);
+        self.high_power = self.high_power * c + side_high * side_high * (1.0 - c);
+        self.full_power = self.full_power * c + side * side * (1.0 - c);
+        let high_db = to_db(self.high_power);
+        let excess = high_db - to_db(self.full_power) - ESS_THRESHOLD_DB;
+        let wanted = if high_db > ESS_FLOOR_DB { excess.clamp(0.0, ESS_MAX_DB) } else { 0.0 };
+        let c = if wanted > self.ess_db { smoothing(0.001) } else { smoothing(0.06) };
+        self.ess_db = wanted + (self.ess_db - wanted) * c;
+        x - high * (1.0 - 10f32.powf(-self.ess_db / 20.0))
     }
 }
 

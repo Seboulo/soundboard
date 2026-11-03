@@ -11,6 +11,8 @@ use std::path::Path;
 /// Durée de chaque partie du test, en secondes.
 pub const PHASE_SECONDS: usize = 5;
 const FRAME: usize = RATE as usize / 100;
+const TOP_HZ: f32 = 10_000.0;
+const REF_HZ: f32 = 6_500.0;
 
 #[derive(Debug, Serialize)]
 pub struct VoiceReport {
@@ -40,17 +42,24 @@ pub fn analyze(raw: &[f32]) -> Result<(MicCalibration, VoiceReport), String> {
     // Comme le traitement : le grondement sous 80 Hz ne compte pas.
     let mut high_pass = Biquad::high_pass(80.0);
     let mut filters: Vec<Biquad> = EQ_BANDS_HZ.iter().map(|&f| Biquad::band_pass(f, 1.4)).collect();
+    // Un micro Bluetooth en mode « mains libres » (ou un micro 16 kHz) n'a
+    // rien au-dessus de 8 kHz : on compare l'énergie au-dessus de 10 kHz
+    // (filtre très raide) à celle autour de 6,5 kHz.
+    let mut top: Vec<Biquad> = (0..6).map(|_| Biquad::high_pass(TOP_HZ)).collect();
+    let mut reference = Biquad::band_pass(REF_HZ, 1.4);
     let mut frame_db = Vec::with_capacity(frames);
     // Énergie de chaque trame : totale, puis par bande de l'égaliseur.
     let mut energy = Vec::with_capacity(frames);
     for frame in raw.chunks_exact(FRAME) {
-        let mut e = [0.0f64; 7];
+        let mut e = [0.0f64; 9];
         for &x in frame {
             let x = high_pass.run(x);
             e[0] += (x * x) as f64;
-            for (b, f) in e[1..].iter_mut().zip(&mut filters) {
+            for (b, f) in e[1..7].iter_mut().zip(&mut filters) {
                 *b += f.run(x).powi(2) as f64;
             }
+            e[7] += top.iter_mut().fold(x, |v, f| f.run(v)).powi(2) as f64;
+            e[8] += reference.run(x).powi(2) as f64;
         }
         frame_db.push(power_db(e[0] / FRAME as f64));
         energy.push(e);
@@ -73,12 +82,35 @@ pub fn analyze(raw: &[f32]) -> Result<(MicCalibration, VoiceReport), String> {
     let band_db: Vec<f32> = (1..7).map(|k| power_db(sum(k))).collect();
     let peak = raw[(phase + 50) * FRAME..].iter().fold(0.0f32, |m, v| m.max(v.abs()));
     let peak_db = 20.0 * peak.max(1e-6).log10();
-    let eq_db = match_eq(&band_db);
+    let mut eq_db = match_eq(&band_db);
+    // Énergie moyenne par trame, dans le silence et dans la parole.
+    let quiet_frames: Vec<usize> = (50..phase - 50).collect();
+    let avg_db = |frames: &[usize], k: usize| {
+        power_db(frames.iter().map(|&i| energy[i][k]).sum::<f64>() / frames.len().max(1) as f64)
+    };
+    // On ne remonte jamais une bande où ta voix ne dépasse pas le bruit de
+    // 10 dB : on ne ferait que monter du souffle.
+    for (k, g) in eq_db.iter_mut().enumerate() {
+        if avg_db(&speech, k + 1) - avg_db(&quiet_frames, k + 1) < 10.0 {
+            *g = g.min(0.0);
+        }
+    }
+    // Voix nette vers 6,5 kHz, mais plus de 25 dB de moins au-dessus de
+    // 10 kHz (une vraie voix : 5 à 15 dB de moins) : le micro coupe les aigus.
+    let reference_db = avg_db(&speech, 8);
+    let narrow = reference_db - avg_db(&quiet_frames, 8) >= 10.0
+        && avg_db(&speech, 7) - reference_db < -25.0;
+    if narrow {
+        eq_db[5] = eq_db[5].min(0.0);
+    }
     let eq = if eq_db.iter().any(|g| g.abs() >= 2.0) { VoiceEq::Custom } else { VoiceEq::Natural };
 
     let mut advice = Vec::new();
     if noise_db < -100.0 {
         advice.push("Quand tu te tais, ton micro envoie un silence parfait : un autre logiciel filtre déjà ta voix (Windows « Effets audio » ou « Clarté vocale », logiciel du casque, NVIDIA Broadcast…). Coupe-le : deux antibruits l'un sur l'autre abîment la voix.".into());
+    }
+    if narrow {
+        advice.push("Ton micro coupe les aigus (rien au-dessus de 8 kHz) : c'est souvent un casque Bluetooth en mode « mains libres », qui abîme aussi le son de tes écouteurs pendant que le micro est ouvert. Si tu peux, prends un micro USB ou jack, ou celui du PC.".into());
     }
     if peak_db > -1.0 {
         advice.push("Ta voix sature le micro : baisse son volume dans Windows (Paramètres > Son > ton micro), sinon elle grésille.".into());
@@ -204,6 +236,32 @@ mod tests {
         assert!(eq[4] >= 6.0 && eq[5] >= 5.0, "{eq:?}");
         // Une voix déjà équilibrée ne bouge pas.
         assert!(match_eq(&REFERENCE_DB).iter().all(|g| g.abs() < 0.5));
+    }
+
+    #[test]
+    fn narrowband_microphone_is_detected_and_not_boosted() {
+        // « Voix » riche en harmoniques jusqu'à `top` Hz, après 5 s de silence.
+        let test = |top: f32| {
+            let n = PHASE_SECONDS * RATE as usize;
+            let mut raw = vec![0.0; n];
+            raw.extend((0..n).map(|i| {
+                let t = i as f32 / RATE as f32;
+                let on = if (t * 4.0).fract() < 0.7 { 1.0 } else { 0.0 };
+                let tone: f32 = (1..110)
+                    .filter(|h| 150.0 * *h as f32 <= top)
+                    .map(|h| (t * 150.0 * h as f32 * std::f32::consts::TAU).sin() / (h as f32).sqrt())
+                    .sum();
+                tone * 0.01 * on
+            }));
+            analyze(&raw).unwrap()
+        };
+        // Micro 16 kHz : plus rien au-dessus de 7,5 kHz.
+        let (cal, report) = test(7500.0);
+        assert!(cal.eq_db[5] <= 0.0, "{:?}", cal.eq_db);
+        assert!(report.advice.iter().any(|a| a.contains("Bluetooth")), "{:?}", report.advice);
+        // Vrai micro : pas d'alerte.
+        let (_, report) = test(16_000.0);
+        assert!(!report.advice.iter().any(|a| a.contains("Bluetooth")), "{:?}", report.advice);
     }
 
     #[test]
