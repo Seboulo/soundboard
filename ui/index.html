@@ -39,6 +39,7 @@
     <div class="brand"><span class="logo"><svg class="ico"><use href="#i-logo"/></svg></span><h1>Soundboard</h1></div>
     <button id="cable-status" class="pill" type="button" title="État du câble virtuel"></button>
     <button id="mic-toggle" class="pill" type="button" hidden></button>
+    <button id="surprise-toggle" class="pill" type="button" title="Des sons qui partent tout seuls, au hasard">🎲 Surprise</button>
     <div class="spacer"></div>
     <label class="search-box"><svg class="ico"><use href="#i-search"/></svg><input id="search" type="search" placeholder="Rechercher un son…" autocomplete="off"></label>
     <button id="btn-online" type="button" title="Chercher des sons sur internet"><svg class="ico"><use href="#i-globe"/></svg><span class="lbl">En ligne</span></button>
@@ -449,6 +450,25 @@
         <button type="button" class="primary" data-action="close">Fermer</button>
       </div>
     </div>
+  </dialog>
+
+  <!-- Mode Surprise -->
+  <dialog id="dlg-surprise">
+    <form class="form" method="dialog">
+      <h2>🎲 Mode Surprise</h2>
+      <p class="hint">De temps en temps, un son de ta liste part tout seul vers Discord, à un moment au hasard.</p>
+      <label class="set-row"><span class="txt"><b>Activer</b><small>S'arrête quand tu fermes l'app.</small></span><input name="on" type="checkbox" class="switch"></label>
+      <div class="set-row"><span class="txt"><b>Attente entre deux sons</b><small>Tirée au hasard à chaque fois.</small></span>
+        <span class="surprise-range">entre <input name="min" type="number" min="1" max="1440" step="1"> et <input name="max" type="number" min="1" max="1440" step="1"> min</span></div>
+      <div class="surprise-head"><b>Sons qui peuvent sortir</b><span class="spacer"></span><button type="button" class="ghost" data-action="all">Tout cocher</button><button type="button" class="ghost" data-action="none">Tout décocher</button></div>
+      <small class="muted" id="surprise-count"></small>
+      <div id="surprise-list" class="surprise-list"></div>
+      <div class="actions">
+        <div class="spacer"></div>
+        <button type="button" data-action="cancel">Annuler</button>
+        <button type="submit" class="primary" value="save">Enregistrer</button>
+      </div>
+    </form>
   </dialog>
 
   <!-- Statistiques -->

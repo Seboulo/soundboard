@@ -25,7 +25,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -75,6 +75,10 @@ struct AppState {
     last_random: Mutex<Option<String>>,
     /// Dernier son supprimé et sa position, pour « Annuler ».
     trash: Mutex<Option<(Sound, usize)>>,
+    /// Mode Surprise en marche (jamais au lancement de l'app).
+    surprise_on: AtomicBool,
+    /// Change à chaque marche / arrêt : l'ancienne attente s'arrête d'elle-même.
+    surprise_gen: AtomicU64,
 }
 
 #[derive(Clone, Serialize)]
@@ -87,6 +91,7 @@ struct Snapshot {
     version: &'static str,
     /// Sons dont le fichier a disparu (antivirus, nettoyage…).
     missing: Vec<String>,
+    surprise_on: bool,
 }
 
 impl AppState {
@@ -103,6 +108,7 @@ impl AppState {
             vb_cable_url: VB_CABLE_URL,
             mic_muted: self.mic_muted.load(Ordering::Relaxed),
             version: env!("CARGO_PKG_VERSION"),
+            surprise_on: self.surprise_on.load(Ordering::Relaxed),
         };
         snap.missing = snap.config.sounds.iter().filter(|x| !x.path.exists()).map(|x| x.id.clone()).collect();
         snap
@@ -481,13 +487,13 @@ fn set_muted(app: &AppHandle, muted: bool) {
 
 /// Tire un son au hasard (dans une catégorie si on en donne une).
 fn pick_random(state: &AppState, category: Option<&str>) -> Option<Sound> {
+    pick_random_where(state, |s| category.is_none() || s.category.as_deref() == category)
+}
+
+fn pick_random_where(state: &AppState, keep: impl Fn(&Sound) -> bool) -> Option<Sound> {
     let config = state.config.lock().unwrap();
     let mut last = state.last_random.lock().unwrap();
-    let pool: Vec<&Sound> = config
-        .sounds
-        .iter()
-        .filter(|s| category.is_none() || s.category.as_deref() == category)
-        .collect();
+    let pool: Vec<&Sound> = config.sounds.iter().filter(|s| keep(s)).collect();
     let candidates: Vec<&Sound> = if pool.len() > 1 {
         pool.iter().copied().filter(|s| Some(&s.id) != last.as_ref()).collect()
     } else {
@@ -496,10 +502,56 @@ fn pick_random(state: &AppState, category: Option<&str>) -> Option<Sound> {
     if candidates.is_empty() {
         return None;
     }
-    let index = (uuid::Uuid::new_v4().as_u128() % candidates.len() as u128) as usize;
+    let index = (random_u64() % candidates.len() as u64) as usize;
     let sound = candidates[index].clone();
     *last = Some(sound.id.clone());
     Some(sound)
+}
+
+fn random_u64() -> u64 {
+    uuid::Uuid::new_v4().as_u64_pair().0
+}
+
+/// Attente avant le prochain son surprise, tirée entre le minimum et le maximum.
+fn surprise_delay(min_minutes: u32, max_minutes: u32) -> std::time::Duration {
+    let min = u64::from(min_minutes.max(1)) * 60;
+    let max = (u64::from(max_minutes) * 60).max(min);
+    std::time::Duration::from_secs(min + random_u64() % (max - min + 1))
+}
+
+/// Mode Surprise : de temps en temps, un son de la liste part tout seul
+/// (vers Discord, comme un son cliqué).
+fn start_surprise(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let gen = state.surprise_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    if !state.surprise_on.load(Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        let state = app.state::<AppState>();
+        let delay = {
+            let s = &state.config.lock().unwrap().settings;
+            surprise_delay(s.surprise_min_minutes, s.surprise_max_minutes)
+        };
+        let deadline = std::time::Instant::now() + delay;
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if state.surprise_gen.load(Ordering::SeqCst) != gen {
+                return;
+            }
+        }
+        let list = state.config.lock().unwrap().settings.surprise_sounds.clone();
+        let playing = state.playing_ids.lock().unwrap().clone();
+        let sound = pick_random_where(&state, |s| {
+            (list.is_empty() || list.contains(&s.id)) && !playing.contains(&s.id) && s.path.exists()
+        });
+        if let Some(sound) = sound {
+            note_play(&state, &sound);
+            state.audio.toggle_detached(play_request(&state, &sound));
+            let _ = app.emit("sound-triggered", &sound.id);
+        }
+    });
 }
 
 const MAX_SOUND_FILE: u64 = 200 * 1024 * 1024;
@@ -1663,6 +1715,16 @@ fn play_random(state: State<AppState>, category: Option<String>) -> Result<Optio
     Ok(Some(sound.id))
 }
 
+/// Allume ou éteint le mode Surprise.
+#[tauri::command]
+fn set_surprise(app: AppHandle, on: bool) -> Snapshot {
+    let state = app.state::<AppState>();
+    state.surprise_on.store(on, Ordering::SeqCst);
+    start_surprise(&app);
+    let _ = app.emit("surprise", on);
+    state.snapshot()
+}
+
 #[tauri::command]
 fn set_meter(state: State<AppState>, on: bool) {
     state.audio.set_meter(on);
@@ -2126,6 +2188,8 @@ pub fn run() {
                 playing_ids: Mutex::new(Vec::new()),
                 last_random: Mutex::new(None),
                 trash: Mutex::new(None),
+                surprise_on: AtomicBool::new(false),
+                surprise_gen: AtomicU64::new(0),
             };
             empty_trash(&state);
             if let Some(note) = config_note {
@@ -2214,6 +2278,7 @@ pub fn run() {
             add_from_url,
             add_from_youtube,
             play_random,
+            set_surprise,
             set_meter,
             check_update,
             install_update,
@@ -2223,4 +2288,20 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("erreur au lancement de l'application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::surprise_delay;
+
+    #[test]
+    fn surprise_delay_stays_between_min_and_max() {
+        for _ in 0..200 {
+            let d = surprise_delay(10, 60).as_secs();
+            assert!((600..=3600).contains(&d));
+        }
+        // Minimum au-dessus du maximum, ou zéro : on reste raisonnable.
+        assert_eq!(surprise_delay(30, 5).as_secs(), 1800);
+        assert_eq!(surprise_delay(0, 0).as_secs(), 60);
+    }
 }
