@@ -65,6 +65,13 @@ const DF_DITHER: f32 = 0.0011;
 const AUTO_OPEN: [(f32, f32); 3] = [(0.9, 3.0), (0.5, 6.0), (0.2, 10.0)];
 /// Pour rester ouvert : un peu au-dessus du bruit, ou de la voix probable.
 const AUTO_KEEP_DB: f32 = 2.0;
+/// Pendant les pauses où la porte reste ouverte (respirations, fin de
+/// phrase), le volume auto montait le bruit de fond autant que la voix. Après
+/// 100 ms sans voix, on baisse doucement de 8 dB ; on remonte dès que la voix
+/// revient (décidé sur le son qui entre, donc avant qu'elle ne sorte).
+const PAUSE_DIP: f32 = 0.398;
+const PAUSE_AFTER_FRAMES: u32 = 10;
+const PAUSE_VOICE: f32 = 0.3;
 /// Durée des fondus d'ouverture et de fermeture, en échantillons.
 const ATTACK: f32 = 1.0 / (RATE as f32 * 0.005);
 const RELEASE: f32 = 1.0 / (RATE as f32 * 0.08);
@@ -145,6 +152,15 @@ pub struct MicProcessor {
     /// s'applique au son qui sort un peu plus tard.
     delay: VecDeque<Vec<f32>>,
     delay_frames: usize,
+    /// Probabilités de voix des dernières trames : le son qui sort a
+    /// quelques trames de retard (réduction de bruit + porte), le volume auto
+    /// doit juger la trame qui sort, pas celle qui entre.
+    voices: VecDeque<f32>,
+    voice_lag: usize,
+    /// Baisse pendant les pauses (voir `PAUSE_DIP`).
+    pause_gain: f32,
+    quiet_frames: u32,
+    eq_buf: Vec<f32>,
     gain: f32,
     hold: u32,
     leveler: VoiceLeveler,
@@ -312,6 +328,12 @@ impl MicProcessor {
             (true, true, false) => 2,
             (true, false, _) => 3,
         };
+        let inner_lag = match (filters.denoise, deep.is_some()) {
+            (false, _) => 0,
+            (true, false) => 1,
+            (true, true) => 3,
+        };
+        let voice_lag = inner_lag + delay_frames;
         Self {
             filters,
             effect: Effect::new(effect),
@@ -331,6 +353,11 @@ impl MicProcessor {
             deep_out: vec![0.0; FRAME],
             delay: VecDeque::with_capacity(delay_frames + 1),
             delay_frames,
+            voices: VecDeque::with_capacity(voice_lag + 1),
+            voice_lag,
+            pause_gain: 1.0,
+            quiet_frames: 0,
+            eq_buf: Vec::with_capacity(FRAME),
             gain: if filters.gate { 0.0 } else { 1.0 },
             hold: 0,
             leveler: VoiceLeveler::new(filters.calibration.map(|c| c.speech_db)),
@@ -395,7 +422,8 @@ impl MicProcessor {
                 r.raw.push(v);
             }
         }
-        let v = if self.filters.denoise { self.high_pass.run(v) } else { v };
+        // Toujours actif : sans lui, le volume auto amplifie les grondements.
+        let v = self.high_pass.run(v);
         self.frame_in.push(v * 32768.0);
         if self.frame_in.len() == FRAME {
             self.flush_frame(out);
@@ -459,6 +487,13 @@ impl MicProcessor {
             }
         }
 
+        // Probabilité de voix de la trame qui sort maintenant.
+        self.voices.push_back(voice);
+        while self.voices.len() > self.voice_lag + 1 {
+            self.voices.pop_front();
+        }
+        let voice_out = if self.voices.len() > self.voice_lag { self.voices[0] } else { 0.0 };
+
         let rms = (source.iter().map(|s| (s / 32768.0).powi(2)).sum::<f32>() / FRAME as f32).sqrt();
         // Échelle en dB ramenée à 0–1 (−60 dB → 0, 0 dB → 1).
         let level = ((20.0 * rms.max(1e-6).log10() + 60.0) / 60.0).clamp(0.0, 1.0);
@@ -466,22 +501,45 @@ impl MicProcessor {
         self.meter.voice.store(voice.to_bits(), Ordering::Relaxed);
         self.meter.open.store(target > 0.0, Ordering::Relaxed);
 
-        if self.filters.level {
-            self.leveler.begin_frame(rms, voice >= 0.5 && target > 0.0);
+        // Pauses : la voix qui entre (en avance) et celle qui sort sont
+        // toutes deux absentes depuis 100 ms.
+        let pause = self.filters.level && self.filters.gate;
+        if pause && voice.max(voice_out) < PAUSE_VOICE {
+            self.quiet_frames = self.quiet_frames.saturating_add(1);
+        } else {
+            self.quiet_frames = 0;
         }
-        for &s in source.iter() {
+        let pause_target = if pause && self.quiet_frames >= PAUSE_AFTER_FRAMES { PAUSE_DIP } else { 1.0 };
+        let (down, up) = (smoothing(0.15), smoothing(0.01));
+
+        // Porte, baisse des pauses puis égaliseur.
+        self.eq_buf.clear();
+        let mut dry = [0.0f32; FRAME];
+        for (&s, d) in source.iter().zip(dry.iter_mut()) {
             if self.gain < target {
                 self.gain = (self.gain + ATTACK).min(target);
             } else if self.gain > target {
                 self.gain = (self.gain - RELEASE).max(target);
             }
-            let mut v = s / 32768.0 * self.gain;
+            let c = if pause_target < self.pause_gain { down } else { up };
+            self.pause_gain = pause_target + (self.pause_gain - pause_target) * c;
+            let mut v = s / 32768.0 * self.gain * self.pause_gain;
+            *d = v;
             for band in &mut self.eq {
                 v = band.run(v);
             }
-            if self.filters.level {
-                v = self.leveler.process(v);
-            }
+            self.eq_buf.push(v);
+        }
+
+        if self.filters.level {
+            // Le volume auto mesure la voix telle qu'elle sort de
+            // l'égaliseur, seulement quand c'est vraiment de la voix et que
+            // la porte est grande ouverte.
+            let eq_rms = (self.eq_buf.iter().map(|v| v * v).sum::<f32>() / FRAME as f32).sqrt();
+            self.leveler.begin_frame(eq_rms, voice_out >= 0.5 && self.gain >= 0.99);
+        }
+        for (i, &v) in self.eq_buf.iter().enumerate() {
+            let v = if self.filters.level { self.leveler.process(v, dry[i]) } else { v };
             let mut frame = [self.effect.process(v)];
             self.limiter.process(&mut frame);
             out.push(frame[0].clamp(-1.0, 1.0));
@@ -557,6 +615,10 @@ struct VoiceLeveler {
     to: f32,
     pos: f32,
     band: Biquad,
+    /// Même filtre, sur le son d'avant l'égaliseur : c'est lui qui repère
+    /// les S, pour qu'un égaliseur qui remonte les aigus ne déclenche pas
+    /// le dé-esseur sur toute la voix.
+    side_band: Biquad,
     high_power: f32,
     full_power: f32,
     ess_db: f32,
@@ -592,6 +654,7 @@ impl VoiceLeveler {
             to: gain,
             pos: 0.0,
             band: Biquad::band_pass(ESS_CENTER_HZ, 0.7),
+            side_band: Biquad::band_pass(ESS_CENTER_HZ, 0.7),
             high_power: 0.0,
             full_power: 0.0,
             ess_db: 0.0,
@@ -614,16 +677,21 @@ impl VoiceLeveler {
         self.pos = 0.0;
     }
 
-    fn process(&mut self, x: f32) -> f32 {
+    /// `x` : le son à traiter ; `side` : le même avant l'égaliseur, qui
+    /// sert seulement à repérer les S.
+    fn process(&mut self, x: f32, side: f32) -> f32 {
         self.pos = (self.pos + 1.0 / FRAME as f32).min(1.0);
-        let x = x * (self.from + (self.to - self.from) * self.pos);
+        let gain = self.from + (self.to - self.from) * self.pos;
+        let x = x * gain;
+        let side = side * gain;
 
         // Dé-esseur en égaliseur dynamique : on retire une part de la bande
         // aiguë. Sans S, rien n'est retiré et le son passe intact.
         let high = self.band.run(x);
+        let side_high = self.side_band.run(side);
         let c = smoothing(0.002);
-        self.high_power = self.high_power * c + high * high * (1.0 - c);
-        self.full_power = self.full_power * c + x * x * (1.0 - c);
+        self.high_power = self.high_power * c + side_high * side_high * (1.0 - c);
+        self.full_power = self.full_power * c + side * side * (1.0 - c);
         let high_db = to_db(self.high_power);
         let excess = high_db - to_db(self.full_power) - ESS_THRESHOLD_DB;
         let wanted = if high_db > ESS_FLOOR_DB { excess.clamp(0.0, ESS_MAX_DB) } else { 0.0 };
@@ -685,8 +753,9 @@ mod tests {
         let input = vec![0.1; 44_100 * 2];
         let out = run(OFF, 44_100, 2, &input);
         assert!((out.len() as i64 - 48_000).abs() <= FRAME as i64, "{}", out.len());
-        // Sans filtre, le signal passe tel quel (hors tout début interpolé depuis 0).
-        assert!(out[FRAME..].iter().all(|v| (v - 0.1).abs() < 1e-4));
+        // Même sans filtre, l'anti-grondement (80 Hz) reste là : un continu
+        // disparaît en quelques dizaines de ms.
+        assert!(out[out.len() / 2..].iter().all(|v| v.abs() < 1e-3));
     }
 
     #[test]
@@ -716,7 +785,9 @@ mod tests {
             .sum::<f64>()
             / out.len() as f64;
         let db = 10.0 * (err / ((a * a + b * b) / 2.0)).log10();
-        assert!(db < -90.0, "parasites {db:.1} dB");
+        // L'anti-grondement (toujours actif, en f32) laisse un fond vers
+        // -89 dB : inaudible.
+        assert!(db < -85.0, "parasites {db:.1} dB");
     }
 
     fn noise(n: usize, amp: f32) -> Vec<f32> {
@@ -804,7 +875,7 @@ mod tests {
         for f in 0..500 {
             let frame: Vec<f32> = (0..FRAME).map(|i| ((f * FRAME + i) as f32 * 0.03).sin() * amp).collect();
             l.begin_frame(rms(&frame), true);
-            out.extend(frame.iter().map(|&x| l.process(x)));
+            out.extend(frame.iter().map(|&x| l.process(x, x)));
         }
         rms(&out[out.len() / 2..])
     }
@@ -831,7 +902,7 @@ mod tests {
         let through = |freq: f32| {
             let mut l = VoiceLeveler::new(None);
             let input = tone(freq, 0.05, 48_000);
-            let out: Vec<f32> = input.iter().map(|&x| l.process(x)).collect();
+            let out: Vec<f32> = input.iter().map(|&x| l.process(x, x)).collect();
             20.0 * (rms(&out[24_000..]) / rms(&input[24_000..])).log10()
         };
         let vowel = through(1000.0);
