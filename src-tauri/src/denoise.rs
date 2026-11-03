@@ -39,9 +39,25 @@ const HOLD_FRAMES: u32 = 50;
 /// En dessous de -55 dBFS, le micro ne capte rien d'assez fort pour ouvrir
 /// la porte, même si ça ressemble à de la voix.
 const OPEN_FLOOR: f32 = 0.0018;
-/// Réduction maximale de DeepFilterNet. Plus fort, il mange les fins de mots
-/// et les syllabes douces (micro-coupures) ; 30 dB suffisent avec la porte.
+/// Réduction maximale de DeepFilterNet, en attendant de connaître le bruit
+/// de la pièce. Plus fort, il mange les fins de mots et les syllabes douces.
 const DF_ATTEN_LIMIT_DB: f32 = 30.0;
+/// Ensuite, la réduction suit le bruit de fond : juste assez pour le
+/// ramener vers -85 dBFS. Dans une pièce calme, moins de réduction = voix
+/// plus naturelle ; dans une pièce bruyante, on va jusqu'à 35 dB.
+const DF_ATTEN_MIN_DB: f32 = 20.0;
+const DF_ATTEN_MAX_DB: f32 = 35.0;
+const DF_RESIDUAL_DB: f32 = -85.0;
+/// Post-filtre de DeepFilterNet (valeur conseillée par ses auteurs) : il
+/// baisse encore le petit bruit qui reste entre les syllabes, sans dépasser
+/// la réduction maximale.
+const DF_POST_FILTER: f32 = 0.02;
+/// DeepFilterNet rend le son avec trois trames (30 ms) de retard.
+const DF_LAG_FRAMES: usize = 3;
+/// Rapport voix/bruit estimé par DeepFilterNet (dB) au-dessus duquel la
+/// porte reste ouverte : l'IA reconnaît la voix dans le bruit bien mieux que
+/// le détecteur de RNNoise.
+const DF_KEEP_LSNR_DB: f32 = 6.0;
 /// Par défaut, DeepFilterNet saute une partie du calcul selon le rapport
 /// voix/bruit de chaque trame de 10 ms : rien au-dessus de 30 dB, pas de
 /// 2ᵉ étage au-dessus de 20 dB, silence total en dessous de -10 dB. Sur une
@@ -58,6 +74,11 @@ const DF_THRESHOLDS: (f32, f32, f32) = (-100.0, 100.0, 100.0);
 /// Un souffle imperceptible (-64 dBFS, que DeepFilterNet retire ensuite de
 /// 30 dB) le garde toujours au travail.
 const DF_DITHER: f32 = 0.0011;
+/// RNNoise n'a pas de limite : il peut retirer 60 dB et plus, ce qui donne
+/// le son « sous l'eau » sur les fins de mots. On remet donc une part du son
+/// d'origine, comme DeepFilterNet : au plus 30 dB de réduction (la porte
+/// s'occupe des silences).
+const RNN_DRY: f32 = 0.0316;
 /// Détection automatique : plus RNNoise est sûr que c'est de la voix, moins
 /// elle a besoin de dépasser le bruit de fond. Une voix douce dans une pièce
 /// bruyante ne dépasse souvent le bruit que de 6 à 9 dB : exiger 10 dB
@@ -65,6 +86,13 @@ const DF_DITHER: f32 = 0.0011;
 const AUTO_OPEN: [(f32, f32); 3] = [(0.9, 3.0), (0.5, 6.0), (0.2, 10.0)];
 /// Pour rester ouvert : un peu au-dessus du bruit, ou de la voix probable.
 const AUTO_KEEP_DB: f32 = 2.0;
+/// Pendant les pauses où la porte reste ouverte (respirations, fin de
+/// phrase), le volume auto montait le bruit de fond autant que la voix. Après
+/// 100 ms sans voix, on baisse doucement de 8 dB ; on remonte dès que la voix
+/// revient (décidé sur le son qui entre, donc avant qu'elle ne sorte).
+const PAUSE_DIP: f32 = 0.398;
+const PAUSE_AFTER_FRAMES: u32 = 10;
+const PAUSE_VOICE: f32 = 0.3;
 /// Durée des fondus d'ouverture et de fermeture, en échantillons.
 const ATTACK: f32 = 1.0 / (RATE as f32 * 0.005);
 const RELEASE: f32 = 1.0 / (RATE as f32 * 0.08);
@@ -139,12 +167,31 @@ pub struct MicProcessor {
     acc_n: usize,
     frame_in: Vec<f32>,
     frame_out: Vec<f32>,
+    /// Trame d'entrée précédente : RNNoise rend le son avec une trame de
+    /// retard, c'est elle qu'on mélange à sa sortie.
+    prev_in: Vec<f32>,
+    /// Trames d'entrée récentes, au retard de DeepFilterNet : si l'IA rate
+    /// une trame, on rend le son d'origine au bon moment (pas de saut).
+    dry_hist: VecDeque<Vec<f32>>,
+    /// Réduction actuelle de DeepFilterNet (dB) et dernier rapport voix/bruit.
+    atten_db: f32,
+    lsnr: f32,
+    frames: u32,
     deep_in: Vec<f32>,
     deep_out: Vec<f32>,
     /// Trames en attente : la porte décide sur le son qui entre et
     /// s'applique au son qui sort un peu plus tard.
     delay: VecDeque<Vec<f32>>,
     delay_frames: usize,
+    /// Probabilités de voix des dernières trames : le son qui sort a
+    /// quelques trames de retard (réduction de bruit + porte), le volume auto
+    /// doit juger la trame qui sort, pas celle qui entre.
+    voices: VecDeque<f32>,
+    voice_lag: usize,
+    /// Baisse pendant les pauses (voir `PAUSE_DIP`).
+    pause_gain: f32,
+    quiet_frames: u32,
+    eq_buf: Vec<f32>,
     gain: f32,
     hold: u32,
     leveler: VoiceLeveler,
@@ -281,6 +328,7 @@ fn load_deep_filter() -> Option<Box<DeepFilter>> {
     let (min, erb, df) = DF_THRESHOLDS;
     let params = RuntimeParams::default_with_ch(1)
         .with_atten_lim(DF_ATTEN_LIMIT_DB)
+        .with_post_filter(DF_POST_FILTER)
         .with_thresholds(min, erb, df);
     match DfTract::new(DfParams::default(), &params) {
         Ok(df) if df.hop_size == FRAME && df.sr == RATE as usize => Some(Box::new(DeepFilter(df))),
@@ -312,6 +360,12 @@ impl MicProcessor {
             (true, true, false) => 2,
             (true, false, _) => 3,
         };
+        let inner_lag = match (filters.denoise, deep.is_some()) {
+            (false, _) => 0,
+            (true, false) => 1,
+            (true, true) => 3,
+        };
+        let voice_lag = inner_lag + delay_frames;
         Self {
             filters,
             effect: Effect::new(effect),
@@ -327,10 +381,20 @@ impl MicProcessor {
             acc_n: 0,
             frame_in: Vec::with_capacity(FRAME),
             frame_out: vec![0.0; FRAME],
+            prev_in: vec![0.0; FRAME],
+            dry_hist: VecDeque::with_capacity(DF_LAG_FRAMES + 1),
+            atten_db: DF_ATTEN_LIMIT_DB,
+            lsnr: -15.0,
+            frames: 0,
             deep_in: vec![0.0; FRAME],
             deep_out: vec![0.0; FRAME],
             delay: VecDeque::with_capacity(delay_frames + 1),
             delay_frames,
+            voices: VecDeque::with_capacity(voice_lag + 1),
+            voice_lag,
+            pause_gain: 1.0,
+            quiet_frames: 0,
+            eq_buf: Vec::with_capacity(FRAME),
             gain: if filters.gate { 0.0 } else { 1.0 },
             hold: 0,
             leveler: VoiceLeveler::new(filters.calibration.map(|c| c.speech_db)),
@@ -395,7 +459,8 @@ impl MicProcessor {
                 r.raw.push(v);
             }
         }
-        let v = if self.filters.denoise { self.high_pass.run(v) } else { v };
+        // Toujours actif : sans lui, le volume auto amplifie les grondements.
+        let v = self.high_pass.run(v);
         self.frame_in.push(v * 32768.0);
         if self.frame_in.len() == FRAME {
             self.flush_frame(out);
@@ -419,24 +484,56 @@ impl MicProcessor {
             }
             let noisy = ArrayView2::from_shape((1, FRAME), &self.deep_in).expect("trame");
             let enhanced = ArrayViewMut2::from_shape((1, FRAME), &mut self.deep_out).expect("trame");
+            self.dry_hist.push_back(self.frame_in.clone());
+            let dry = if self.dry_hist.len() > DF_LAG_FRAMES { self.dry_hist.pop_front() } else { None };
             match df.0.process(noisy, enhanced) {
-                Ok(_) => self.deep_out.iter().map(|s| s * 32768.0).collect(),
-                Err(_) => self.frame_out.clone(),
+                Ok(lsnr) => {
+                    self.lsnr = lsnr;
+                    self.deep_out.iter().map(|s| s * 32768.0).collect()
+                }
+                Err(_) => {
+                    self.lsnr = -15.0;
+                    dry.unwrap_or_else(|| vec![0.0; FRAME])
+                }
             }
         } else {
-            self.frame_out.clone()
+            self.frame_out
+                .iter()
+                .zip(&self.prev_in)
+                .map(|(wet, dry)| wet * (1.0 - RNN_DRY) + dry * RNN_DRY)
+                .collect()
         };
+        self.prev_in.copy_from_slice(&self.frame_in);
+        if !(self.filters.gate && self.filters.gate_auto) {
+            // La porte automatique suit déjà le bruit de fond ; sinon on le
+            // suit ici, pour régler la réduction.
+            self.track_floor(voice, 20.0 * input_rms.max(1e-6).log10());
+        }
+        self.frames = self.frames.wrapping_add(1);
+        if self.frames.is_multiple_of(50) && !self.floor_db.is_nan() {
+            if let Some(df) = self.deep.as_mut() {
+                // Le souffle anti-trous (-64 dBFS) compte comme du bruit.
+                let wanted = (self.floor_db.max(-64.0) - DF_RESIDUAL_DB)
+                    .clamp(DF_ATTEN_MIN_DB, DF_ATTEN_MAX_DB)
+                    .round();
+                if (wanted - self.atten_db).abs() >= 1.0 {
+                    self.atten_db = wanted;
+                    df.0.set_atten_lim(wanted);
+                }
+            }
+        }
+        let ai_voice = self.deep.is_some() && self.filters.denoise && self.lsnr >= DF_KEEP_LSNR_DB;
 
         let target = if !self.filters.gate {
             1.0
         } else {
             let open = if self.filters.gate_auto {
-                self.auto_gate(voice, input_rms)
+                self.auto_gate(voice, input_rms) || (self.hold > 0 && ai_voice)
             } else {
                 let threshold = self.filters.gate_threshold;
                 let opening = self.hold == 0;
                 (opening && voice >= threshold && input_rms >= OPEN_FLOOR)
-                    || (!opening && voice >= threshold * 0.5)
+                    || (!opening && (voice >= threshold * 0.5 || ai_voice))
             };
             if open {
                 self.hold = HOLD_FRAMES;
@@ -459,6 +556,13 @@ impl MicProcessor {
             }
         }
 
+        // Probabilité de voix de la trame qui sort maintenant.
+        self.voices.push_back(voice);
+        while self.voices.len() > self.voice_lag + 1 {
+            self.voices.pop_front();
+        }
+        let voice_out = if self.voices.len() > self.voice_lag { self.voices[0] } else { 0.0 };
+
         let rms = (source.iter().map(|s| (s / 32768.0).powi(2)).sum::<f32>() / FRAME as f32).sqrt();
         // Échelle en dB ramenée à 0–1 (−60 dB → 0, 0 dB → 1).
         let level = ((20.0 * rms.max(1e-6).log10() + 60.0) / 60.0).clamp(0.0, 1.0);
@@ -466,22 +570,46 @@ impl MicProcessor {
         self.meter.voice.store(voice.to_bits(), Ordering::Relaxed);
         self.meter.open.store(target > 0.0, Ordering::Relaxed);
 
-        if self.filters.level {
-            self.leveler.begin_frame(rms, voice >= 0.5 && target > 0.0);
+        // Pauses : la voix qui entre (en avance) et celle qui sort sont
+        // toutes deux absentes depuis 100 ms, et l'IA n'entend pas de voix
+        // non plus (une voix douce dans le bruit ne doit pas baisser).
+        let pause = self.filters.level && self.filters.gate;
+        if pause && voice.max(voice_out) < PAUSE_VOICE && !ai_voice {
+            self.quiet_frames = self.quiet_frames.saturating_add(1);
+        } else {
+            self.quiet_frames = 0;
         }
-        for &s in source.iter() {
+        let pause_target = if pause && self.quiet_frames >= PAUSE_AFTER_FRAMES { PAUSE_DIP } else { 1.0 };
+        let (down, up) = (smoothing(0.15), smoothing(0.01));
+
+        // Porte, baisse des pauses puis égaliseur.
+        self.eq_buf.clear();
+        let mut dry = [0.0f32; FRAME];
+        for (&s, d) in source.iter().zip(dry.iter_mut()) {
             if self.gain < target {
                 self.gain = (self.gain + ATTACK).min(target);
             } else if self.gain > target {
                 self.gain = (self.gain - RELEASE).max(target);
             }
-            let mut v = s / 32768.0 * self.gain;
+            let c = if pause_target < self.pause_gain { down } else { up };
+            self.pause_gain = pause_target + (self.pause_gain - pause_target) * c;
+            let mut v = s / 32768.0 * self.gain * self.pause_gain;
+            *d = v;
             for band in &mut self.eq {
                 v = band.run(v);
             }
-            if self.filters.level {
-                v = self.leveler.process(v);
-            }
+            self.eq_buf.push(v);
+        }
+
+        if self.filters.level {
+            // Le volume auto mesure la voix telle qu'elle sort de
+            // l'égaliseur, seulement quand c'est vraiment de la voix et que
+            // la porte est grande ouverte.
+            let eq_rms = (self.eq_buf.iter().map(|v| v * v).sum::<f32>() / FRAME as f32).sqrt();
+            self.leveler.begin_frame(eq_rms, voice_out >= 0.5 && self.gain >= 0.99);
+        }
+        for (i, &v) in self.eq_buf.iter().enumerate() {
+            let v = if self.filters.level { self.leveler.process(v, dry[i]) } else { v };
             let mut frame = [self.effect.process(v)];
             self.limiter.process(&mut frame);
             out.push(frame[0].clamp(-1.0, 1.0));
@@ -510,6 +638,16 @@ impl MicProcessor {
         } else {
             (above >= AUTO_KEEP_DB && voice >= 0.1) || voice >= 0.5
         };
+        self.track_floor(voice, db);
+        open
+    }
+
+    /// Bruit de fond de la pièce : descend vite sur les silences, remonte
+    /// lentement, bouge à peine pendant que tu parles.
+    fn track_floor(&mut self, voice: f32, db: f32) {
+        if self.floor_db.is_nan() {
+            self.floor_db = db;
+        }
         let rate = if db < self.floor_db {
             0.1
         } else if voice >= 0.5 {
@@ -520,7 +658,6 @@ impl MicProcessor {
             0.003
         };
         self.floor_db = (self.floor_db + (db - self.floor_db) * rate).clamp(-90.0, -20.0);
-        open
     }
 }
 
@@ -540,13 +677,13 @@ fn to_db(power: f32) -> f32 {
 ///    (seulement quand tu parles) et on règle lentement le gain pour viser
 ///    -20 dBFS (de -6 à +18 dB). Une voix douce n'arrive plus trop bas, un
 ///    cri ne sature plus.
-/// 2. Dé-esseur : quand l'aigu (au-dessus de 5 kHz) prend le dessus, comme
-///    sur les S, CH et Z, on ne baisse que cet aigu, de 6 dB au plus. Le
-///    reste de la voix ne bouge pas.
-/// 3. Compresseur : il mesure l'énergie moyenne (RMS sur 10 ms) et non
+/// 2. Compresseur : il mesure l'énergie moyenne (RMS sur 10 ms) et non
 ///    chaque crête, avec un genou doux autour de -18 dBFS et un rapport
 ///    2:1. Il resserre la voix sans écraser les voyelles ni faire ressortir
 ///    les consonnes. Attaque 10 ms, relâche 150 ms, réglés en dB.
+/// 3. Dé-esseur : quand l'aigu (au-dessus de 5 kHz) prend le dessus, comme
+///    sur les S, CH et Z, on ne baisse que cet aigu, de 6 dB au plus. Le
+///    reste de la voix ne bouge pas.
 ///
 /// Le plafond de sécurité est à part (`Limiter`) et toujours actif.
 struct VoiceLeveler {
@@ -557,6 +694,10 @@ struct VoiceLeveler {
     to: f32,
     pos: f32,
     band: Biquad,
+    /// Même filtre, sur le son d'avant l'égaliseur : c'est lui qui repère
+    /// les S, pour qu'un égaliseur qui remonte les aigus ne déclenche pas
+    /// le dé-esseur sur toute la voix.
+    side_band: Biquad,
     high_power: f32,
     full_power: f32,
     ess_db: f32,
@@ -592,6 +733,7 @@ impl VoiceLeveler {
             to: gain,
             pos: 0.0,
             band: Biquad::band_pass(ESS_CENTER_HZ, 0.7),
+            side_band: Biquad::band_pass(ESS_CENTER_HZ, 0.7),
             high_power: 0.0,
             full_power: 0.0,
             ess_db: 0.0,
@@ -614,26 +756,17 @@ impl VoiceLeveler {
         self.pos = 0.0;
     }
 
-    fn process(&mut self, x: f32) -> f32 {
+    /// `x` : le son à traiter ; `side` : le même avant l'égaliseur, qui
+    /// sert seulement à repérer les S.
+    fn process(&mut self, x: f32, side: f32) -> f32 {
         self.pos = (self.pos + 1.0 / FRAME as f32).min(1.0);
-        let x = x * (self.from + (self.to - self.from) * self.pos);
-
-        // Dé-esseur en égaliseur dynamique : on retire une part de la bande
-        // aiguë. Sans S, rien n'est retiré et le son passe intact.
-        let high = self.band.run(x);
-        let c = smoothing(0.002);
-        self.high_power = self.high_power * c + high * high * (1.0 - c);
-        self.full_power = self.full_power * c + x * x * (1.0 - c);
-        let high_db = to_db(self.high_power);
-        let excess = high_db - to_db(self.full_power) - ESS_THRESHOLD_DB;
-        let wanted = if high_db > ESS_FLOOR_DB { excess.clamp(0.0, ESS_MAX_DB) } else { 0.0 };
-        let c = if wanted > self.ess_db { smoothing(0.001) } else { smoothing(0.06) };
-        self.ess_db = wanted + (self.ess_db - wanted) * c;
-        let y = x - high * (1.0 - 10f32.powf(-self.ess_db / 20.0));
+        let gain = self.from + (self.to - self.from) * self.pos;
+        let x = x * gain;
+        let side = side * gain;
 
         // Compresseur RMS à genou doux.
         let c = smoothing(0.01);
-        self.power = self.power * c + y * y * (1.0 - c);
+        self.power = self.power * c + x * x * (1.0 - c);
         let over = to_db(self.power) - COMP_THRESHOLD_DB;
         let slope = 1.0 / COMP_RATIO - 1.0;
         let wanted = if over <= -COMP_KNEE_DB / 2.0 {
@@ -645,7 +778,24 @@ impl VoiceLeveler {
         };
         let c = if wanted < self.comp_db { smoothing(0.01) } else { smoothing(0.15) };
         self.comp_db = wanted + (self.comp_db - wanted) * c;
-        y * 10f32.powf(self.comp_db / 20.0)
+        let comp = 10f32.powf(self.comp_db / 20.0);
+        let x = x * comp;
+        let side = side * comp;
+
+        // Dé-esseur en égaliseur dynamique, après le compresseur comme en
+        // studio : la compression fait ressortir les S, on les calme ensuite.
+        // On retire une part de la bande aiguë ; sans S, rien n'est retiré.
+        let high = self.band.run(x);
+        let side_high = self.side_band.run(side);
+        let c = smoothing(0.002);
+        self.high_power = self.high_power * c + side_high * side_high * (1.0 - c);
+        self.full_power = self.full_power * c + side * side * (1.0 - c);
+        let high_db = to_db(self.high_power);
+        let excess = high_db - to_db(self.full_power) - ESS_THRESHOLD_DB;
+        let wanted = if high_db > ESS_FLOOR_DB { excess.clamp(0.0, ESS_MAX_DB) } else { 0.0 };
+        let c = if wanted > self.ess_db { smoothing(0.001) } else { smoothing(0.06) };
+        self.ess_db = wanted + (self.ess_db - wanted) * c;
+        x - high * (1.0 - 10f32.powf(-self.ess_db / 20.0))
     }
 }
 
@@ -685,8 +835,9 @@ mod tests {
         let input = vec![0.1; 44_100 * 2];
         let out = run(OFF, 44_100, 2, &input);
         assert!((out.len() as i64 - 48_000).abs() <= FRAME as i64, "{}", out.len());
-        // Sans filtre, le signal passe tel quel (hors tout début interpolé depuis 0).
-        assert!(out[FRAME..].iter().all(|v| (v - 0.1).abs() < 1e-4));
+        // Même sans filtre, l'anti-grondement (80 Hz) reste là : un continu
+        // disparaît en quelques dizaines de ms.
+        assert!(out[out.len() / 2..].iter().all(|v| v.abs() < 1e-3));
     }
 
     #[test]
@@ -716,7 +867,9 @@ mod tests {
             .sum::<f64>()
             / out.len() as f64;
         let db = 10.0 * (err / ((a * a + b * b) / 2.0)).log10();
-        assert!(db < -90.0, "parasites {db:.1} dB");
+        // L'anti-grondement (toujours actif, en f32) laisse un fond vers
+        // -89 dB : inaudible.
+        assert!(db < -85.0, "parasites {db:.1} dB");
     }
 
     fn noise(n: usize, amp: f32) -> Vec<f32> {
@@ -741,6 +894,16 @@ mod tests {
         let tail = &out[out.len() / 2..];
         // Au moins 20 dB de moins sur un souffle constant.
         assert!(rms(tail) < rms(&input) * 0.1, "{} vs {}", rms(tail), rms(&input));
+    }
+
+    #[test]
+    fn light_denoise_is_capped_at_30_db() {
+        // Un souffle faible, que RNNoise seul retire presque entièrement.
+        let input = noise(48_000 * 2, 0.0005);
+        let filters = MicFilters { denoise: true, strong: false, ..OFF };
+        let out = run(filters, 48_000, 1, &input);
+        let db = 20.0 * (rms(&out[out.len() / 2..]) / rms(&input)).log10();
+        assert!(db > -30.0, "{db}");
     }
 
     #[test]
@@ -804,7 +967,7 @@ mod tests {
         for f in 0..500 {
             let frame: Vec<f32> = (0..FRAME).map(|i| ((f * FRAME + i) as f32 * 0.03).sin() * amp).collect();
             l.begin_frame(rms(&frame), true);
-            out.extend(frame.iter().map(|&x| l.process(x)));
+            out.extend(frame.iter().map(|&x| l.process(x, x)));
         }
         rms(&out[out.len() / 2..])
     }
@@ -831,7 +994,7 @@ mod tests {
         let through = |freq: f32| {
             let mut l = VoiceLeveler::new(None);
             let input = tone(freq, 0.05, 48_000);
-            let out: Vec<f32> = input.iter().map(|&x| l.process(x)).collect();
+            let out: Vec<f32> = input.iter().map(|&x| l.process(x, x)).collect();
             20.0 * (rms(&out[24_000..]) / rms(&input[24_000..])).log10()
         };
         let vowel = through(1000.0);
@@ -885,6 +1048,21 @@ mod tests {
             longest = longest.max(run_len);
         }
         assert!(longest < 48, "trou de {longest} échantillons");
+    }
+
+    #[test]
+    fn deep_filter_reduction_follows_room_noise() {
+        let filters = MicFilters { denoise: true, strong: true, ..OFF };
+        let atten = |amp: f32| {
+            let mut p = MicProcessor::new(1, 48_000, filters, VoiceEffect::None, Default::default());
+            let mut out = Vec::new();
+            p.process(noise(48_000 * 3, amp).into_iter(), &mut out);
+            p.atten_db
+        };
+        // Micro muet (déjà filtré) : le souffle anti-trous suffit, 21 dB.
+        assert_eq!(atten(0.0), 21.0);
+        // Pièce bruyante (-45 dBFS) : réduction maximale.
+        assert_eq!(atten(0.01), DF_ATTEN_MAX_DB);
     }
 
     #[test]

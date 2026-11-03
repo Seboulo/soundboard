@@ -21,7 +21,29 @@ pub struct LookaheadLimiter {
     gain: f32,
     /// 8 dernières valeurs de chaque canal, pour estimer les crêtes entre
     /// deux échantillons (« true peak »).
-    history: Vec<[f32; TAPS]>,
+    meters: Vec<TruePeak>,
+}
+
+/// Vrai pic d'un canal : l'échantillon et trois points estimés entre
+/// deux échantillons (là où un convertisseur ou un encodeur peut saturer).
+#[derive(Clone, Default)]
+pub struct TruePeak {
+    history: [f32; TAPS],
+}
+
+impl TruePeak {
+    /// Ajoute un échantillon et renvoie le plus grand pic autour de lui.
+    pub fn push(&mut self, v: f32) -> f32 {
+        let h = &mut self.history;
+        h.copy_within(1.., 0);
+        h[TAPS - 1] = v;
+        let mut peak = v.abs();
+        for row in true_peak_coefs() {
+            let y: f32 = row.iter().zip(h.iter()).map(|(c, x)| c * x).sum();
+            peak = peak.max(y.abs());
+        }
+        peak
+    }
 }
 
 const TAPS: usize = 8;
@@ -68,7 +90,7 @@ impl LookaheadLimiter {
             sum: n as f64,
             at: 0,
             gain: 1.0,
-            history: vec![[0.0; TAPS]; channels],
+            meters: vec![TruePeak::default(); channels],
         }
     }
 
@@ -85,16 +107,9 @@ impl LookaheadLimiter {
         // Crête vraie : l'échantillon lui-même et l'onde reconstruite entre
         // les échantillons voisins, là où le décodage de Discord (Opus) et
         // les cartes son peuvent dépasser le plafond.
-        let coefs = true_peak_coefs();
         let mut peak = 0.0f32;
-        for (h, &v) in self.history.iter_mut().zip(frame.iter().take(ch)) {
-            h.copy_within(1.., 0);
-            h[TAPS - 1] = v;
-            peak = peak.max(v.abs());
-            for row in coefs {
-                let y: f32 = row.iter().zip(h.iter()).map(|(c, x)| c * x).sum();
-                peak = peak.max(y.abs());
-            }
+        for (m, &v) in self.meters.iter_mut().zip(frame.iter().take(ch)) {
+            peak = peak.max(m.push(v));
         }
         let slot = &mut self.delay[self.at_delay * ch..(self.at_delay + 1) * ch];
         for (d, f) in slot.iter_mut().zip(frame.iter_mut()) {

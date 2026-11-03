@@ -118,8 +118,15 @@ fn analyze_samples(samples: impl Iterator<Item = f32>, channels: u16, rate: u32)
     let mut sum_sq: f64 = 0.0;
     let (mut block_sq, mut block_n) = (0.0f64, 0u64);
     let (mut loud_sq, mut loud_n) = (0.0f64, 0u64);
-    // Pondération K par canal, puis énergie par tranche de 100 ms.
-    let mut filters = vec![k_weighting(rate as f64); channels];
+    // Le volume ressenti est mesuré tel que Discord le transmet : replié en
+    // mono (somme, ou différence quand les canaux s'opposent, comme
+    // `MonoSafe`), compté comme un mono joué sur deux haut-parleurs. Un même
+    // son en mono ou en stéréo ressort ainsi au même volume, et un son
+    // stéréo très large n'est plus trop doux chez les autres.
+    // Pondération K, puis énergie par tranche de 100 ms.
+    let mut filters = [k_weighting(rate as f64), k_weighting(rate as f64)];
+    let (mut frame_sum, mut frame_diff) = (0.0f64, 0.0f64);
+    let mut diff_sq = 0.0f64;
     let k_block = (rate / 10).max(1) as usize;
     let mut k_blocks: Vec<f64> = Vec::new();
     let (mut k_sq, mut k_n) = (0.0f64, 0usize);
@@ -139,14 +146,24 @@ fn analyze_samples(samples: impl Iterator<Item = f32>, channels: u16, rate: u32)
             (block_sq, block_n) = (0.0, 0);
         }
         let ch = i % channels;
-        let [shelf, high_pass] = &mut filters[ch];
-        let w = high_pass.run(shelf.run(v as f64));
-        k_sq += w * w;
+        frame_sum += v as f64;
+        if channels == 2 {
+            frame_diff += if ch == 0 { v as f64 } else { -(v as f64) };
+        }
         if ch == channels - 1 {
+            let sum = frame_sum / channels as f64;
+            let diff = frame_diff / channels as f64;
+            (frame_sum, frame_diff) = (0.0, 0.0);
+            let [shelf, high_pass] = &mut filters[0];
+            let w = high_pass.run(shelf.run(sum));
+            k_sq += w * w;
+            let [shelf, high_pass] = &mut filters[1];
+            let w = high_pass.run(shelf.run(diff));
+            diff_sq += w * w;
             k_n += 1;
             if k_n == k_block {
-                k_blocks.push(k_sq / k_n as f64);
-                (k_sq, k_n) = (0.0, 0);
+                k_blocks.push(fold_power(k_sq, diff_sq) / k_n as f64);
+                (k_sq, diff_sq, k_n) = (0.0, 0.0, 0);
             }
         }
     }
@@ -157,7 +174,7 @@ fn analyze_samples(samples: impl Iterator<Item = f32>, channels: u16, rate: u32)
     // Dernière tranche incomplète : comptée seulement si elle n'est pas
     // minuscule, sinon elle fausserait la moyenne des sons très courts.
     if k_n > k_block / 4 || (k_blocks.is_empty() && k_n > 0) {
-        k_blocks.push(k_sq / k_n as f64);
+        k_blocks.push(fold_power(k_sq, diff_sq) / k_n as f64);
     }
     if count == 0 {
         return Err("le fichier ne contient aucun son".into());
@@ -174,7 +191,14 @@ fn analyze_samples(samples: impl Iterator<Item = f32>, channels: u16, rate: u32)
         lufs: integrated.min(-0.01),
         max_momentary: max_momentary.min(-0.01),
         max_short: max_short.min(-0.01),
+        mono_fold: true,
     })
+}
+
+/// Énergie du repli mono (voir `MonoSafe`), comptée deux fois : un mono
+/// joué sur deux haut-parleurs, comme le mesurait la stéréo jusqu'ici.
+fn fold_power(sum: f64, diff: f64) -> f64 {
+    2.0 * if diff > 4.0 * sum { diff } else { sum }
 }
 
 /// Pic de chaque tranche du son, entre 0 et 1.
@@ -188,4 +212,25 @@ pub fn waveform(path: &Path, points: usize) -> Result<Vec<f32>, String> {
         .chunks(chunk)
         .map(|c| c.iter().fold(0.0f32, |m, s| m.max(s.abs())).min(1.0))
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lufs(channels: u16, frames: impl Iterator<Item = Vec<f32>>) -> f32 {
+        analyze_samples(frames.flatten(), channels, 48_000).unwrap().lufs
+    }
+
+    #[test]
+    fn mono_and_stereo_copies_measure_the_same() {
+        let tone = || (0..48_000 * 3).map(|i| (i as f32 * 0.05).sin() * 0.2);
+        let mono = lufs(1, tone().map(|v| vec![v]));
+        let stereo = lufs(2, tone().map(|v| vec![v, v]));
+        assert!((mono - stereo).abs() < 0.1, "{mono} vs {stereo}");
+        // Opposition de phase : mesuré sur la différence, comme le replie
+        // `MonoSafe`, donc pas plus doux.
+        let opposed = lufs(2, tone().map(|v| vec![v, -v]));
+        assert!((opposed - stereo).abs() < 0.1, "{opposed} vs {stereo}");
+    }
 }
