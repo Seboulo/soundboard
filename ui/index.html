@@ -116,16 +116,19 @@
       <p class="hint">Astuce : le pavé numérique (Num 1, Num 2…) ou F13–F24 évitent les conflits avec les jeux. Retour arrière pour effacer.</p>
       <div class="trim">
         <div class="trim-head">
-          <span class="label">Découpe : glisse les poignées pour couper le début et la fin</span>
+          <span class="label">Découpe : glisse les poignées, ou clique sur l'une puis règle-la avec ← →</span>
           <div class="spacer"></div>
+          <button type="button" class="hist-btn" data-action="zoom-out" title="Dézoomer (Ctrl + molette sur l'onde)" aria-label="Dézoomer">−</button>
+          <button type="button" class="hist-btn" data-action="zoom-in" title="Zoomer sur la poignée (Ctrl + molette sur l'onde)" aria-label="Zoomer">+</button>
           <button type="button" class="hist-btn" data-action="undo" title="Annuler (Ctrl+Z)" aria-label="Annuler">↶</button>
           <button type="button" class="hist-btn" data-action="redo" title="Rétablir (Ctrl+Y)" aria-label="Rétablir">↷</button>
         </div>
-        <canvas id="wave" width="1200" height="180"></canvas>
+        <canvas id="wave" width="1200" height="180" tabindex="0" aria-label="Découpe du son"></canvas>
         <div class="trim-bar">
           <span id="trim-info"></span>
           <div class="spacer"></div>
           <button type="button" data-action="preview">▶ Écouter</button>
+          <button type="button" data-action="trim-silence" title="Retire le silence au début et à la fin">✂ Couper les blancs</button>
           <button type="button" data-action="reset-trim">Tout garder</button>
         </div>
       </div>

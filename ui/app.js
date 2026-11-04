@@ -913,7 +913,9 @@ formSound.emoji.addEventListener("input", () => {
 // ---------- Découpe (forme d'onde) ----------
 
 const canvas = $("#wave");
-const trim = { duration: 0, start: 0, end: 0, peaks: [], drag: null };
+// view : partie de l'onde affichée (zoom) ; focus : poignée réglée au clavier.
+const trim = { duration: 0, start: 0, end: 0, peaks: [], drag: null, view: [0, 0], focus: "start" };
+const MAX_ZOOM = 32;
 
 function fmtTime(ms) {
   const s = ms / 1000;
@@ -928,6 +930,8 @@ async function openTrim(sound) {
   trim.start = sound.start_ms ?? 0;
   trim.end = Math.min(sound.end_ms ?? trim.duration, trim.duration);
   trim.peaks = [];
+  trim.view = [0, trim.duration];
+  trim.focus = "start";
   resetHistory();
   drawTrim();
   try {
@@ -943,18 +947,22 @@ function drawTrim() {
   const { width: w, height: h } = canvas;
   const css = getComputedStyle(document.documentElement);
   ctx.clearRect(0, 0, w, h);
-  const x = (ms) => (ms / trim.duration) * w;
+  const [v0, v1] = trim.view;
+  const x = (ms) => ((ms - v0) / (v1 - v0)) * w;
   const xs = x(trim.start);
   const xe = x(trim.end);
 
-  // Forme d'onde : une barre par pic, plus sombre hors de la zone gardée.
+  // Forme d'onde : une barre par pic visible, plus sombre hors de la zone gardée.
   const n = trim.peaks.length;
-  for (let i = 0; i < n; i++) {
-    const px = (i / n) * w;
+  const i0 = Math.max(0, Math.floor((v0 / trim.duration) * n));
+  const i1 = Math.min(n, Math.ceil((v1 / trim.duration) * n));
+  const bw = Math.max(1, w / Math.max(1, i1 - i0) - 1);
+  for (let i = i0; i < i1; i++) {
+    const px = x((i / n) * trim.duration);
     const bh = Math.max(2, trim.peaks[i] * (h - 10));
     const inside = px >= xs && px <= xe;
     ctx.fillStyle = inside ? editing?.color ?? "#4f46e5" : css.getPropertyValue("--wave-off");
-    ctx.fillRect(px, (h - bh) / 2, Math.max(1, w / n - 1), bh);
+    ctx.fillRect(px, (h - bh) / 2, bw, bh);
   }
   if (!n) {
     ctx.fillStyle = css.getPropertyValue("--muted");
@@ -964,8 +972,10 @@ function drawTrim() {
   ctx.fillStyle = css.getPropertyValue("--wave-mask");
   ctx.fillRect(0, 0, xs, h);
   ctx.fillRect(xe, 0, w - xe, h);
-  for (const hx of [xs, xe]) {
-    ctx.fillStyle = css.getPropertyValue("--text");
+  // La poignée réglée aux flèches est en couleur quand l'onde a le focus.
+  const keyboard = document.activeElement === canvas;
+  for (const [hx, which] of [[xs, "start"], [xe, "end"]]) {
+    ctx.fillStyle = css.getPropertyValue(keyboard && trim.focus === which ? "--accent" : "--text");
     ctx.fillRect(hx - 2, 0, 4, h);
     ctx.fillRect(hx - 9, 0, 18, 14);
     ctx.fillRect(hx - 9, h - 14, 18, 14);
@@ -981,15 +991,70 @@ function drawTrim() {
     ctx.lineTo(px, 14);
     ctx.fill();
   }
+  const zoom = trim.duration / (v1 - v0);
   $("#trim-info").textContent =
     (now !== null ? `▶ ${fmtTime(now)}  ·  ` : "") +
-    `${fmtTime(trim.start)} → ${fmtTime(trim.end)}  (durée ${fmtTime(trim.end - trim.start)})`;
+    `${fmtTime(trim.start)} → ${fmtTime(trim.end)}  (durée ${fmtTime(trim.end - trim.start)})` +
+    (zoom > 1.01 ? `  ·  zoom × ${Math.round(zoom)}` : "");
+  zoomOutBtn.disabled = zoom <= 1.01;
+  zoomInBtn.disabled = zoom >= MAX_ZOOM - 0.01;
 }
+
+// ---------- Zoom sur l'onde ----------
+
+const zoomInBtn = $('[data-action="zoom-in"]', dlgSound);
+const zoomOutBtn = $('[data-action="zoom-out"]', dlgSound);
+
+/** Affiche `span` ms autour de `center` (en restant dans le son). */
+function setView(center, span) {
+  span = Math.min(trim.duration, Math.max(trim.duration / MAX_ZOOM, span));
+  let from = Math.max(0, center - span / 2);
+  from = Math.min(from, trim.duration - span);
+  trim.view = [from, from + span];
+  drawTrim();
+}
+
+function zoomBy(factor, center) {
+  const [v0, v1] = trim.view;
+  setView(center ?? (v0 + v1) / 2, (v1 - v0) / factor);
+}
+
+/** Fait défiler l'onde zoomée pour garder la poignée réglée à l'écran. */
+function keepVisible(ms) {
+  const [v0, v1] = trim.view;
+  const span = v1 - v0;
+  if (ms < v0) setView(ms + span / 2 - span * 0.1, span);
+  else if (ms > v1) setView(ms - span / 2 + span * 0.1, span);
+}
+
+zoomInBtn.addEventListener("click", () => zoomBy(2, trim.focus === "end" ? trim.end : trim.start));
+zoomOutBtn.addEventListener("click", () => zoomBy(0.5));
+// Ctrl + molette : zoom là où est la souris ; molette de côté ou Maj +
+// molette : défilement de l'onde zoomée. La molette seule fait défiler la
+// fenêtre comme d'habitude.
+canvas.addEventListener(
+  "wheel",
+  (e) => {
+    if (!trim.duration) return;
+    const [v0, v1] = trim.view;
+    if (e.ctrlKey) {
+      e.preventDefault();
+      zoomBy(e.deltaY < 0 ? 1.5 : 1 / 1.5, msAt(e));
+    } else if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      if (v1 - v0 >= trim.duration) return;
+      e.preventDefault();
+      const d = (e.shiftKey ? e.deltaY : e.deltaX) || e.deltaX;
+      setView((v0 + v1) / 2 + (d / canvas.clientWidth) * (v1 - v0), v1 - v0);
+    }
+  },
+  { passive: false },
+);
 
 function msAt(e) {
   const r = canvas.getBoundingClientRect();
   const ratio = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
-  return Math.round(ratio * trim.duration);
+  const [v0, v1] = trim.view;
+  return Math.round(v0 + ratio * (v1 - v0));
 }
 
 const MIN_TRIM_MS = 50;
@@ -998,6 +1063,8 @@ canvas.addEventListener("pointerdown", (e) => {
   if (!trim.duration) return;
   const ms = msAt(e);
   trim.drag = Math.abs(ms - trim.start) <= Math.abs(ms - trim.end) ? "start" : "end";
+  trim.focus = trim.drag;
+  canvas.focus({ preventScroll: true });
   canvas.setPointerCapture(e.pointerId);
   moveHandle(ms);
 });
@@ -1019,8 +1086,71 @@ function moveHandle(ms) {
 $('[data-action="reset-trim"]', dlgSound).addEventListener("click", () => {
   trim.start = 0;
   trim.end = trim.duration;
+  trim.view = [0, trim.duration];
   drawTrim();
   commitEdit();
+});
+
+// Flèches : la poignée choisie bouge de 0,1 s (Maj : 0,01 s). Tab ou
+// Début/Fin passent d'une poignée à l'autre.
+canvas.addEventListener("keydown", (e) => {
+  if (!trim.duration || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    const step = (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 10 : 100);
+    trim.drag = trim.focus;
+    moveHandle((trim.focus === "start" ? trim.start : trim.end) + step);
+    trim.drag = null;
+    keepVisible(trim.focus === "start" ? trim.start : trim.end);
+  } else if (e.key === "Home" || e.key === "End") {
+    trim.focus = e.key === "Home" ? "start" : "end";
+    keepVisible(trim[trim.focus]);
+    drawTrim();
+  } else if (e.key === "Tab" && trim.focus === (e.shiftKey ? "end" : "start")) {
+    trim.focus = e.shiftKey ? "start" : "end";
+    keepVisible(trim[trim.focus]);
+    drawTrim();
+  } else return;
+  e.preventDefault();
+});
+canvas.addEventListener("keyup", (e) => {
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") commitEdit();
+});
+canvas.addEventListener("focus", () => drawTrim());
+canvas.addEventListener("blur", () => drawTrim());
+
+// Coupe le silence au début et à la fin du passage gardé (marge de 30 ms
+// avant le son, 80 ms après pour ne pas manger la fin qui s'éteint).
+$('[data-action="trim-silence"]', dlgSound).addEventListener("click", () => {
+  const n = trim.peaks.length;
+  if (!n || !trim.duration) return;
+  const per = trim.duration / n;
+  const i0 = Math.floor(trim.start / per);
+  const i1 = Math.min(n, Math.ceil(trim.end / per));
+  const loudest = trim.peaks.slice(i0, i1).reduce((m, v) => Math.max(m, v), 0);
+  const floor = Math.max(0.004, loudest * 0.03);
+  let a = i0;
+  while (a < i1 && trim.peaks[a] < floor) a++;
+  let b = i1 - 1;
+  while (b > a && trim.peaks[b] < floor) b--;
+  if (a >= i1) return toast("Ce passage n'est que du silence.");
+  const start = Math.max(trim.start, Math.round(a * per - 30));
+  const end = Math.min(trim.end, Math.round((b + 1) * per + 80));
+  if (start - trim.start < 20 && trim.end - end < 20) return toast("Pas de blanc à couper.");
+  trim.start = start;
+  trim.end = Math.max(end, start + MIN_TRIM_MS);
+  drawTrim();
+  commitEdit();
+});
+
+// Double-clic sur un curseur : retour à sa valeur normale.
+dlgSound.addEventListener("dblclick", (e) => {
+  const el = e.target;
+  if (el.type !== "range") return;
+  const normal = el.dataset.fx ? FX_DEFAULT[el.dataset.fx] : el.name === "volume" ? 1 : null;
+  if (normal == null || Number(el.value) === normal) return;
+  el.value = normal;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
 });
 
 const PREVIEW_ID = "__preview";

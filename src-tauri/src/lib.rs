@@ -1474,7 +1474,7 @@ async fn get_waveform(app: AppHandle, id: String) -> Result<Vec<f32>, String> {
         return Ok(peaks.clone());
     }
     let sound = find_sound(&state, &id)?;
-    let peaks = tauri::async_runtime::spawn_blocking(move || analysis::waveform(&sound.path, 600))
+    let peaks = tauri::async_runtime::spawn_blocking(move || analysis::waveform(&sound.path, 2400))
         .await
         .map_err(|e| e.to_string())??;
     state.waveforms.lock().unwrap().insert(id, peaks.clone());

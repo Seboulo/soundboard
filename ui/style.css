@@ -526,7 +526,8 @@ dialog, .set-panes, .results { overscroll-behavior: contain; }
   cursor: ew-resize;
   touch-action: none;
 }
-.trim-bar { display: flex; align-items: center; gap: 8px; }
+.trim-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.trim-bar button { white-space: nowrap; }
 .trim-head { display: flex; align-items: center; gap: 6px; }
 .hist-btn { width: 34px; padding: 4px 0; font-size: 17px; line-height: 1; }
 .hist-btn:disabled { opacity: .35; cursor: default; }
