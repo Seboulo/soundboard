@@ -35,9 +35,23 @@ function toast(message, isError = false, action = null) {
   toast.timer = setTimeout(() => (el.hidden = true), action ? 8000 : isError ? 6000 : 2500);
 }
 
+// Un son ajouté pendant qu'un onglet est ouvert y est rangé directement.
+const ADD_CMDS = new Set(["pick_sounds", "add_sounds", "add_online", "add_from_url", "add_from_youtube"]);
+
 async function call(cmd, args) {
   try {
-    const res = await invoke(cmd, args);
+    const tab = ADD_CMDS.has(cmd) ? tabCategory() : null;
+    const before = tab && new Set(state.config.sounds.map((s) => s.id));
+    let res = await invoke(cmd, args);
+    if (tab && res) {
+      const snap = res.config ? res : res.snapshot;
+      const ids = (snap?.config.sounds ?? []).filter((s) => !before.has(s.id) && !s.category).map((s) => s.id);
+      if (ids.length) {
+        const placed = await invoke("set_category", { ids, category: tab });
+        if (res.config) res = placed;
+        else res.snapshot = placed;
+      }
+    }
     if (res && res.config) render(res);
     return res;
   } catch (e) {
@@ -428,6 +442,7 @@ function renderGrid() {
   $("#empty").hidden = state.config.sounds.length > 0;
   renderStartSteps();
   $("#top-empty").hidden = !(currentTab === TOP_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
+  $("#tab-empty").hidden = !(currentTab && !isSpecialTab(currentTab) && sounds.length === 0 && !q);
   $("#recent-empty").hidden = !(currentTab === RECENT_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
   $("#search-empty").hidden = !(q && sounds.length === 0 && state.config.sounds.length > 0);
   $('#search-empty [data-action="search-online"] span').textContent = `Chercher « ${$("#search").value.trim()} » en ligne`;
@@ -586,7 +601,17 @@ dlgTab.addEventListener("close", async () => {
         localStorage.setItem(TAB_KEY, value);
       } catch {}
     }
-    if (await call("rename_tab", { old: name, new: value })) toast(`Onglet renommé en « ${value} »`);
+    // Un groupe replié le reste sous son nouveau nom.
+    if (closedGroups.delete(name)) {
+      closedGroups.add(value);
+      try {
+        localStorage.setItem(GROUPS_KEY, JSON.stringify([...closedGroups]));
+      } catch {}
+    }
+    const merged = cats.includes(value);
+    if (await call("rename_tab", { old: name, new: value })) {
+      toast(merged ? `« ${name} » regroupé avec « ${value} »` : `Onglet renommé en « ${value} »`);
+    }
   } else if (await call("rename_tab", { old: name, new: null })) {
     toast(`Onglet « ${name} » supprimé`);
   }
