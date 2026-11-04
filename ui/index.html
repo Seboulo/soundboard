@@ -130,13 +130,28 @@
     <form method="dialog" class="form">
       <h2>Modifier le son</h2>
       <label>Nom <input name="sound_name" required maxlength="60"></label>
+      <div class="emoji-row">
+        <label>Emoji <input name="emoji" maxlength="16" placeholder="🙂" class="emoji-input"></label>
+        <div id="emoji-picks" class="emoji-picks"></div>
+      </div>
+      <p class="hint">Choisis-en un ou tape celui que tu veux (Windows + . ouvre le clavier d'emojis).</p>
+      <div class="row2">
+        <label>Onglet
+          <input name="category" list="categories" maxlength="30" placeholder="Aucun (seulement dans « Tous »)">
+        </label>
+        <label>Couleur <input name="color" type="color"></label>
+      </div>
+      <datalist id="categories"></datalist>
       <label>Raccourci global
         <input name="hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche">
       </label>
       <p class="hint">Astuce : le pavé numérique (Num 1, Num 2…) ou F13–F24 évitent les conflits avec les jeux. Retour arrière pour effacer.</p>
+      <label>Volume <span class="value" data-for="volume"></span>
+        <input name="volume" type="range" list="tick-100" min="0" max="2" step="0.05">
+      </label>
       <div class="trim">
         <div class="trim-head">
-          <span class="label">Découpe : glisse les poignées, ou clique sur l'une puis règle-la avec ← →</span>
+          <span class="label">Découpe <small>glisse les poignées, ou ← → pour affiner</small></span>
           <div class="spacer"></div>
           <button type="button" class="hist-btn" data-action="zoom-out" title="Dézoomer (Ctrl + molette sur l'onde)" aria-label="Dézoomer">−</button>
           <button type="button" class="hist-btn" data-action="zoom-in" title="Zoomer sur la poignée (Ctrl + molette sur l'onde)" aria-label="Zoomer">+</button>
@@ -152,9 +167,9 @@
           <button type="button" data-action="reset-trim">Tout garder</button>
         </div>
       </div>
-      <div class="fx">
-        <div class="fx-head">
-          <span class="label">Effets</span>
+      <details class="fx">
+        <summary class="fx-head"><span class="label">Effets</span><span id="fx-state" class="fx-state"></span></summary>
+        <div class="fx-sub">
           <span class="hint">Le fichier d'origine n'est jamais modifié.</span>
           <div class="spacer"></div>
           <button type="button" data-action="fx-reset">Sans effet</button>
@@ -196,10 +211,7 @@
           </label>
         </div>
         <label class="set-row"><span class="txt"><b>À l'envers</b><small>Le passage découpé est joué de la fin vers le début.</small></span><input type="checkbox" class="switch" data-fx="reverse"></label>
-      </div>
-      <label>Volume <span class="value" data-for="volume"></span>
-        <input name="volume" type="range" list="tick-100" min="0" max="2" step="0.05">
-      </label>
+      </details>
       <div class="illus">
         <div class="illus-head">
           <div id="image-preview" class="image-preview"></div>
@@ -222,18 +234,6 @@
           <span class="hint powered">Images fournies par GIPHY</span>
         </div>
       </div>
-      <div class="emoji-row">
-        <label>Emoji <input name="emoji" maxlength="16" placeholder="🙂" class="emoji-input"></label>
-        <div id="emoji-picks" class="emoji-picks"></div>
-      </div>
-      <p class="hint">Choisis-en un ou tape celui que tu veux (Windows + . ouvre le clavier d'emojis).</p>
-      <div class="row2">
-        <label>Onglet
-          <input name="category" list="categories" maxlength="30" placeholder="Aucun (seulement dans « Tous »)">
-        </label>
-        <label>Couleur <input name="color" type="color"></label>
-      </div>
-      <datalist id="categories"></datalist>
       <label class="set-row"><span class="txt"><b>Jouer en boucle</b><small>Avec un fondu au début et à la fin. Clique à nouveau sur le son pour l'arrêter.</small></span><input name="looping" type="checkbox" class="switch"></label>
       <label class="set-row"><span class="txt"><b>Ne jamais être coupé par les autres sons</b><small>Pratique pour une musique de fond.</small></span><input name="keep_playing" type="checkbox" class="switch"></label>
       <div class="actions">

@@ -961,6 +961,8 @@ function openSoundDialog(sound) {
   $("#image-results").replaceChildren();
   $("#image-query").value = sound.name;
   setFx(sound.fx);
+  // Effets repliés tant qu'il n'y en a pas : la fenêtre reste courte.
+  fxBox.open = $("#fx-state").classList.contains("on");
   dlgSound.returnValue = "";
   dlgSound.showModal();
   openTrim(sound);
@@ -1154,7 +1156,7 @@ function drawTrim() {
   const zoom = trim.duration / (v1 - v0);
   $("#trim-info").textContent =
     (now !== null ? `▶ ${fmtTime(now)}  ·  ` : "") +
-    `${fmtTime(trim.start)} → ${fmtTime(trim.end)}  (durée ${fmtTime(trim.end - trim.start)})` +
+    `${fmtTime(trim.start)} → ${fmtTime(trim.end)}  ·  ${fmtTime(trim.end - trim.start)}` +
     (zoom > 1.01 ? `  ·  zoom × ${Math.round(zoom)}` : "");
   zoomOutBtn.disabled = zoom <= 1.01;
   zoomInBtn.disabled = zoom >= MAX_ZOOM - 0.01;
@@ -1452,10 +1454,18 @@ function setFx(fx) {
 function refreshFx() {
   const fx = currentFx();
   for (const span of fxBox.querySelectorAll("[data-fxv]")) span.textContent = fmtFx(span.dataset.fxv, fx[span.dataset.fxv]);
+  const active = [];
   for (const b of fxBox.querySelectorAll("[data-preset]")) {
     const preset = FX_PRESETS[b.dataset.preset];
-    b.classList.toggle("active", Object.entries(preset).every(([k, v]) => fx[k] === v));
+    const on = Object.entries(preset).every(([k, v]) => fx[k] === v);
+    b.classList.toggle("active", on);
+    if (on) active.push(b.textContent.trim());
   }
+  // Résumé visible même replié : « aucun », les effets choisis, ou « réglages perso ».
+  const isDefault = Object.entries(FX_DEFAULT).every(([k, v]) => fx[k] === v);
+  const state = $("#fx-state");
+  state.textContent = isDefault ? "aucun" : active.length ? active.join(" · ") : "réglages perso";
+  state.classList.toggle("on", !isDefault);
 }
 
 for (const el of fxInputs) {

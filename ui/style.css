@@ -1380,3 +1380,31 @@ body { height: auto; min-height: 100%; }
 /* Pastille Micro : neutre allumée, rouge coupée. */
 #mic-toggle { background: var(--panel); border-color: var(--border); color: var(--text); }
 #mic-toggle.off { background: color-mix(in srgb, var(--danger, #e5484d) 12%, var(--panel)); border-color: color-mix(in srgb, var(--danger, #e5484d) 45%, var(--border)); color: color-mix(in srgb, var(--danger, #e5484d) 85%, var(--text)); }
+
+/* ---------- Fenêtre « Modifier le son » ---------- */
+
+/* Titre et boutons toujours visibles : plus besoin de descendre pour Enregistrer. */
+#dlg-sound .form { padding-top: 0; padding-bottom: 0; }
+#dlg-sound .form > h2 {
+  position: sticky; top: 0; z-index: 2;
+  margin: 0 -20px; padding: 18px 20px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+#dlg-sound .form > .actions {
+  position: sticky; bottom: 0; z-index: 2;
+  margin: 6px -20px 0; padding: 12px 20px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+#dlg-sound .trim-head .label small { font-weight: 400; color: var(--muted); margin-left: 6px; }
+
+/* Effets repliables, avec un résumé de ce qui est actif. */
+details.fx > summary { list-style: none; cursor: pointer; align-items: center; }
+details.fx > summary::-webkit-details-marker { display: none; }
+details.fx > summary::before { content: "▸"; color: var(--muted); width: 12px; transition: transform .15s; }
+details.fx[open] > summary::before { transform: rotate(90deg); }
+details.fx:not([open]) { gap: 0; }
+.fx-state { font-size: 12.5px; color: var(--muted); }
+.fx-state.on { color: var(--accent); font-weight: 600; }
+.fx-sub { display: flex; align-items: center; gap: 10px; }
