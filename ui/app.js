@@ -190,6 +190,7 @@ function render(snapshot) {
   state = snapshot;
   renderStatus();
   renderMic();
+  renderSurprise();
   renderWarnings();
   renderTabs();
   renderGrid();
@@ -2032,6 +2033,86 @@ $('[data-action="report"]', dlgDiag).addEventListener("click", async () => {
 $('[data-action="close"]', dlgDiag).addEventListener("click", () => dlgDiag.close());
 $('[data-action="listen"]', dlgDiag).addEventListener("click", () => setListening(!listening));
 dlgDiag.addEventListener("close", () => listening && setListening(false));
+
+// ---------- Mode Surprise ----------
+
+const dlgSurprise = $("#dlg-surprise");
+const formSurprise = $("form", dlgSurprise);
+
+function renderSurprise() {
+  const pill = $("#surprise-toggle");
+  const s = state.config.settings;
+  pill.className = "pill" + (state.surprise_on ? " ok" : "");
+  pill.textContent = state.surprise_on ? "🎲 Surprise activée" : "🎲 Surprise";
+  pill.title = state.surprise_on
+    ? `Un son au hasard toutes les ${s.surprise_min_minutes} à ${s.surprise_max_minutes} min. Clique pour régler ou arrêter.`
+    : "Des sons qui partent tout seuls, au hasard";
+}
+
+function surpriseCount() {
+  const boxes = $$("#surprise-list input");
+  const n = boxes.filter((b) => b.checked).length;
+  $("#surprise-count").textContent =
+    n === 0 ? "Aucun coché : tous les sons peuvent sortir." : `${n} son${n > 1 ? "s" : ""} sur ${boxes.length}`;
+}
+
+function openSurprise() {
+  const s = state.config.settings;
+  const chosen = new Set(s.surprise_sounds || []);
+  formSurprise.on.checked = state.surprise_on;
+  formSurprise.min.value = s.surprise_min_minutes;
+  formSurprise.max.value = s.surprise_max_minutes;
+  const list = $("#surprise-list");
+  list.replaceChildren(
+    ...state.config.sounds.map((snd) => {
+      const row = document.createElement("label");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.value = snd.id;
+      box.checked = chosen.has(snd.id);
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.style.setProperty("--pad-color", snd.color);
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = (snd.emoji ? snd.emoji + " " : "") + snd.name;
+      row.append(box, dot, name);
+      return row;
+    }),
+  );
+  if (!state.config.sounds.length) list.textContent = "Ajoute d'abord quelques sons.";
+  surpriseCount();
+  dlgSurprise.returnValue = "";
+  dlgSurprise.showModal();
+}
+
+$("#surprise-list").addEventListener("change", surpriseCount);
+for (const [action, checked] of [["all", true], ["none", false]]) {
+  $(`[data-action="${action}"]`, dlgSurprise).addEventListener("click", () => {
+    $$("#surprise-list input").forEach((b) => (b.checked = checked));
+    surpriseCount();
+  });
+}
+$('[data-action="cancel"]', dlgSurprise).addEventListener("click", () => dlgSurprise.close());
+dlgSurprise.addEventListener("close", async () => {
+  if (dlgSurprise.returnValue !== "save") return;
+  const minutes = (v, d) => Math.min(1440, Math.max(1, Math.round(Number(v)) || d));
+  let min = minutes(formSurprise.min.value, 10);
+  let max = minutes(formSurprise.max.value, 60);
+  if (max < min) [min, max] = [max, min];
+  const settings = {
+    ...state.config.settings,
+    surprise_min_minutes: min,
+    surprise_max_minutes: max,
+    surprise_sounds: $$("#surprise-list input").filter((b) => b.checked).map((b) => b.value),
+  };
+  if (!(await call("update_settings", { settings }))) return;
+  const on = formSurprise.on.checked;
+  // Relancer aussi quand c'était déjà en marche : le nouvel intervalle s'applique tout de suite.
+  if (on || state.surprise_on) await call("set_surprise", { on });
+  toast(on ? `Mode Surprise activé : un son toutes les ${min} à ${max} min` : "Réglages enregistrés");
+});
+$("#surprise-toggle").addEventListener("click", openSurprise);
 
 // ---------- Statistiques ----------
 

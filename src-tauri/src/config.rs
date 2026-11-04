@@ -261,6 +261,11 @@ pub struct Settings {
     pub phone_port: u16,
     /// Code secret dans l'adresse de la page du téléphone.
     pub phone_token: String,
+    /// Mode Surprise : sons qui peuvent sortir (vide = tous les sons).
+    pub surprise_sounds: Vec<String>,
+    /// Mode Surprise : attente entre deux sons, en minutes (tirée au hasard entre les deux).
+    pub surprise_min_minutes: u32,
+    pub surprise_max_minutes: u32,
 }
 
 impl Default for Settings {
@@ -296,6 +301,9 @@ impl Default for Settings {
             phone_enabled: false,
             phone_port: 7878,
             phone_token: String::new(),
+            surprise_sounds: Vec::new(),
+            surprise_min_minutes: 10,
+            surprise_max_minutes: 60,
         }
     }
 }
