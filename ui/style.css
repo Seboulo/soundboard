@@ -1350,3 +1350,33 @@ main { padding-bottom: 12px; }
 /* Le corps grandit avec la page : sinon la barre du haut (et Stop) partait
    au-delà d'un écran de défilement. */
 body { height: auto; min-height: 100%; }
+
+/* ---------- Retouches visuelles ---------- */
+
+/* Couleurs de pads un peu plus franches. */
+:root { --tint-amount: 21%; }
+:root[data-theme="dark"] { --tint-amount: 24%; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --tint-amount: 24%; } }
+
+/* Son sans emoji : une note dans sa couleur. */
+.pad .icon.note .ico { width: 30px; height: 30px; color: color-mix(in srgb, var(--c) 80%, var(--text)); stroke-width: 2; }
+.grid.list .pad .icon.note .ico { width: 20px; height: 20px; }
+
+/* Son en cours : fond plus soutenu, contour net, barre épaisse. */
+.pad.playing {
+  background: color-mix(in srgb, var(--c) calc(var(--tint-amount) + 18%), var(--pad-base));
+  border-color: var(--c);
+  box-shadow: 0 0 0 2px var(--c), 0 10px 26px color-mix(in srgb, var(--c) 30%, transparent);
+}
+.grid:not(.list) .pad .progress { height: 7px; background: var(--c); border-radius: 0 4px 4px 0; }
+.grid:not(.list) .pad.playing .key::after { content: "■ Arrêter"; }
+.grid.list .pad.playing { background: color-mix(in srgb, var(--c) 24%, transparent); }
+.grid.list .pad .progress { height: 3px; }
+
+/* Onglets inactifs lisibles : fond clair, texte plus foncé. */
+.tab:not(.active) { background: var(--panel); border-color: var(--border); color: color-mix(in srgb, var(--text) 78%, var(--muted)); }
+.tab:not(.active):hover { color: var(--text); border-color: color-mix(in srgb, var(--text) 25%, var(--border)); }
+
+/* Pastille Micro : neutre allumée, rouge coupée. */
+#mic-toggle { background: var(--panel); border-color: var(--border); color: var(--text); }
+#mic-toggle.off { background: color-mix(in srgb, var(--danger, #e5484d) 12%, var(--panel)); border-color: color-mix(in srgb, var(--danger, #e5484d) 45%, var(--border)); color: color-mix(in srgb, var(--danger, #e5484d) 85%, var(--text)); }

@@ -205,7 +205,8 @@ function renderMic() {
   const pill = $("#mic-toggle");
   const muted = state.mic_muted;
   pill.hidden = !state.config.settings.mic_enabled;
-  pill.className = "pill " + (muted ? "ko" : "ok");
+  // Neutre quand tout va bien, rouge seulement quand le micro est coupé.
+  pill.className = "pill" + (muted ? " off" : "");
   pill.textContent = muted ? "🔇 Micro coupé" : "🎙 Micro";
   const hk = hotkeyLabel(state.config.settings.mute_hotkey);
   pill.title = (muted ? "Rallumer ton micro" : "Couper ton micro (les sons passent toujours)") + (hk ? ` — ${hk}` : "");
@@ -735,9 +736,11 @@ function padElement(sound, index) {
     img.src = fileSrc(sound.image_still);
     icon.append(img);
   } else {
-    icon.className = "icon" + (emoji ? " emoji" : "");
-    // Sans emoji : l'initiale du son dans une pastille de sa couleur.
-    icon.textContent = emoji || [...sound.name.trim()][0]?.toUpperCase() || "♪";
+    icon.className = "icon" + (emoji ? " emoji" : " note");
+    // Sans emoji : une note dans la couleur du son (des initiales se
+    // répétaient : « S », « S », « S »…).
+    if (emoji) icon.textContent = emoji;
+    else icon.append(svgIcon("note"));
   }
   const eq = document.createElement("span");
   eq.className = "eq";
