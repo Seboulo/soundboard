@@ -171,6 +171,11 @@ fn describe_eq(eq_db: &[f32; 6]) -> String {
 
 /// Écrit du mono 48 kHz en WAV 16 bits.
 pub fn write_wav(path: &Path, samples: &[f32]) -> Result<(), String> {
+    fs::write(path, wav_bytes(samples)).map_err(|e| e.to_string())
+}
+
+/// Mono 48 kHz en fichier WAV 16 bits (en mémoire).
+pub fn wav_bytes(samples: &[f32]) -> Vec<u8> {
     let data_len = (samples.len() * 2) as u32;
     let mut out = Vec::with_capacity(44 + samples.len() * 2);
     out.extend_from_slice(b"RIFF");
@@ -188,7 +193,7 @@ pub fn write_wav(path: &Path, samples: &[f32]) -> Result<(), String> {
     for &s in samples {
         out.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes());
     }
-    fs::write(path, out).map_err(|e| e.to_string())
+    out
 }
 
 #[cfg(test)]

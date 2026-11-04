@@ -101,6 +101,9 @@ enum Command {
     ListenCable(bool, Reply),
     /// Fait entendre ta voix traitée (antibruit, porte, volume) dans le casque.
     HearMyself(bool, Reply),
+    /// Démarre (vrai) ou arrête (faux) l'enregistrement d'un son au micro ;
+    /// l'arrêt renvoie ta voix traitée (mono 48 kHz).
+    MicRecord(bool, Sender<Result<Vec<f32>, String>>),
     /// Donne accès à l'enregistrement du micro (test de voix).
     RecordSlot(Sender<Result<Arc<Mutex<RecordSlot>>, String>>),
 }
@@ -212,6 +215,14 @@ impl AudioHandle {
         let _ = self.send(Command::StopPreview);
     }
 
+    /// Enregistrer un son au micro : `true` démarre, `false` arrête et
+    /// renvoie la voix enregistrée.
+    pub fn mic_record(&self, start: bool) -> Result<Vec<f32>, String> {
+        let (reply, rx) = mpsc::channel();
+        self.send(Command::MicRecord(start, reply))?;
+        wait(rx)
+    }
+
     fn send(&self, cmd: Command) -> Result<(), String> {
         self.tx
             .send(cmd)
@@ -313,9 +324,11 @@ struct Output {
 }
 
 impl Output {
-    fn open(device: &cpal::Device) -> Result<Self, String> {
+    /// `keep_last` : garder les 30 dernières secondes (sortie vers Discord).
+    fn open(device: &cpal::Device, keep_last: bool) -> Result<Self, String> {
         let config = device.default_output_config().map_err(|e| e.to_string())?;
-        let (bus, source) = Bus::new(config.channels(), config.sample_rate().0);
+        let tap = if keep_last { crate::replay::cable_ring(config.sample_rate().0) } else { None };
+        let (bus, source) = Bus::with_tap(config.channels(), config.sample_rate().0, tap);
         let (stream, handle) =
             OutputStream::try_from_device_config(device, config).map_err(|e| e.to_string())?;
         handle.play_raw(source).map_err(|e| e.to_string())?;
@@ -369,9 +382,16 @@ struct Engine {
     hear_voice: Option<Voice>,
     /// Test de voix, partagé avec le fil du micro.
     mic_record: Option<Arc<Mutex<RecordSlot>>>,
+    /// Son enregistré au micro (Some pendant l'enregistrement).
+    mic_take: Option<MicTake>,
     /// Derniers sons avec effets déjà calculés.
     fx_cache: VecDeque<(FxKey, Rendered)>,
 }
+
+/// Voix enregistrée pour en faire un son, partagée avec le fil du micro.
+type MicTake = Arc<Mutex<Option<Vec<f32>>>>;
+/// Une minute au plus.
+const MIC_TAKE_MAX: usize = 60 * denoise::RATE as usize;
 
 /// Ce qui change le résultat d'un son avec effets.
 #[derive(PartialEq)]
@@ -420,6 +440,7 @@ impl Engine {
         self.stop_hearing();
         self.mic_tap = None;
         self.mic_record = None;
+        self.mic_take = None;
         if let Some(v) = self.mic_voice.take() {
             v.stop();
         }
@@ -431,7 +452,7 @@ impl Engine {
         let mut errors = Vec::new();
 
         match find_output(self.settings.monitor_device.as_deref()) {
-            Some(dev) => match Output::open(&dev) {
+            Some(dev) => match Output::open(&dev, false) {
                 Ok(o) => self.monitor = Some(o),
                 Err(e) => errors.push(format!("le casque ne s'ouvre pas ({e}).")),
             },
@@ -442,7 +463,7 @@ impl Engine {
         // fois sur la sortie par défaut doublerait le son.
         if let Some(name) = self.settings.virtual_device.clone() {
             match find_output(Some(&name)) {
-                Some(dev) => match Output::open(&dev) {
+                Some(dev) => match Output::open(&dev, true) {
                     Ok(o) => self.virt = Some(o),
                     Err(e) => errors.push(format!("le câble virtuel ne s'ouvre pas ({e}).")),
                 },
@@ -585,6 +606,8 @@ impl Engine {
         let (tap_on2, tap2) = (tap_on.clone(), tap.clone());
         let record = Arc::new(Mutex::new(RecordSlot::Idle));
         let record2 = record.clone();
+        let take: MicTake = Arc::new(Mutex::new(None));
+        let take2 = take.clone();
         thread::Builder::new()
             .name("micro".into())
             .spawn(move || {
@@ -594,6 +617,12 @@ impl Engine {
                     processor.process(chunk.into_iter(), &mut cleaned);
                     if tap_on2.load(Ordering::Relaxed) {
                         push(&tap2, cleaned.clone(), max_len);
+                    }
+                    if let Ok(mut t) = take2.lock() {
+                        if let Some(v) = t.as_mut() {
+                            let room = MIC_TAKE_MAX.saturating_sub(v.len());
+                            v.extend_from_slice(&cleaned[..room.min(cleaned.len())]);
+                        }
                     }
                     push(&out, cleaned, max_len);
                     if let Ok(mut slot) = record2.try_lock() {
@@ -633,6 +662,7 @@ impl Engine {
         self.mic_voice = Some(voice);
         self.mic_tap = Some((tap_on, tap));
         self.mic_record = Some(record);
+        self.mic_take = Some(take);
         Ok(())
     }
 
@@ -677,6 +707,21 @@ impl Engine {
             }
             Command::StopPreview => {
                 self.stop(PREVIEW_ID);
+            }
+            Command::MicRecord(start, reply) => {
+                let res = match &self.mic_take {
+                    None => Err("ta voix n'est pas envoyée : active « Envoyer ma voix dans Discord » et choisis ton micro dans les réglages".to_string()),
+                    Some(take) => {
+                        let mut t = take.lock().unwrap();
+                        if start {
+                            *t = Some(Vec::with_capacity(10 * denoise::RATE as usize));
+                            Ok(Vec::new())
+                        } else {
+                            Ok(t.take().unwrap_or_default())
+                        }
+                    }
+                };
+                let _ = reply.send(res);
             }
             Command::RecordSlot(reply) => {
                 let _ = reply.send(self.mic_record.clone().ok_or_else(|| {
@@ -757,7 +802,7 @@ impl Engine {
             // sans laisser les passages en opposition de phase s'annuler.
             let source: Box<dyn Source<Item = f32> + Send> =
                 if to_discord && source.channels() == 2 { Box::new(MonoSafe::new(source)) } else { source };
-            voices.push(output.bus.add(source, out_volume));
+            voices.push(output.bus.add_sound(source, out_volume));
         }
         if voices.is_empty() {
             return Err("aucune sortie audio configurée".into());

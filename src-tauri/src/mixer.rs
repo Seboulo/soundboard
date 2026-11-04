@@ -9,6 +9,7 @@
 //! et n'a jamais besoin de couper net.
 
 use crate::dynamics::TruePeak;
+use crate::replay::Ring;
 use rodio::Source;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,6 +19,10 @@ use std::time::Duration;
 const CEILING: f32 = 0.944;
 /// Le limiteur relâche en ~150 ms.
 const RELEASE_SECONDS: f32 = 0.15;
+
+/// Volume des sons pendant qu'un pote parle dans Discord (bits d'un f32,
+/// 1.0 = pas baissé). Réglé par la capture de Discord, voir `replay`.
+pub static DUCK: AtomicU32 = AtomicU32::new(0x3f80_0000);
 
 type BoxedSource = Box<dyn Source<Item = f32> + Send>;
 
@@ -49,6 +54,8 @@ struct Track {
     voice: Voice,
     /// Volume appliqué au bloc précédent (les changements glissent sur un bloc).
     gain: f32,
+    /// Baissé quand un pote parle (les sons oui, ta voix non).
+    duckable: bool,
 }
 
 /// Côté moteur : ajoute des sons au bus.
@@ -60,7 +67,14 @@ pub struct Bus {
 
 impl Bus {
     /// Crée le bus et la source à donner à rodio.
+    #[cfg(test)]
     pub fn new(channels: u16, rate: u32) -> (Self, BusSource) {
+        Self::with_tap(channels, rate, None)
+    }
+
+    /// Comme `new`, et tout ce qui sort du bus est aussi copié dans `tap`
+    /// (les 30 dernières secondes, pour « Rejouer »).
+    pub fn with_tap(channels: u16, rate: u32, tap: Option<Arc<Ring>>) -> (Self, BusSource) {
         let channels = channels.max(1);
         let rate = rate.max(1);
         let tracks = Arc::new(Mutex::new(Vec::new()));
@@ -80,6 +94,7 @@ impl Bus {
             frame: Vec::with_capacity(8),
             primed: false,
             meters: vec![TruePeak::default(); channels.max(1) as usize],
+            tap,
         };
         (Self { tracks, rate }, source)
     }
@@ -90,6 +105,16 @@ impl Bus {
 
     /// Joue `source` (déjà à la fréquence du bus) à ce volume.
     pub fn add(&self, source: BoxedSource, volume: f32) -> Voice {
+        self.add_track(source, volume, false)
+    }
+
+    /// Comme `add`, pour un son de la soundboard : il baisse quand un pote
+    /// parle (si l'option est activée).
+    pub fn add_sound(&self, source: BoxedSource, volume: f32) -> Voice {
+        self.add_track(source, volume, true)
+    }
+
+    fn add_track(&self, source: BoxedSource, volume: f32, duckable: bool) -> Voice {
         let voice = Voice {
             volume: Arc::new(AtomicU32::new(volume.max(0.0).to_bits())),
             stop: Arc::new(AtomicBool::new(false)),
@@ -100,6 +125,7 @@ impl Bus {
             source,
             voice: voice.clone(),
             gain: volume.max(0.0),
+            duckable,
         };
         if let Ok(mut tracks) = self.tracks.lock() {
             tracks.push(track);
@@ -126,6 +152,7 @@ pub struct BusSource {
     frame: Vec<f32>,
     primed: bool,
     meters: Vec<TruePeak>,
+    tap: Option<Arc<Ring>>,
 }
 
 impl BusSource {
@@ -133,12 +160,16 @@ impl BusSource {
     fn mix_block(&mut self) -> f32 {
         self.mix.iter_mut().for_each(|v| *v = 0.0);
         let ch = self.channels;
+        let duck = f32::from_bits(DUCK.load(Ordering::Relaxed));
         if let Ok(mut tracks) = self.tracks.lock() {
             for track in tracks.iter_mut() {
                 if track.voice.stop.load(Ordering::Relaxed) {
                     continue;
                 }
-                let target = f32::from_bits(track.voice.volume.load(Ordering::Relaxed));
+                let mut target = f32::from_bits(track.voice.volume.load(Ordering::Relaxed));
+                if track.duckable {
+                    target *= duck;
+                }
                 let start = track.gain;
                 let step = (target - start) / self.block as f32;
                 for f in 0..self.block {
@@ -212,6 +243,9 @@ impl BusSource {
         }
         self.gain = end;
         self.out_pos = 0;
+        if let Some(tap) = &self.tap {
+            tap.push(&self.out, ch, self.rate);
+        }
     }
 }
 

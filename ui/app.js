@@ -78,7 +78,7 @@ function hotkeyFromEvent(e) {
 const TYPING_KEY = /^(Key|Digit)|^(Space|Enter|Backspace|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash|IntlBackslash)$/;
 
 const TYPING_MSG = "Ajoute Ctrl ou Alt : une touche d'écriture seule serait bloquée dans toutes tes applis (pavé numérique et F1 à F12 OK).";
-const SETTING_LABELS = { stop_hotkey: "Tout arrêter", mute_hotkey: "Couper le micro", random_hotkey: "Son au hasard" };
+const SETTING_LABELS = { stop_hotkey: "Tout arrêter", mute_hotkey: "Couper le micro", random_hotkey: "Son au hasard", replay_hotkey: "Rejouer 30 s" };
 
 function blocksTyping(e, quiet = false) {
   if (e.ctrlKey || e.altKey || e.metaKey || !TYPING_KEY.test(e.code)) return false;
@@ -194,6 +194,7 @@ function render(snapshot) {
   renderStatus();
   renderMic();
   renderSurprise();
+  renderRoom();
   renderWarnings();
   renderTabs();
   renderGrid();
@@ -1577,7 +1578,7 @@ dlgSound.addEventListener("keydown", (e) => {
 
 const dlgSettings = $("#dlg-settings");
 const formSettings = $("form", dlgSettings);
-const SETTINGS_HOTKEYS = ["stop_hotkey", "mute_hotkey", "random_hotkey"];
+const SETTINGS_HOTKEYS = ["stop_hotkey", "mute_hotkey", "random_hotkey", "replay_hotkey"];
 for (const k of SETTINGS_HOTKEYS) setupHotkeyInput(formSettings[k], () => ({ setting: k }));
 bindRangeLabels(formSettings);
 enterSaves(dlgSettings);
@@ -1626,6 +1627,7 @@ async function openSettings() {
   $("#calib").hidden = true;
   formSettings.freesound_key.value = s.freesound_key ?? "";
   formSettings.giphy_key.value = s.giphy_key ?? "";
+  fillFriendsSettings(s);
   updateNormalizeRow();
   dlgSettings.returnValue = "";
   dlgSettings.showModal();
@@ -1825,6 +1827,13 @@ dlgSettings.addEventListener("close", () => {
     voice_eq: f.voice_eq.value,
     freesound_key: f.freesound_key.value.trim() || null,
     giphy_key: f.giphy_key.value.trim() || null,
+    replay_hotkey: f.replay_hotkey.dataset.hotkey || null,
+    replay_enabled: f.replay_enabled.checked,
+    duck_enabled: f.duck_enabled.checked,
+    duck_level: Number(f.duck_level.value),
+    room_code: f.room_code.value.trim().toUpperCase(),
+    room_name: f.room_name.value.trim(),
+    room_accept: f.room_accept.checked,
   });
 });
 
@@ -2889,6 +2898,375 @@ function stopOnlinePreview() {
   if (online.playingBtn) online.playingBtn.textContent = "▶";
   online.playingBtn = null;
 }
+
+
+// ---------- 2.0 : rejouer, enregistrer, texte → voix ----------
+
+/** Un son vient d'être créé : on le montre et on propose de le découper. */
+function offerTrim(id, message) {
+  const sound = state.config.sounds.find((s) => s.id === id);
+  if (!sound) return toast(message);
+  flash(id);
+  toast(message, false, { label: "Découper", run: () => openSoundDialog(sound) });
+}
+
+async function saveReplay() {
+  toast("Enregistrement des 30 dernières secondes…");
+  const res = await call("save_replay");
+  if (!res) return;
+  render(res.snapshot);
+  offerTrim(res.id, "Extrait ajouté : garde le passage qui t'intéresse");
+}
+$("#btn-replay").addEventListener("click", saveReplay);
+listen("replay-saved", ({ payload }) => offerTrim(payload, "Extrait des 30 dernières secondes ajouté"));
+listen("replay-error", ({ payload }) => toast(String(payload), true));
+
+const dlgRecord = $("#dlg-record");
+const rec = { on: false, started: 0, timer: 0 };
+function recUi() {
+  const btn = $('[data-action="rec"]', dlgRecord);
+  btn.classList.toggle("on", rec.on);
+  btn.setAttribute("aria-label", rec.on ? "Arrêter et garder" : "Commencer l'enregistrement");
+  $("[data-rec-state]", dlgRecord).textContent = rec.on
+    ? "Parle… Appuie sur le carré pour arrêter et garder le son."
+    : "Appuie sur le bouton rouge pour commencer.";
+  const secs = rec.on ? Math.floor((Date.now() - rec.started) / 1000) : 0;
+  $(".rec-time", dlgRecord).textContent = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+  // Une minute au plus : on s'arrête tout seul.
+  if (rec.on && secs >= 60) stopRecording(true);
+}
+async function stopRecording(keep) {
+  if (!rec.on) return;
+  rec.on = false;
+  clearInterval(rec.timer);
+  recUi();
+  const res = await call("mic_record_stop", { keep });
+  if (!keep || !res) return;
+  dlgRecord.close();
+  render(res.snapshot);
+  offerTrim(res.id, "Enregistrement ajouté");
+}
+$('[data-action="rec"]', dlgRecord).addEventListener("click", async () => {
+  if (rec.on) return stopRecording(true);
+  try {
+    await invoke("mic_record_start");
+  } catch (e) {
+    return toast(String(e), true);
+  }
+  rec.on = true;
+  rec.started = Date.now();
+  rec.timer = setInterval(recUi, 250);
+  recUi();
+});
+$('[data-action="close"]', dlgRecord).addEventListener("click", () => dlgRecord.close());
+dlgRecord.addEventListener("close", () => stopRecording(false));
+$("#btn-record").addEventListener("click", () => {
+  if (!state.config.settings.mic_enabled) return toast("Active d'abord « Envoyer ma voix dans Discord » dans les réglages (Micro)", true);
+  recUi();
+  dlgRecord.showModal();
+});
+
+const dlgTts = $("#dlg-tts");
+const formTts = $("form", dlgTts);
+bindRangeLabels(formTts);
+formTts.rate.update = () => ($('.value[data-for="rate"]', dlgTts).textContent = `× ${Number(formTts.rate.value).toFixed(1)}`);
+formTts.rate.addEventListener("input", formTts.rate.update);
+let ttsVoices = null;
+const ttsPrefs = () => {
+  try { return JSON.parse(localStorage.getItem("soundboard.tts") || "{}"); } catch { return {}; }
+};
+$("#btn-tts").addEventListener("click", async () => {
+  const prefs = ttsPrefs();
+  if (!ttsVoices) ttsVoices = (await call("tts_voices")) || [];
+  formTts.voice.replaceChildren(...ttsVoices.map((v) => new Option(`${v.name} (${v.language})`, v.id)));
+  if (!ttsVoices.length) formTts.voice.add(new Option("Voix par défaut de Windows", ""));
+  if (prefs.voice && ttsVoices.some((v) => v.id === prefs.voice)) formTts.voice.value = prefs.voice;
+  formTts.rate.value = prefs.rate ?? 1;
+  formTts.rate.update();
+  dlgTts.showModal();
+  formTts.text.focus();
+});
+function ttsArgs() {
+  const args = { text: formTts.text.value, voice: formTts.voice.value || null, rate: Number(formTts.rate.value) };
+  try { localStorage.setItem("soundboard.tts", JSON.stringify({ voice: args.voice, rate: args.rate })); } catch {}
+  return args;
+}
+$('[data-action="say"]', dlgTts).addEventListener("click", async (e) => {
+  e.currentTarget.disabled = true;
+  await call("tts_say", ttsArgs());
+  e.currentTarget.disabled = false;
+});
+$('[data-action="create"]', dlgTts).addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  const res = await call("tts_create", ttsArgs());
+  btn.disabled = false;
+  if (!res) return;
+  dlgTts.close();
+  formTts.text.value = "";
+  render(res.snapshot);
+  offerTrim(res.id, "Pad créé");
+});
+$('[data-action="close"]', dlgTts).addEventListener("click", () => dlgTts.close());
+formTts.text.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $('[data-action="say"]', dlgTts).click();
+});
+
+// ---------- 2.0 : packs partagés par lien ----------
+
+const dlgFollow = $("#dlg-follow");
+const formFollow = $("form", dlgFollow);
+function openFollow() {
+  formFollow.reset();
+  dlgFollow.returnValue = "";
+  dlgFollow.showModal();
+}
+$("#btn-follow").addEventListener("click", openFollow);
+$('[data-action="close"]', dlgFollow).addEventListener("click", () => dlgFollow.close());
+dlgFollow.addEventListener("close", async () => {
+  if (dlgFollow.returnValue !== "follow") return;
+  toast("Téléchargement du pack…");
+  const res = await call("subscribe_pack", { url: formFollow.url.value.trim(), name: formFollow.name.value.trim() || null });
+  if (!res) return;
+  render(res.snapshot);
+  const sub = state.config.settings.subscriptions.find((s) => s.url === formFollow.url.value.trim());
+  toast(`${res.added} son${res.added > 1 ? "s" : ""} ajouté${res.added > 1 ? "s" : ""} dans « ${sub?.name ?? "l'onglet du pack"} ». Les nouveaux arriveront tout seuls.`);
+});
+listen("packs-updated", ({ payload: [added, removed] }) => {
+  const parts = [];
+  if (added) parts.push(`${added} nouveau${added > 1 ? "x" : ""} son${added > 1 ? "s" : ""}`);
+  if (removed) parts.push(`${removed} retiré${removed > 1 ? "s" : ""}`);
+  toast(`Packs de tes potes : ${parts.join(", ")}`);
+});
+
+const dlgPublish = $("#dlg-publish");
+let publishTab = null;
+function showPublishDone(category) {
+  const pub = state.config.settings.published.find((p) => p.category === category);
+  $('[data-step="pick"]', dlgPublish).hidden = !!pub;
+  $('[data-step="done"]', dlgPublish).hidden = !pub;
+  if (pub) $("[data-path]", dlgPublish).textContent = pub.path;
+  if (pub?.error) toast(`Pack pas encore écrit : ${pub.error}`, true);
+}
+async function publish(folder) {
+  const res = await call("publish_tab", { category: publishTab, folder });
+  if (res) showPublishDone(publishTab);
+}
+$("#btn-publish").addEventListener("click", async () => {
+  publishTab = tabCategory();
+  if (!publishTab) return toast("Ouvre d'abord l'onglet à partager (pas « Tous »)", true);
+  $("[data-tab-name]", dlgPublish).textContent = publishTab;
+  const folders = (await call("cloud_folders")) || [];
+  const list = $("#cloud-list");
+  list.replaceChildren(
+    ...folders.map((f) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      const name = document.createElement("b");
+      name.textContent = f.name;
+      const path = document.createElement("small");
+      path.textContent = f.path;
+      b.append(name, path);
+      b.addEventListener("click", () => publish(f.path));
+      return b;
+    }),
+  );
+  if (!folders.length) list.textContent = "Aucun OneDrive, Dropbox ou Google Drive trouvé sur ce PC : choisis un dossier synchronisé.";
+  showPublishDone(publishTab);
+  dlgPublish.showModal();
+});
+$('[data-action="other"]', dlgPublish).addEventListener("click", () => publish(null));
+$('[data-action="reveal"]', dlgPublish).addEventListener("click", () => call("reveal_published", { category: publishTab }));
+$('[data-action="close"]', dlgPublish).addEventListener("click", () => dlgPublish.close());
+
+function linkItem(title, sub, isError, buttons) {
+  const row = document.createElement("div");
+  row.className = "link-item";
+  const txt = document.createElement("span");
+  txt.className = "txt";
+  const b = document.createElement("b");
+  b.textContent = title;
+  const small = document.createElement("small");
+  small.textContent = sub;
+  small.title = sub;
+  small.classList.toggle("err", isError);
+  txt.append(b, small);
+  row.append(txt);
+  for (const [label, run] of buttons) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = label;
+    btn.addEventListener("click", run);
+    row.append(btn);
+  }
+  return row;
+}
+
+function ago(secs) {
+  if (!secs) return "jamais vérifié";
+  const min = Math.round((Date.now() / 1000 - secs) / 60);
+  return min < 1 ? "vérifié à l'instant" : min < 60 ? `vérifié il y a ${min} min` : `vérifié il y a ${Math.round(min / 60)} h`;
+}
+
+function renderLinkLists() {
+  const s = state.config.settings;
+  $("#subs-list").replaceChildren(
+    ...s.subscriptions.map((sub) =>
+      linkItem(sub.name || "Pack de potes", sub.error ? `⚠ ${sub.error}` : `${ago(sub.last_check)} · ${sub.url}`, !!sub.error, [
+        ["Ne plus suivre", async () => {
+          const remove = confirm(`Ne plus suivre « ${sub.name} ».\n\nSupprimer aussi ses sons ? (OK : supprimer, Annuler : les garder)`);
+          await call("unsubscribe_pack", { url: sub.url, removeSounds: remove });
+          renderLinkLists();
+        }],
+      ]),
+    ),
+  );
+  $("#pubs-list").replaceChildren(
+    ...s.published.map((p) =>
+      linkItem(p.category, p.error ? `⚠ ${p.error}` : p.path, !!p.error, [
+        ["Ouvrir le dossier", () => call("reveal_published", { category: p.category })],
+        ["Arrêter", async () => {
+          await call("unpublish_tab", { category: p.category });
+          renderLinkLists();
+        }],
+      ]),
+    ),
+  );
+}
+$('[data-action="follow"]', dlgSettings).addEventListener("click", openFollow);
+$('[data-action="sync"]', dlgSettings).addEventListener("click", async () => {
+  const res = await call("sync_packs");
+  if (!res) return;
+  renderLinkLists();
+  if (res.errors.length) toast(res.errors.join("\n"), true);
+  else toast(res.added + res.removed ? `${res.added} ajouté(s), ${res.removed} retiré(s)` : "Tout est à jour");
+});
+
+// ---------- 2.0 : salon entre potes ----------
+
+let room = { on: false, connected: false, members: [], target: null };
+const roomPill = $("#room-pill");
+const roomMenu = $("#room-menu");
+
+function renderRoom() {
+  const wrap = $(".room-wrap");
+  wrap.hidden = !state.config.settings.room_code;
+  const target = room.members.find((m) => m.id === room.target);
+  roomPill.className = "pill" + (target ? " away" : "") + (room.connected ? "" : " offline");
+  roomPill.textContent = target ? `👥 Joue chez ${target.name}` : room.connected ? `👥 Salon · ${room.members.length}` : "👥 Salon…";
+  roomPill.title = target
+    ? `Tes sons partent chez ${target.name} (dans Discord par son micro). Clique pour revenir chez toi.`
+    : room.connected
+      ? "Salon entre potes : choisis chez qui jouer tes sons"
+      : "Connexion au salon…";
+  const st = $("#room-state");
+  if (st) {
+    st.textContent = !state.config.settings.room_code
+      ? ""
+      : room.connected
+        ? room.members.length
+          ? `Connecté · en ligne : ${room.members.map((m) => m.name).join(", ")}`
+          : "Connecté · aucun pote en ligne pour l'instant"
+        : "Connexion au salon…";
+  }
+}
+
+function setRoomMenu(open) {
+  roomMenu.hidden = !open;
+  roomPill.setAttribute("aria-expanded", String(open));
+  if (!open) return;
+  const item = (label, id) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("role", "menuitemradio");
+    b.setAttribute("aria-checked", String(room.target === id));
+    b.classList.toggle("on", room.target === id);
+    b.textContent = (room.target === id ? "✓ " : "") + label;
+    b.addEventListener("click", async () => {
+      setRoomMenu(false);
+      room = (await call("set_room_target", { target: id })) || room;
+      renderRoom();
+      const t = room.members.find((m) => m.id === room.target);
+      toast(t ? `Tes sons partent maintenant chez ${t.name}` : "Tes sons sont de nouveau joués chez toi");
+    });
+    return b;
+  };
+  const title = document.createElement("div");
+  title.className = "room-menu-title";
+  title.textContent = "Jouer mes sons…";
+  const items = [title, item("Chez moi", null), ...room.members.map((m) => item(`Chez ${m.name}`, m.id))];
+  if (!room.members.length) {
+    const note = document.createElement("div");
+    note.className = "empty-note";
+    note.textContent = room.connected
+      ? "Aucun pote en ligne : ils doivent mettre le même code dans Réglages → Potes."
+      : "Connexion au salon…";
+    items.push(note);
+  }
+  roomMenu.replaceChildren(...items);
+}
+roomPill.addEventListener("click", () => setRoomMenu(roomMenu.hidden));
+document.addEventListener("pointerdown", (e) => {
+  if (!roomMenu.hidden && !e.target.closest(".room-wrap")) setRoomMenu(false);
+});
+roomMenu.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    e.stopPropagation();
+    setRoomMenu(false);
+    roomPill.focus();
+  }
+});
+listen("room", ({ payload }) => {
+  room = payload;
+  renderRoom();
+  if (!roomMenu.hidden) setRoomMenu(true);
+});
+listen("room-played", ({ payload: [who, title] }) => toast(`${who} a joué « ${title} » chez toi`));
+listen("room-sent", ({ payload }) => {
+  const t = room.members.find((m) => m.id === room.target);
+  toast(`« ${payload} » envoyé chez ${t?.name ?? "ton pote"}`);
+});
+listen("room-error", ({ payload }) => toast(String(payload), true));
+invoke("room_status").then((r) => {
+  room = r;
+  if (state) renderRoom();
+}).catch(() => {});
+
+function fillFriendsSettings(s) {
+  const f = formSettings;
+  f.replay_enabled.checked = s.replay_enabled ?? true;
+  f.duck_enabled.checked = !!s.duck_enabled;
+  const levels = [0.6, 0.35, 0.15];
+  f.duck_level.value = String(levels.reduce((b, o) => (Math.abs(o - (s.duck_level ?? 0.35)) < Math.abs(b - (s.duck_level ?? 0.35)) ? o : b), 0.35));
+  updateDuckRow();
+  $("#discord-status").textContent = state.discord_heard
+    ? "✓ Discord est capté : la voix de tes potes compte pour « Rejouer » et la baisse auto."
+    : "Discord n'est pas capté pour l'instant (lancé ? Windows 10 de mai 2020 ou plus récent ?). « Rejouer » garde quand même ta voix et tes sons.";
+  f.room_code.value = s.room_code ?? "";
+  f.room_name.value = s.room_name ?? "";
+  f.room_accept.checked = s.room_accept ?? true;
+  renderRoom();
+  renderLinkLists();
+}
+function updateDuckRow() {
+  formSettings.duck_level.disabled = !formSettings.duck_enabled.checked;
+}
+formSettings.duck_enabled.addEventListener("change", updateDuckRow);
+$('[data-action="room-new"]', dlgSettings).addEventListener("click", async () => {
+  const code = await call("new_room_code");
+  if (code) formSettings.room_code.value = code;
+  toast("Code créé : copie-le et donne-le à tes potes, puis enregistre");
+});
+$('[data-action="room-copy"]', dlgSettings).addEventListener("click", async () => {
+  const code = formSettings.room_code.value.trim();
+  if (!code) return toast("Crée d'abord un code", true);
+  try {
+    await navigator.clipboard.writeText(code);
+    toast("Code copié");
+  } catch {
+    formSettings.room_code.select();
+  }
+});
 
 // ---------- Démarrage ----------
 
