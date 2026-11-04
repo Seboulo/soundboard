@@ -35,9 +35,23 @@ function toast(message, isError = false, action = null) {
   toast.timer = setTimeout(() => (el.hidden = true), action ? 8000 : isError ? 6000 : 2500);
 }
 
+// Un son ajouté pendant qu'un onglet est ouvert y est rangé directement.
+const ADD_CMDS = new Set(["pick_sounds", "add_sounds", "add_online", "add_from_url", "add_from_youtube"]);
+
 async function call(cmd, args) {
   try {
-    const res = await invoke(cmd, args);
+    const tab = ADD_CMDS.has(cmd) ? tabCategory() : null;
+    const before = tab && new Set(state.config.sounds.map((s) => s.id));
+    let res = await invoke(cmd, args);
+    if (tab && res) {
+      const snap = res.config ? res : res.snapshot;
+      const ids = (snap?.config.sounds ?? []).filter((s) => !before.has(s.id) && !s.category).map((s) => s.id);
+      if (ids.length) {
+        const placed = await invoke("set_category", { ids, category: tab });
+        if (res.config) res = placed;
+        else res.snapshot = placed;
+      }
+    }
     if (res && res.config) render(res);
     return res;
   } catch (e) {
@@ -221,9 +235,13 @@ try {
   currentTab = localStorage.getItem(TAB_KEY) || null;
 } catch {}
 
+/** Onglets dans l'ordre choisi (glisser-déposer), y compris ceux encore vides ;
+ *  ceux qui n'ont pas encore de place viennent après, par ordre alphabétique. */
 function categories() {
-  const set = new Set(state.config.sounds.map((s) => s.category).filter(Boolean));
-  return [...set].sort((a, b) => a.localeCompare(b, "fr"));
+  const mine = (state.config.categories || []).filter(Boolean);
+  const used = new Set(state.config.sounds.map((s) => s.category).filter(Boolean));
+  const extra = [...used].filter((c) => !mine.includes(c)).sort((a, b) => a.localeCompare(b, "fr"));
+  return [...mine, ...extra];
 }
 
 // Onglet spécial des derniers sons joués (aucun nom d'onglet ne commence par \u0000).
@@ -276,8 +294,13 @@ function renderTabs() {
     if (iconName) b.append(svgIcon(iconName));
     b.append(label);
     // Un son glissé sur l'onglet y est rangé.
-    if (value && !isSpecialTab(value)) b.dataset.cat = value;
+    if (value && !isSpecialTab(value)) {
+      b.dataset.cat = value;
+      b.title = "Glisse pour changer l'ordre · clic droit : renommer, supprimer";
+      b.addEventListener("pointerdown", (e) => startTabDrag(e, b, value));
+    }
     b.addEventListener("click", () => {
+      if (reorder.justDropped) return;
       currentTab = value;
       try {
         if (value) localStorage.setItem(TAB_KEY, value);
@@ -399,13 +422,14 @@ function renderGrid() {
   const pads = [];
   // En liste, une ligne d'en-tête comme une playlist.
   if (viewMode === "list" && sounds.length) pads.push(listHeader());
-  const groups = !currentTab && categories().length ? soundGroups(sounds) : null;
+  const groups = !currentTab && categories().length ? soundGroups(sounds, !q) : null;
   if (groups) {
     let n = 0;
     for (const g of groups) {
       // Une recherche montre tout, même les groupes repliés.
       const open = !!q || !closedGroups.has(g.key);
       pads.push(groupHeader(g, open));
+      if (open && !g.sounds.length) pads.push(emptyGroup(g.key));
       if (open) pads.push(...g.sounds.map((s) => padElement(s, n++)));
       else n += g.sounds.length;
     }
@@ -419,6 +443,7 @@ function renderGrid() {
   $("#empty").hidden = state.config.sounds.length > 0;
   renderStartSteps();
   $("#top-empty").hidden = !(currentTab === TOP_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
+  $("#tab-empty").hidden = !(currentTab && !isSpecialTab(currentTab) && sounds.length === 0 && !q);
   $("#recent-empty").hidden = !(currentTab === RECENT_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
   $("#search-empty").hidden = !(q && sounds.length === 0 && state.config.sounds.length > 0);
   $('#search-empty [data-action="search-online"] span').textContent = `Chercher « ${$("#search").value.trim()} » en ligne`;
@@ -436,12 +461,13 @@ try {
   closedGroups = new Set(JSON.parse(localStorage.getItem(GROUPS_KEY) || "[]"));
 } catch {}
 
-function soundGroups(sounds) {
+function soundGroups(sounds, showEmpty) {
   const groups = [];
-  const add = (key, label, list) => list.length && groups.push({ key, label, sounds: list });
+  const add = (key, label, list, keepEmpty) => (list.length || keepEmpty) && groups.push({ key, label, sounds: list });
   add(FAV_GROUP, "Favoris", sounds.filter((s) => s.favorite));
   const rest = sounds.filter((s) => !s.favorite);
-  for (const c of categories()) add(c, c, rest.filter((s) => s.category === c));
+  // Un onglet tout juste créé reste visible pour qu'on puisse y glisser des sons.
+  for (const c of categories()) add(c, c, rest.filter((s) => s.category === c), showEmpty);
   add(NO_TAB_GROUP, "Sans onglet", rest.filter((s) => !s.category));
   return groups;
 }
@@ -466,6 +492,10 @@ function groupHeader(group, open) {
   count.textContent = group.sounds.length;
   head.append(chev, name, count);
   head.title = open ? "Replier" : "Déplier";
+  if (head.dataset.cat) {
+    head.title += " · glisser pour changer l'ordre des onglets · clic droit : renommer, supprimer";
+    head.addEventListener("pointerdown", (e) => startTabDrag(e, head, group.key));
+  }
   head.addEventListener("click", () => {
     if (reorder.justDropped) return;
     if (closedGroups.has(group.key)) closedGroups.delete(group.key);
@@ -477,6 +507,167 @@ function groupHeader(group, open) {
   });
   return head;
 }
+
+/** Onglet vide dans « Tous » : une zone où déposer des sons. */
+function emptyGroup(cat) {
+  const zone = document.createElement("div");
+  zone.className = "group-empty";
+  zone.dataset.cat = cat;
+  zone.textContent = "Onglet vide : glisse des sons ici";
+  return zone;
+}
+
+/** Glisser un onglet (ou un titre de groupe) sur un autre change leur ordre. */
+function startTabDrag(e, el, name) {
+  if (e.button !== 0) return;
+  const x0 = e.clientX;
+  const y0 = e.clientY;
+  let dragging = false;
+  let target = null;
+  const move = (ev) => {
+    if (!dragging && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 8) return;
+    dragging = true;
+    el.classList.add("dragging");
+    let over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".tab[data-cat], .group-head[data-cat]");
+    if (!over?.dataset.cat || over.dataset.cat === name) over = null;
+    if (target && target !== over) target.classList.remove("drag-over");
+    target = over;
+    target?.classList.add("drag-over");
+  };
+  const up = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    el.classList.remove("dragging");
+    target?.classList.remove("drag-over");
+    if (!dragging) return;
+    // Le clic qui suit le relâchement ne doit ni ouvrir ni replier.
+    reorder.justDropped = true;
+    setTimeout(() => (reorder.justDropped = false), 0);
+    if (!target) return;
+    const order = categories();
+    const to = order.indexOf(target.dataset.cat);
+    order.splice(order.indexOf(name), 1);
+    // Vers la droite : il se pose après la cible ; vers la gauche : avant.
+    order.splice(to, 0, name);
+    call("set_tabs", { names: order });
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+}
+
+// ---------- Créer, renommer, supprimer un onglet ----------
+
+const dlgTab = $("#dlg-tab");
+const formTab = $("form", dlgTab);
+let tabEdit = null; // { mode: "new" | "rename" | "delete", name }
+enterSaves(dlgTab);
+
+function openTabDialog(mode, name = "") {
+  tabEdit = { mode, name };
+  const n = state.config.sounds.filter((s) => s.category === name).length;
+  const pl = n > 1;
+  $("h2", dlgTab).textContent = { new: "Nouvel onglet", rename: `Renommer « ${name} »`, delete: `Supprimer « ${name} » ?` }[mode];
+  $("#tab-hint").textContent =
+    mode === "delete"
+      ? n
+        ? `${pl ? `Ses ${n} sons ne sont` : "Son son n'est"} pas supprimé${pl ? "s" : ""} : ${pl ? "ils passent" : "il passe"} dans « Sans onglet ».`
+        : "Il est vide : aucun son n'est touché."
+      : "Range ensuite tes sons dedans en les glissant sur son nom.";
+  formTab.tab_name.closest("label").hidden = mode === "delete";
+  formTab.tab_name.value = mode === "rename" ? name : "";
+  const ok = $('button[value="save"]', dlgTab);
+  ok.textContent = { new: "Créer", rename: "Renommer", delete: "Supprimer" }[mode];
+  ok.classList.toggle("danger", mode === "delete");
+  dlgTab.returnValue = "";
+  dlgTab.showModal();
+  if (mode === "delete") ok.focus();
+  else formTab.tab_name.select();
+}
+$('[data-action="cancel"]', dlgTab).addEventListener("click", () => dlgTab.close());
+dlgTab.addEventListener("close", async () => {
+  if (dlgTab.returnValue !== "save" || !tabEdit) return;
+  const { mode, name } = tabEdit;
+  tabEdit = null;
+  const value = formTab.tab_name.value.trim().slice(0, 30);
+  const cats = categories();
+  if (mode === "new") {
+    if (!value) return;
+    if (cats.includes(value)) return toast(`L'onglet « ${value} » existe déjà`, true);
+    if (await call("set_tabs", { names: [...cats, value] })) toast(`Onglet « ${value} » créé : glisse des sons dessus pour les y ranger`);
+  } else if (mode === "rename") {
+    if (!value || value === name) return;
+    if (currentTab === name) {
+      currentTab = value;
+      try {
+        localStorage.setItem(TAB_KEY, value);
+      } catch {}
+    }
+    // Un groupe replié le reste sous son nouveau nom.
+    if (closedGroups.delete(name)) {
+      closedGroups.add(value);
+      try {
+        localStorage.setItem(GROUPS_KEY, JSON.stringify([...closedGroups]));
+      } catch {}
+    }
+    const merged = cats.includes(value);
+    if (await call("rename_tab", { old: name, new: value })) {
+      toast(merged ? `« ${name} » regroupé avec « ${value} »` : `Onglet renommé en « ${value} »`);
+    }
+  } else if (await call("rename_tab", { old: name, new: null })) {
+    toast(`Onglet « ${name} » supprimé`);
+  }
+});
+
+// Clic droit sur le fond de la grille ou sur la barre des onglets.
+const ctxMenu = $("#ctx-menu");
+const closeCtxMenu = () => (ctxMenu.hidden = true);
+document.addEventListener("contextmenu", (e) => {
+  if (e.target.closest(".pad, dialog, input, textarea, .menu") || !e.target.closest("main, .tabbar")) return;
+  e.preventDefault();
+  const cat = e.target.closest("[data-cat]")?.dataset.cat || null;
+  const item = (icon, label, run, danger) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("role", "menuitem");
+    if (danger) b.className = "danger";
+    b.append(svgIcon(icon), label);
+    b.addEventListener("click", () => {
+      closeCtxMenu();
+      run();
+    });
+    return b;
+  };
+  const items = [item("plus", "Nouvel onglet", () => openTabDialog("new"))];
+  if (cat) {
+    items.push(
+      item("pencil", `Renommer « ${cat} »`, () => openTabDialog("rename", cat)),
+      item("trash", `Supprimer « ${cat} »`, () => openTabDialog("delete", cat), true),
+    );
+  }
+  ctxMenu.replaceChildren(...items);
+  ctxMenu.hidden = false;
+  // Le menu reste dans la fenêtre.
+  const { width, height } = ctxMenu.getBoundingClientRect();
+  ctxMenu.style.left = Math.max(8, Math.min(e.clientX, innerWidth - width - 8)) + "px";
+  ctxMenu.style.top = Math.max(8, Math.min(e.clientY, innerHeight - height - 8)) + "px";
+  $("button", ctxMenu).focus();
+});
+document.addEventListener("pointerdown", (e) => {
+  if (!ctxMenu.hidden && !ctxMenu.contains(e.target)) closeCtxMenu();
+});
+window.addEventListener("blur", closeCtxMenu);
+window.addEventListener("scroll", closeCtxMenu, true);
+ctxMenu.addEventListener("keydown", (e) => {
+  const items = $$("button", ctxMenu);
+  const i = items.indexOf(document.activeElement);
+  if (e.key === "Escape") {
+    e.stopPropagation();
+    closeCtxMenu();
+  } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
+  }
+});
 
 // ---------- Sélection de plusieurs sons ----------
 
