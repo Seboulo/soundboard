@@ -1271,13 +1271,19 @@ async function refreshDevices() {
   } catch {}
 }
 
-async function openSettings() {
-  await refreshDevices();
-  const s = state.config.settings;
+function fillDeviceSelects(chosen) {
   const d = state.devices;
-  fillSelect(formSettings.monitor_device, d.outputs, s.monitor_device, `Par défaut (${d.default_output ?? "aucun"})`);
-  fillSelect(formSettings.virtual_device, d.outputs, s.virtual_device, "Aucun (sons uniquement dans le casque)");
-  fillSelect(formSettings.mic_device, d.inputs, s.mic_device, `Par défaut (${d.default_input ?? "aucun"})`);
+  fillSelect(formSettings.monitor_device, d.outputs, chosen.monitor_device, `Par défaut (${d.default_output ?? "aucun"})`);
+  fillSelect(formSettings.virtual_device, d.outputs, chosen.virtual_device, "Aucun (sons uniquement dans le casque)");
+  fillSelect(formSettings.mic_device, d.inputs, chosen.mic_device, `Par défaut (${d.default_input ?? "aucun"})`);
+}
+
+// Les réglages s'ouvrent tout de suite avec la liste des périphériques déjà
+// connue (tenue à jour toutes les 3 s) ; la liste fraîche, lente à obtenir
+// de Windows, arrive juste après sans perdre ce qui a été choisi.
+async function openSettings() {
+  const s = state.config.settings;
+  fillDeviceSelects(s);
   formSettings.mic_enabled.checked = s.mic_enabled;
   formSettings.denoise_mode.value = !s.noise_suppression ? "off" : s.strong_denoise ? "strong" : "light";
   formSettings.voice_gate.checked = s.voice_gate;
@@ -1306,6 +1312,18 @@ async function openSettings() {
   dlgSettings.returnValue = "";
   dlgSettings.showModal();
   startMeter();
+  invoke("refresh_devices").then((snap) => {
+    // Rien de neuf : pas besoin de redessiner toute la grille derrière.
+    if (JSON.stringify(snap.devices) === JSON.stringify(state.devices)) return;
+    render(snap);
+    if (!dlgSettings.open) return;
+    const f = formSettings;
+    fillDeviceSelects({
+      monitor_device: f.monitor_device.value || null,
+      virtual_device: f.virtual_device.value || null,
+      mic_device: f.mic_device.value || null,
+    });
+  }).catch(() => {});
 }
 
 function nearestTarget(v) {
