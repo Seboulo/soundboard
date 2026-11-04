@@ -25,6 +25,7 @@
       <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></symbol>
       <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></symbol>
       <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4zM13 7l4 4"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="m8 12.5 3 3 5-6"/></symbol>
       <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></symbol>
       <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
       <symbol id="i-volume" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/></symbol>
@@ -41,7 +42,7 @@
     <button id="mic-toggle" class="pill" type="button" hidden></button>
     <button id="surprise-toggle" class="pill" type="button" title="Des sons qui partent tout seuls, au hasard">🎲 Surprise</button>
     <div class="spacer"></div>
-    <label class="search-box"><svg class="ico"><use href="#i-search"/></svg><input id="search" type="search" placeholder="Rechercher un son…" autocomplete="off"></label>
+    <label class="search-box"><svg class="ico"><use href="#i-search"/></svg><input id="search" type="search" placeholder="Rechercher un son… (tape n'importe où)" autocomplete="off"></label>
     <button id="btn-online" type="button" title="Chercher des sons sur internet"><svg class="ico"><use href="#i-globe"/></svg><span class="lbl">En ligne</span></button>
     <button id="btn-add" type="button" class="primary" title="Ajouter des fichiers audio"><svg class="ico"><use href="#i-plus"/></svg><span class="lbl">Ajouter</span></button>
     <button id="btn-stop" type="button" class="danger" title="Tout arrêter"><svg class="ico"><use href="#i-stop"/></svg><span class="lbl">Stop</span></button>
@@ -77,11 +78,21 @@
     </div>
     <label class="size" title="Taille des pads"><input id="pad-size" type="range" min="100" max="220" step="10"></label>
     <button id="btn-random" type="button" title="Jouer un son au hasard de cet onglet"><svg class="ico"><use href="#i-shuffle"/></svg><span class="lbl">Au hasard</span></button>
+    <button id="btn-select" type="button" class="icon" title="Sélectionner plusieurs sons pour les ranger d'un coup (ou Ctrl + clic sur un son)"><svg class="ico"><use href="#i-check"/></svg></button>
     <button id="btn-export" type="button" class="icon" title="Exporter : enregistrer les sons de cet onglet dans un .zip à partager"><svg class="ico"><use href="#i-upload"/></svg></button>
     <button id="btn-import" type="button" class="icon" title="Importer : ajouter les sons d'un pack .zip"><svg class="ico"><use href="#i-download"/></svg></button>
   </nav>
 
   <main>
+    <div id="selection-bar" class="selection-bar" hidden>
+      <span id="selection-count"></span>
+      <form id="selection-form" hidden>
+        <label for="selection-target">Ranger dans</label>
+        <input id="selection-target" list="categories" maxlength="30" placeholder="Nom de l'onglet" autocomplete="off">
+        <button class="primary">Ranger</button>
+      </form>
+      <button id="selection-cancel" type="button" class="ghost">Annuler</button>
+    </div>
     <div id="grid" class="grid"></div>
     <div id="search-empty" class="empty" hidden>
       <p>Aucun son ne correspond à ta recherche.</p>

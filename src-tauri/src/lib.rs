@@ -1589,6 +1589,20 @@ fn toggle_favorite(state: State<AppState>, id: String) -> Result<Snapshot, Strin
     Ok(state.snapshot())
 }
 
+/// Range plusieurs sons d'un coup dans un onglet (aucun : « Sans onglet »).
+#[tauri::command]
+fn set_category(state: State<AppState>, ids: Vec<String>, category: Option<String>) -> Result<Snapshot, String> {
+    {
+        let mut config = state.config.lock().unwrap();
+        let category = clean_category(category);
+        for sound in config.sounds.iter_mut().filter(|s| ids.contains(&s.id)) {
+            sound.category = category.clone();
+        }
+        state.save(&config)?;
+    }
+    Ok(state.snapshot())
+}
+
 /// Ajoute un son à partir d'un lien direct vers un fichier audio.
 #[tauri::command]
 async fn add_from_url(app: AppHandle, url: String) -> Result<Snapshot, String> {
@@ -2282,6 +2296,7 @@ pub fn run() {
             regenerate_phone_token,
             set_mic_muted,
             toggle_favorite,
+            set_category,
             add_from_url,
             add_from_youtube,
             play_random,
