@@ -285,7 +285,10 @@ function renderTabs() {
     });
     return b;
   };
-  $("#tabs").replaceChildren(tab("Tous", null), tab("Récents", RECENT_TAB, "clock"), ...cats.map((c) => tab(c, c)));
+  // Sans aucun son, les outils de tri et d'affichage ne servent à rien : on les cache.
+  const empty = state.config.sounds.length === 0;
+  document.body.classList.toggle("no-sounds", empty);
+  $("#tabs").replaceChildren(...(empty ? [] : [tab("Tous", null), tab("Récents", RECENT_TAB, "clock")]), ...cats.map((c) => tab(c, c)));
   // « Récents » suit l'ordre d'écoute : le tri n'y sert à rien.
   $("#sort").hidden = currentTab === RECENT_TAB;
   $("#categories").replaceChildren(...cats.map((c) => new Option(c)));
@@ -403,6 +406,7 @@ function renderGrid() {
   renderStartSteps();
   $("#recent-empty").hidden = !(currentTab === RECENT_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
   $("#search-empty").hidden = !(q && sounds.length === 0 && state.config.sounds.length > 0);
+  $('#search-empty [data-action="search-online"] span').textContent = `Chercher « ${$("#search").value.trim()} » en ligne`;
   renderPlaying();
 }
 
@@ -2410,6 +2414,8 @@ function renderStartSteps() {
 }
 for (const b of $$('#empty [data-action="start-wizard"]')) b.addEventListener("click", () => openWizard());
 $('#empty [data-action="start-add"]').addEventListener("click", () => call("pick_sounds"));
+$('#empty [data-action="start-online"]').addEventListener("click", () => $("#btn-online").click());
+$('#empty [data-action="start-import"]').addEventListener("click", () => importPack());
 $("#btn-stop").addEventListener("click", () => call("stop_all"));
 $("#btn-settings").addEventListener("click", openSettings);
 $("#cable-status").addEventListener("click", () => (state.devices.vb_cable ? openDiagnostics() : openWizard()));
@@ -2776,6 +2782,12 @@ $("#btn-online").addEventListener("click", () => {
   onlineForm.q.select();
 });
 $('[data-action="close"]', dlgOnline).addEventListener("click", () => dlgOnline.close());
+// Recherche sans résultat dans mes sons : on la relance sur internet.
+$('#search-empty [data-action="search-online"]').addEventListener("click", () => {
+  $("#btn-online").click();
+  onlineForm.q.value = $("#search").value.trim();
+  onlineForm.requestSubmit();
+});
 dlgOnline.addEventListener("close", stopOnlinePreview);
 
 onlineForm.addEventListener("submit", (e) => {

@@ -103,6 +103,7 @@
     <div id="grid" class="grid"></div>
     <div id="search-empty" class="empty" hidden>
       <p>Aucun son ne correspond à ta recherche.</p>
+      <button type="button" data-action="search-online"><svg class="ico"><use href="#i-globe"/></svg><span></span></button>
     </div>
     <div id="recent-empty" class="empty" hidden>
       <p class="big">Aucun son joué pour l'instant</p>
@@ -114,7 +115,7 @@
       <ol class="start-steps">
         <li data-step="cable"><span class="mark"></span><span class="txt"><b>Installer le micro virtuel</b><small>Pour que Discord entende les sons.</small></span><button type="button" data-action="start-wizard">Assistant</button></li>
         <li data-step="discord"><span class="mark"></span><span class="txt"><b>Régler Discord</b><small>Choisir « CABLE Output » comme micro.</small></span><button type="button" data-action="start-wizard">Assistant</button></li>
-        <li data-step="sound"><span class="mark"></span><span class="txt"><b>Ajouter ton premier son</b><small>Glisse des fichiers audio dans la fenêtre, ou :</small></span><button type="button" class="primary" data-action="start-add">Ajouter des sons</button></li>
+        <li data-step="sound"><span class="mark"></span><span class="txt"><b>Ajouter ton premier son</b><small>Glisse des fichiers audio dans la fenêtre, ou :</small></span><span class="start-btns"><button type="button" class="primary" data-action="start-add">Ajouter des sons</button><button type="button" data-action="start-online">En ligne</button><button type="button" data-action="start-import">Pack .zip</button></span></li>
       </ol>
     </div>
   </main>
