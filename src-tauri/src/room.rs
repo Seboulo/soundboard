@@ -330,6 +330,9 @@ impl Room {
     /// Envoie le son en pièce jointe, avec le message qui dit quoi en faire.
     pub async fn publish_file(&self, msg: &Msg, file_name: &str, data: Vec<u8>) -> Result<(), String> {
         let topic = self.inner.lock().unwrap().topic.clone();
+        if topic.is_empty() {
+            return Err("tu n'es dans aucun salon".into());
+        }
         let body = serde_json::to_string(msg).map_err(|e| e.to_string())?;
         let mut url = reqwest::Url::parse(&format!("{SERVER}/{topic}")).map_err(|e| e.to_string())?;
         url.query_pairs_mut().append_pair("message", &body).append_pair("filename", file_name);
