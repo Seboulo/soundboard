@@ -261,8 +261,6 @@ fn apply_autostart(app: &AppHandle, enabled: bool) {
     app.state::<AppState>().set_warnings(WARN_STARTUP, warnings);
 }
 
-/// Calcule durée et niveau des sons importés avant cette version (ou
-/// analysés avant le calcul du niveau sans les silences).
 /// Mesure en arrière-plan le volume des passages découpés ou avec effets,
 /// pour que l'égalisation porte sur ce qui est vraiment joué.
 fn measure_segments(app: AppHandle) {
@@ -308,35 +306,42 @@ fn measure_segments(app: AppHandle) {
     });
 }
 
-fn analyze_missing(app: AppHandle) {
-    std::thread::spawn(move || {
-        let state = app.state::<AppState>();
-        let todo: Vec<(String, PathBuf)> = state
-            .config
-            .lock()
-            .unwrap()
-            .sounds
-            .iter()
-            .filter(|s| s.analysis.is_none_or(|a| a.loudness <= 0.0 || a.lufs >= 0.0 || !a.mono_fold))
-            .map(|s| (s.id.clone(), s.path.clone()))
-            .collect();
-        if todo.is_empty() {
-            return;
-        }
-        let results: Vec<_> = todo
-            .into_iter()
-            .filter_map(|(id, path)| analysis::analyze(&path).ok().map(|a| (id, a)))
-            .collect();
+/// Tourne au lancement, une fois l'audio ouvert, sur le fil de démarrage :
+/// un seul son décodé à la fois, et chaque mesure est enregistrée tout de
+/// suite. Fermer l'appli en cours de route ne fait donc pas tout recommencer
+/// au lancement suivant, et un fichier illisible n'est plus relu à chaque
+/// démarrage.
+fn analyze_missing(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let todo: Vec<(String, PathBuf)> = state
+        .config
+        .lock()
+        .unwrap()
+        .sounds
+        .iter()
+        .filter(|s| s.analysis.is_none_or(|a| a.loudness <= 0.0 || a.lufs >= 0.0 || !a.mono_fold))
+        .map(|s| (s.id.clone(), s.path.clone()))
+        .collect();
+    if todo.is_empty() {
+        return;
+    }
+    for (id, path) in todo {
+        let result = analysis::analyze(&path);
         let mut config = state.config.lock().unwrap();
-        for (id, a) in results {
-            if let Some(s) = config.sounds.iter_mut().find(|s| s.id == id) {
-                s.analysis = Some(a);
-            }
+        let Some(s) = config.sounds.iter_mut().find(|s| s.id == id) else { continue };
+        match result {
+            Ok(a) => s.analysis = Some(a),
+            // Fichier présent mais illisible : on garde l'ancienne mesure
+            // sans la redemander à chaque lancement.
+            Err(_) if path.exists() => match s.analysis.as_mut() {
+                Some(a) => a.mono_fold = true,
+                None => continue,
+            },
+            Err(_) => continue,
         }
         let _ = state.save(&config);
-        drop(config);
-        let _ = app.emit("state-changed", ());
-    });
+    }
+    let _ = app.emit("state-changed", ());
 }
 
 fn apply_audio(state: &AppState, settings: Settings) {
@@ -2144,9 +2149,11 @@ pub fn run() {
                 apply_audio(&state, settings);
                 let _ = handle.emit("snapshot", state.snapshot());
                 watch_devices(handle.clone());
+                // Les mesures de volume en retard passent après l'audio, une
+                // à la fois, pour ne pas ralentir l'ouverture.
+                analyze_missing(&handle);
+                measure_segments(handle.clone());
             });
-            analyze_missing(app.handle().clone());
-            measure_segments(app.handle().clone());
             build_tray(app.handle())?;
             apply_phone(app.handle());
 
