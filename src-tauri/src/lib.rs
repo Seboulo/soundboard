@@ -25,7 +25,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -75,6 +75,10 @@ struct AppState {
     last_random: Mutex<Option<String>>,
     /// Dernier son supprimé et sa position, pour « Annuler ».
     trash: Mutex<Option<(Sound, usize)>>,
+    /// Mode Surprise en marche (jamais au lancement de l'app).
+    surprise_on: AtomicBool,
+    /// Change à chaque marche / arrêt : l'ancienne attente s'arrête d'elle-même.
+    surprise_gen: AtomicU64,
 }
 
 #[derive(Clone, Serialize)]
@@ -87,6 +91,7 @@ struct Snapshot {
     version: &'static str,
     /// Sons dont le fichier a disparu (antivirus, nettoyage…).
     missing: Vec<String>,
+    surprise_on: bool,
 }
 
 impl AppState {
@@ -103,6 +108,7 @@ impl AppState {
             vb_cable_url: VB_CABLE_URL,
             mic_muted: self.mic_muted.load(Ordering::Relaxed),
             version: env!("CARGO_PKG_VERSION"),
+            surprise_on: self.surprise_on.load(Ordering::Relaxed),
         };
         snap.missing = snap.config.sounds.iter().filter(|x| !x.path.exists()).map(|x| x.id.clone()).collect();
         snap
@@ -261,8 +267,6 @@ fn apply_autostart(app: &AppHandle, enabled: bool) {
     app.state::<AppState>().set_warnings(WARN_STARTUP, warnings);
 }
 
-/// Calcule durée et niveau des sons importés avant cette version (ou
-/// analysés avant le calcul du niveau sans les silences).
 /// Mesure en arrière-plan le volume des passages découpés ou avec effets,
 /// pour que l'égalisation porte sur ce qui est vraiment joué.
 fn measure_segments(app: AppHandle) {
@@ -308,35 +312,42 @@ fn measure_segments(app: AppHandle) {
     });
 }
 
-fn analyze_missing(app: AppHandle) {
-    std::thread::spawn(move || {
-        let state = app.state::<AppState>();
-        let todo: Vec<(String, PathBuf)> = state
-            .config
-            .lock()
-            .unwrap()
-            .sounds
-            .iter()
-            .filter(|s| s.analysis.is_none_or(|a| a.loudness <= 0.0 || a.lufs >= 0.0 || !a.mono_fold))
-            .map(|s| (s.id.clone(), s.path.clone()))
-            .collect();
-        if todo.is_empty() {
-            return;
-        }
-        let results: Vec<_> = todo
-            .into_iter()
-            .filter_map(|(id, path)| analysis::analyze(&path).ok().map(|a| (id, a)))
-            .collect();
+/// Tourne au lancement, une fois l'audio ouvert, sur le fil de démarrage :
+/// un seul son décodé à la fois, et chaque mesure est enregistrée tout de
+/// suite. Fermer l'appli en cours de route ne fait donc pas tout recommencer
+/// au lancement suivant, et un fichier illisible n'est plus relu à chaque
+/// démarrage.
+fn analyze_missing(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let todo: Vec<(String, PathBuf)> = state
+        .config
+        .lock()
+        .unwrap()
+        .sounds
+        .iter()
+        .filter(|s| s.analysis.is_none_or(|a| a.loudness <= 0.0 || a.lufs >= 0.0 || !a.mono_fold))
+        .map(|s| (s.id.clone(), s.path.clone()))
+        .collect();
+    if todo.is_empty() {
+        return;
+    }
+    for (id, path) in todo {
+        let result = analysis::analyze(&path);
         let mut config = state.config.lock().unwrap();
-        for (id, a) in results {
-            if let Some(s) = config.sounds.iter_mut().find(|s| s.id == id) {
-                s.analysis = Some(a);
-            }
+        let Some(s) = config.sounds.iter_mut().find(|s| s.id == id) else { continue };
+        match result {
+            Ok(a) => s.analysis = Some(a),
+            // Fichier présent mais illisible : on garde l'ancienne mesure
+            // sans la redemander à chaque lancement.
+            Err(_) if path.exists() => match s.analysis.as_mut() {
+                Some(a) => a.mono_fold = true,
+                None => continue,
+            },
+            Err(_) => continue,
         }
         let _ = state.save(&config);
-        drop(config);
-        let _ = app.emit("state-changed", ());
-    });
+    }
+    let _ = app.emit("state-changed", ());
 }
 
 fn apply_audio(state: &AppState, settings: Settings) {
@@ -481,13 +492,13 @@ fn set_muted(app: &AppHandle, muted: bool) {
 
 /// Tire un son au hasard (dans une catégorie si on en donne une).
 fn pick_random(state: &AppState, category: Option<&str>) -> Option<Sound> {
+    pick_random_where(state, |s| category.is_none() || s.category.as_deref() == category)
+}
+
+fn pick_random_where(state: &AppState, keep: impl Fn(&Sound) -> bool) -> Option<Sound> {
     let config = state.config.lock().unwrap();
     let mut last = state.last_random.lock().unwrap();
-    let pool: Vec<&Sound> = config
-        .sounds
-        .iter()
-        .filter(|s| category.is_none() || s.category.as_deref() == category)
-        .collect();
+    let pool: Vec<&Sound> = config.sounds.iter().filter(|s| keep(s)).collect();
     let candidates: Vec<&Sound> = if pool.len() > 1 {
         pool.iter().copied().filter(|s| Some(&s.id) != last.as_ref()).collect()
     } else {
@@ -496,10 +507,56 @@ fn pick_random(state: &AppState, category: Option<&str>) -> Option<Sound> {
     if candidates.is_empty() {
         return None;
     }
-    let index = (uuid::Uuid::new_v4().as_u128() % candidates.len() as u128) as usize;
+    let index = (random_u64() % candidates.len() as u64) as usize;
     let sound = candidates[index].clone();
     *last = Some(sound.id.clone());
     Some(sound)
+}
+
+fn random_u64() -> u64 {
+    uuid::Uuid::new_v4().as_u64_pair().0
+}
+
+/// Attente avant le prochain son surprise, tirée entre le minimum et le maximum.
+fn surprise_delay(min_minutes: u32, max_minutes: u32) -> std::time::Duration {
+    let min = u64::from(min_minutes.max(1)) * 60;
+    let max = (u64::from(max_minutes) * 60).max(min);
+    std::time::Duration::from_secs(min + random_u64() % (max - min + 1))
+}
+
+/// Mode Surprise : de temps en temps, un son de la liste part tout seul
+/// (vers Discord, comme un son cliqué).
+fn start_surprise(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let gen = state.surprise_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    if !state.surprise_on.load(Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        let state = app.state::<AppState>();
+        let delay = {
+            let s = &state.config.lock().unwrap().settings;
+            surprise_delay(s.surprise_min_minutes, s.surprise_max_minutes)
+        };
+        let deadline = std::time::Instant::now() + delay;
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if state.surprise_gen.load(Ordering::SeqCst) != gen {
+                return;
+            }
+        }
+        let list = state.config.lock().unwrap().settings.surprise_sounds.clone();
+        let playing = state.playing_ids.lock().unwrap().clone();
+        let sound = pick_random_where(&state, |s| {
+            (list.is_empty() || list.contains(&s.id)) && !playing.contains(&s.id) && s.path.exists()
+        });
+        if let Some(sound) = sound {
+            note_play(&state, &sound);
+            state.audio.toggle_detached(play_request(&state, &sound));
+            let _ = app.emit("sound-triggered", &sound.id);
+        }
+    });
 }
 
 const MAX_SOUND_FILE: u64 = 200 * 1024 * 1024;
@@ -1469,7 +1526,7 @@ async fn get_waveform(app: AppHandle, id: String) -> Result<Vec<f32>, String> {
         return Ok(peaks.clone());
     }
     let sound = find_sound(&state, &id)?;
-    let peaks = tauri::async_runtime::spawn_blocking(move || analysis::waveform(&sound.path, 600))
+    let peaks = tauri::async_runtime::spawn_blocking(move || analysis::waveform(&sound.path, 2400))
         .await
         .map_err(|e| e.to_string())??;
     state.waveforms.lock().unwrap().insert(id, peaks.clone());
@@ -1527,6 +1584,20 @@ fn toggle_favorite(state: State<AppState>, id: String) -> Result<Snapshot, Strin
         let mut config = state.config.lock().unwrap();
         let sound = config.sounds.iter_mut().find(|s| s.id == id).ok_or("son introuvable")?;
         sound.favorite = !sound.favorite;
+        state.save(&config)?;
+    }
+    Ok(state.snapshot())
+}
+
+/// Range plusieurs sons d'un coup dans un onglet (aucun : « Sans onglet »).
+#[tauri::command]
+fn set_category(state: State<AppState>, ids: Vec<String>, category: Option<String>) -> Result<Snapshot, String> {
+    {
+        let mut config = state.config.lock().unwrap();
+        let category = clean_category(category);
+        for sound in config.sounds.iter_mut().filter(|s| ids.contains(&s.id)) {
+            sound.category = category.clone();
+        }
         state.save(&config)?;
     }
     Ok(state.snapshot())
@@ -1661,6 +1732,16 @@ fn play_random(state: State<AppState>, category: Option<String>) -> Result<Optio
     note_play(&state, &sound);
     state.audio.toggle(play_request(&state, &sound))?;
     Ok(Some(sound.id))
+}
+
+/// Allume ou éteint le mode Surprise.
+#[tauri::command]
+fn set_surprise(app: AppHandle, on: bool) -> Snapshot {
+    let state = app.state::<AppState>();
+    state.surprise_on.store(on, Ordering::SeqCst);
+    start_surprise(&app);
+    let _ = app.emit("surprise", on);
+    state.snapshot()
 }
 
 #[tauri::command]
@@ -2126,6 +2207,8 @@ pub fn run() {
                 playing_ids: Mutex::new(Vec::new()),
                 last_random: Mutex::new(None),
                 trash: Mutex::new(None),
+                surprise_on: AtomicBool::new(false),
+                surprise_gen: AtomicU64::new(0),
             };
             empty_trash(&state);
             if let Some(note) = config_note {
@@ -2144,9 +2227,11 @@ pub fn run() {
                 apply_audio(&state, settings);
                 let _ = handle.emit("snapshot", state.snapshot());
                 watch_devices(handle.clone());
+                // Les mesures de volume en retard passent après l'audio, une
+                // à la fois, pour ne pas ralentir l'ouverture.
+                analyze_missing(&handle);
+                measure_segments(handle.clone());
             });
-            analyze_missing(app.handle().clone());
-            measure_segments(app.handle().clone());
             build_tray(app.handle())?;
             apply_phone(app.handle());
 
@@ -2211,9 +2296,11 @@ pub fn run() {
             regenerate_phone_token,
             set_mic_muted,
             toggle_favorite,
+            set_category,
             add_from_url,
             add_from_youtube,
             play_random,
+            set_surprise,
             set_meter,
             check_update,
             install_update,
@@ -2223,4 +2310,20 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("erreur au lancement de l'application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::surprise_delay;
+
+    #[test]
+    fn surprise_delay_stays_between_min_and_max() {
+        for _ in 0..200 {
+            let d = surprise_delay(10, 60).as_secs();
+            assert!((600..=3600).contains(&d));
+        }
+        // Minimum au-dessus du maximum, ou zéro : on reste raisonnable.
+        assert_eq!(surprise_delay(30, 5).as_secs(), 1800);
+        assert_eq!(surprise_delay(0, 0).as_secs(), 60);
+    }
 }

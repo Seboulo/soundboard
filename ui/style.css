@@ -311,6 +311,79 @@ main { padding: 16px; }
   40% { transform: scale(1.2) rotate(-6deg); }
 }
 .pad.drag-over { outline: 2px dashed var(--c); outline-offset: 2px; }
+[data-cat].drag-over { outline: 2px dashed var(--accent); outline-offset: 2px; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--text); }
+
+/* « Tous » : un titre repliable par onglet */
+.group-head {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  justify-self: start;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 4px 6px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text);
+  font-weight: 650;
+  font-size: 14px;
+  text-align: left;
+  border-radius: 8px;
+}
+.group-head:first-child, .list-head + .group-head { margin-top: 0; }
+.group-head:hover { background: var(--panel); }
+.group-head .chev { color: var(--muted); transition: transform .15s; width: 14px; text-align: center; }
+.group-head.closed .chev { transform: rotate(-90deg); }
+.group-head .group-name { display: inline-flex; align-items: center; gap: 6px; }
+.group-head .group-name .ico { width: 15px; height: 15px; color: #e3a008; fill: currentColor; }
+.group-head .group-count { color: var(--muted); font-weight: 500; font-size: 12px; font-variant-numeric: tabular-nums; }
+.grid.list .group-head { margin-top: 10px; }
+
+/* Premier résultat de la recherche : Entrée le joue */
+.pad.first-hit { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Sélection de plusieurs sons */
+.pad.selected { outline: 3px solid var(--accent); outline-offset: 2px; }
+.pad.selected::before {
+  content: "✓";
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 13px;
+  font-weight: 700;
+}
+.grid.list .pad.selected::before { top: 50%; transform: translateY(-50%); }
+.grid.selecting .pad { cursor: copy; }
+.selection-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+  box-shadow: var(--shadow);
+  font-weight: 600;
+}
+.selection-bar form { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+.selection-bar input { width: 180px; }
+.selection-bar #selection-cancel { margin-left: auto; }
+#btn-select.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 
 /* En grille, nom et infos sont posés directement dans le pad. */
 .pad .label { display: contents; }
@@ -486,6 +559,10 @@ dialog[open] { animation: dlg-in .16s ease-out; }
 @keyframes dlg-in { from { opacity: 0; transform: translateY(8px) scale(.98); } }
 dialog.wide { width: min(640px, 94vw); }
 dialog::backdrop { background: rgba(16, 24, 40, .35); backdrop-filter: blur(2px); }
+/* Fenêtre ouverte : la molette ne fait plus défiler la grille derrière,
+   ni quand la fenêtre arrive en bas de sa propre liste. */
+html:has(dialog[open]), html:has(dialog[open]) body { overflow: hidden; }
+dialog, .set-panes, .results { overscroll-behavior: contain; }
 
 .form {
   display: flex;
@@ -522,7 +599,8 @@ dialog::backdrop { background: rgba(16, 24, 40, .35); backdrop-filter: blur(2px)
   cursor: ew-resize;
   touch-action: none;
 }
-.trim-bar { display: flex; align-items: center; gap: 8px; }
+.trim-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.trim-bar button { white-space: nowrap; }
 .trim-head { display: flex; align-items: center; gap: 6px; }
 .hist-btn { width: 34px; padding: 4px 0; font-size: 17px; line-height: 1; }
 .hist-btn:disabled { opacity: .35; cursor: default; }
@@ -1159,3 +1237,16 @@ dialog { border-radius: 18px; }
   padding: 0 14px 10px;
   margin: -4px 0 0;
 }
+
+/* Mode Surprise */
+#dlg-surprise { width: min(480px, 94vw); }
+.surprise-range { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; flex-shrink: 0; }
+.surprise-range input { width: 64px; text-align: center; }
+.surprise-head { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.surprise-head button { font-size: 12.5px; padding: 4px 10px; box-shadow: none; }
+.surprise-list { display: flex; flex-direction: column; max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; padding: 4px; }
+.surprise-list label { display: flex; flex-direction: row; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; cursor: pointer; color: var(--text); font-size: 13.5px; }
+.surprise-list label:hover { background: var(--panel-2); }
+.surprise-list input { width: auto; margin: 0; flex-shrink: 0; }
+.surprise-list .name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.surprise-list .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; background: var(--pad-color, var(--accent)); }

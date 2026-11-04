@@ -1,6 +1,14 @@
 Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
 Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
+Nouveautés de la 1.6 :
+- Mode Surprise (bouton 🎲 en haut) : un son au hasard part tout seul sur Discord, à un moment au hasard (attente entre X et Y minutes, sons au choix). Jamais actif au lancement.
+- Sons mieux rangés : « Tous » est groupé par onglet (groupes repliables), favoris épinglés en haut, glisse un son sur un onglet pour l'y ranger, ou sélectionne-en plusieurs (Ctrl + clic ou « Sélectionner ») et range-les d'un coup.
+- Recherche au clavier : tape n'importe où pour chercher, Entrée joue le premier résultat, Échap efface.
+- Éditeur de son : bouton « ✂ Couper les blancs », zoom sur l'onde (− / + ou Ctrl + molette), poignées réglables aux flèches (0,1 s, Maj : 0,01 s), double-clic sur un curseur pour le remettre à sa valeur normale.
+- Plus rapide : les réglages s'ouvrent tout de suite, et le lancement n'est plus ralenti par la mesure du volume des sons.
+- Quand une fenêtre est ouverte, la molette ne fait plus défiler la grille derrière.
+
 Nouveautés de la 1.5 :
 - Voix plus naturelle : l'antibruit IA s'adapte au bruit de ta pièce (moins fort au calme, plus fort dans le bruit) et nettoie mieux le petit souffle entre les syllabes.
 - Moins de mots coupés : l'IA aide la porte à rester ouverte tant que tu parles, même doucement dans le bruit.

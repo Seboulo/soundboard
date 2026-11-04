@@ -190,6 +190,7 @@ function render(snapshot) {
   state = snapshot;
   renderStatus();
   renderMic();
+  renderSurprise();
   renderWarnings();
   renderTabs();
   renderGrid();
@@ -265,6 +266,8 @@ function renderTabs() {
     b.className = "tab" + (currentTab === value ? " active" : "");
     if (iconName) b.append(svgIcon(iconName));
     b.append(label);
+    // Un son glissé sur l'onglet y est rangé.
+    if (value && value !== RECENT_TAB) b.dataset.cat = value;
     b.addEventListener("click", () => {
       currentTab = value;
       try {
@@ -366,16 +369,147 @@ function renderGrid() {
   } else {
     sounds = sortSounds(state.config.sounds.filter((s) => (!currentTab || s.category === currentTab) && matches(s)));
   }
-  const pads = sounds.map(padElement);
+  // Oubli des sons sélectionnés qui n'existent plus.
+  for (const id of selection) if (!soundById(id)) selection.delete(id);
+  const pads = [];
   // En liste, une ligne d'en-tête comme une playlist.
-  if (viewMode === "list" && pads.length) pads.unshift(listHeader());
+  if (viewMode === "list" && sounds.length) pads.push(listHeader());
+  const groups = !currentTab && categories().length ? soundGroups(sounds) : null;
+  if (groups) {
+    let n = 0;
+    for (const g of groups) {
+      // Une recherche montre tout, même les groupes repliés.
+      const open = !!q || !closedGroups.has(g.key);
+      pads.push(groupHeader(g, open));
+      if (open) pads.push(...g.sounds.map((s) => padElement(s, n++)));
+      else n += g.sounds.length;
+    }
+  } else {
+    pads.push(...sounds.map(padElement));
+  }
   grid.replaceChildren(...pads);
+  // Entrée dans la recherche joue ce son : on le montre.
+  if (q) $("#grid .pad:not(.missing)")?.classList.add("first-hit");
+  renderSelectionBar();
   $("#empty").hidden = state.config.sounds.length > 0;
   renderStartSteps();
   $("#recent-empty").hidden = !(currentTab === RECENT_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
   $("#search-empty").hidden = !(q && sounds.length === 0 && state.config.sounds.length > 0);
   renderPlaying();
 }
+
+// ---------- Groupes de « Tous » ----------
+
+// Dans « Tous » : les favoris en haut, puis un groupe repliable par onglet.
+const FAV_GROUP = "\u0000fav";
+const NO_TAB_GROUP = "\u0000none";
+const GROUPS_KEY = "soundboard.closedGroups";
+let closedGroups = new Set();
+try {
+  closedGroups = new Set(JSON.parse(localStorage.getItem(GROUPS_KEY) || "[]"));
+} catch {}
+
+function soundGroups(sounds) {
+  const groups = [];
+  const add = (key, label, list) => list.length && groups.push({ key, label, sounds: list });
+  add(FAV_GROUP, "Favoris", sounds.filter((s) => s.favorite));
+  const rest = sounds.filter((s) => !s.favorite);
+  for (const c of categories()) add(c, c, rest.filter((s) => s.category === c));
+  add(NO_TAB_GROUP, "Sans onglet", rest.filter((s) => !s.category));
+  return groups;
+}
+
+function groupHeader(group, open) {
+  const head = document.createElement("button");
+  head.type = "button";
+  head.className = "group-head" + (open ? "" : " closed");
+  head.setAttribute("aria-expanded", open);
+  // Glisser un son sur le titre le range dans cet onglet.
+  if (group.key === NO_TAB_GROUP) head.dataset.cat = "";
+  else if (group.key !== FAV_GROUP) head.dataset.cat = group.key;
+  const chev = document.createElement("span");
+  chev.className = "chev";
+  chev.textContent = "▾";
+  const name = document.createElement("span");
+  name.className = "group-name";
+  if (group.key === FAV_GROUP) name.append(svgIcon("star"));
+  name.append(group.label);
+  const count = document.createElement("span");
+  count.className = "group-count";
+  count.textContent = group.sounds.length;
+  head.append(chev, name, count);
+  head.title = open ? "Replier" : "Déplier";
+  head.addEventListener("click", () => {
+    if (reorder.justDropped) return;
+    if (closedGroups.has(group.key)) closedGroups.delete(group.key);
+    else closedGroups.add(group.key);
+    try {
+      localStorage.setItem(GROUPS_KEY, JSON.stringify([...closedGroups]));
+    } catch {}
+    renderGrid();
+  });
+  return head;
+}
+
+// ---------- Sélection de plusieurs sons ----------
+
+// Ctrl + clic (ou le bouton « Sélectionner ») coche des sons, qu'on range
+// ensuite d'un coup dans un onglet.
+const selection = new Set();
+let selecting = false;
+
+function toggleSelected(id) {
+  if (selection.has(id)) selection.delete(id);
+  else selection.add(id);
+  document.querySelector(`#grid .pad[data-id="${CSS.escape(id)}"]`)?.classList.toggle("selected", selection.has(id));
+  renderSelectionBar();
+}
+
+function clearSelection() {
+  selection.clear();
+  selecting = false;
+  $$("#grid .pad.selected").forEach((p) => p.classList.remove("selected"));
+  renderSelectionBar();
+}
+
+function renderSelectionBar() {
+  const bar = $("#selection-bar");
+  bar.hidden = !selecting && selection.size === 0;
+  $("#btn-select").classList.toggle("on", selecting || selection.size > 0);
+  $("#grid").classList.toggle("selecting", selecting);
+  const n = selection.size;
+  $("#selection-count").textContent = n
+    ? `${n} son${n > 1 ? "s" : ""} sélectionné${n > 1 ? "s" : ""}`
+    : "Clique sur les sons à ranger";
+  $("#selection-form").hidden = n === 0;
+}
+
+/** Range des sons dans un onglet (vide : aucun onglet). */
+async function moveToCategory(ids, category) {
+  const name = category?.trim() || null;
+  const res = await call("set_category", { ids, category: name });
+  if (!res) return;
+  const what = ids.length > 1 ? `${ids.length} sons rangés` : `« ${soundById(ids[0])?.name ?? "Son"} » rangé`;
+  toast(name ? `${what} dans « ${name} »` : `${what} sans onglet`);
+}
+
+$("#btn-select").addEventListener("click", () => {
+  if (selecting || selection.size) clearSelection();
+  else {
+    selecting = true;
+    renderSelectionBar();
+  }
+});
+$("#selection-cancel").addEventListener("click", clearSelection);
+$("#selection-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = $("#selection-target");
+  if (!selection.size) return;
+  const ids = [...selection];
+  clearSelection();
+  await moveToCategory(ids, input.value);
+  input.value = "";
+});
 
 // Sons en cours, envoyés par le moteur audio ~10 fois par seconde.
 let playing = [];
@@ -578,7 +712,7 @@ function listHeader() {
 function padElement(sound, index) {
   const pad = document.createElement("button");
   pad.type = "button";
-  pad.className = "pad";
+  pad.className = "pad" + (selection.has(sound.id) ? " selected" : "");
   pad.dataset.id = sound.id;
   pad.style.setProperty("--pad-color", sound.color);
 
@@ -664,6 +798,7 @@ function padElement(sound, index) {
 
   pad.addEventListener("click", (e) => {
     if (reorder.justDropped) return;
+    if (selecting || e.ctrlKey || e.metaKey) return toggleSelected(sound.id);
     if (edit.contains(e.target)) return openSoundDialog(sound);
     if (fav.contains(e.target)) return call("toggle_favorite", { id: sound.id });
     if (addKey?.contains(e.target)) return captureHotkey(sound, addKey);
@@ -734,7 +869,7 @@ async function replaceSoundFile(sound) {
 const reorder = { justDropped: false };
 
 function startReorder(e, pad, sound) {
-  if (e.button !== 0 || !canReorder()) return;
+  if (e.button !== 0 || e.ctrlKey || e.metaKey) return;
   const x0 = e.clientX;
   const y0 = e.clientY;
   let dragging = false;
@@ -744,9 +879,11 @@ function startReorder(e, pad, sound) {
     if (!dragging && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 8) return;
     dragging = true;
     pad.style.opacity = "0.5";
-    const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".pad");
+    // Sur un pad : changer l'ordre. Sur un onglet ou un titre de groupe : y ranger le son.
+    let over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest("[data-cat], #grid .pad");
+    if (over?.classList.contains("pad") && (over === pad || !canReorder())) over = null;
     if (target && target !== over) target.classList.remove("drag-over");
-    target = over && over !== pad ? over : null;
+    target = over;
     target?.classList.add("drag-over");
   };
   const up = () => {
@@ -758,9 +895,20 @@ function startReorder(e, pad, sound) {
     // Le clic qui suit le relâchement ne doit pas jouer le son.
     reorder.justDropped = true;
     setTimeout(() => (reorder.justDropped = false), 0);
-    if (target) {
+    if (target?.dataset.cat != null) {
+      // Un son sélectionné emmène toute la sélection.
+      const ids = selection.has(sound.id) ? [...selection] : [sound.id];
+      if (selection.has(sound.id)) clearSelection();
+      moveToCategory(ids, target.dataset.cat);
+    } else if (target) {
+      const other = soundById(target.dataset.id);
       const to = state.config.sounds.findIndex((s) => s.id === target.dataset.id);
-      call("move_sound", { id: sound.id, to });
+      call("move_sound", { id: sound.id, to }).then((res) => {
+        // Dans « Tous », déposé dans le groupe d'un autre onglet : il y passe.
+        if (res && !currentTab && other && !other.favorite && !sound.favorite && other.category !== sound.category) {
+          moveToCategory([sound.id], other.category ?? "");
+        }
+      });
     }
   };
   window.addEventListener("pointermove", move);
@@ -913,7 +1061,9 @@ formSound.emoji.addEventListener("input", () => {
 // ---------- Découpe (forme d'onde) ----------
 
 const canvas = $("#wave");
-const trim = { duration: 0, start: 0, end: 0, peaks: [], drag: null };
+// view : partie de l'onde affichée (zoom) ; focus : poignée réglée au clavier.
+const trim = { duration: 0, start: 0, end: 0, peaks: [], drag: null, view: [0, 0], focus: "start" };
+const MAX_ZOOM = 32;
 
 function fmtTime(ms) {
   const s = ms / 1000;
@@ -928,6 +1078,8 @@ async function openTrim(sound) {
   trim.start = sound.start_ms ?? 0;
   trim.end = Math.min(sound.end_ms ?? trim.duration, trim.duration);
   trim.peaks = [];
+  trim.view = [0, trim.duration];
+  trim.focus = "start";
   resetHistory();
   drawTrim();
   try {
@@ -943,18 +1095,22 @@ function drawTrim() {
   const { width: w, height: h } = canvas;
   const css = getComputedStyle(document.documentElement);
   ctx.clearRect(0, 0, w, h);
-  const x = (ms) => (ms / trim.duration) * w;
+  const [v0, v1] = trim.view;
+  const x = (ms) => ((ms - v0) / (v1 - v0)) * w;
   const xs = x(trim.start);
   const xe = x(trim.end);
 
-  // Forme d'onde : une barre par pic, plus sombre hors de la zone gardée.
+  // Forme d'onde : une barre par pic visible, plus sombre hors de la zone gardée.
   const n = trim.peaks.length;
-  for (let i = 0; i < n; i++) {
-    const px = (i / n) * w;
+  const i0 = Math.max(0, Math.floor((v0 / trim.duration) * n));
+  const i1 = Math.min(n, Math.ceil((v1 / trim.duration) * n));
+  const bw = Math.max(1, w / Math.max(1, i1 - i0) - 1);
+  for (let i = i0; i < i1; i++) {
+    const px = x((i / n) * trim.duration);
     const bh = Math.max(2, trim.peaks[i] * (h - 10));
     const inside = px >= xs && px <= xe;
     ctx.fillStyle = inside ? editing?.color ?? "#4f46e5" : css.getPropertyValue("--wave-off");
-    ctx.fillRect(px, (h - bh) / 2, Math.max(1, w / n - 1), bh);
+    ctx.fillRect(px, (h - bh) / 2, bw, bh);
   }
   if (!n) {
     ctx.fillStyle = css.getPropertyValue("--muted");
@@ -964,8 +1120,10 @@ function drawTrim() {
   ctx.fillStyle = css.getPropertyValue("--wave-mask");
   ctx.fillRect(0, 0, xs, h);
   ctx.fillRect(xe, 0, w - xe, h);
-  for (const hx of [xs, xe]) {
-    ctx.fillStyle = css.getPropertyValue("--text");
+  // La poignée réglée aux flèches est en couleur quand l'onde a le focus.
+  const keyboard = document.activeElement === canvas;
+  for (const [hx, which] of [[xs, "start"], [xe, "end"]]) {
+    ctx.fillStyle = css.getPropertyValue(keyboard && trim.focus === which ? "--accent" : "--text");
     ctx.fillRect(hx - 2, 0, 4, h);
     ctx.fillRect(hx - 9, 0, 18, 14);
     ctx.fillRect(hx - 9, h - 14, 18, 14);
@@ -981,15 +1139,70 @@ function drawTrim() {
     ctx.lineTo(px, 14);
     ctx.fill();
   }
+  const zoom = trim.duration / (v1 - v0);
   $("#trim-info").textContent =
     (now !== null ? `▶ ${fmtTime(now)}  ·  ` : "") +
-    `${fmtTime(trim.start)} → ${fmtTime(trim.end)}  (durée ${fmtTime(trim.end - trim.start)})`;
+    `${fmtTime(trim.start)} → ${fmtTime(trim.end)}  (durée ${fmtTime(trim.end - trim.start)})` +
+    (zoom > 1.01 ? `  ·  zoom × ${Math.round(zoom)}` : "");
+  zoomOutBtn.disabled = zoom <= 1.01;
+  zoomInBtn.disabled = zoom >= MAX_ZOOM - 0.01;
 }
+
+// ---------- Zoom sur l'onde ----------
+
+const zoomInBtn = $('[data-action="zoom-in"]', dlgSound);
+const zoomOutBtn = $('[data-action="zoom-out"]', dlgSound);
+
+/** Affiche `span` ms autour de `center` (en restant dans le son). */
+function setView(center, span) {
+  span = Math.min(trim.duration, Math.max(trim.duration / MAX_ZOOM, span));
+  let from = Math.max(0, center - span / 2);
+  from = Math.min(from, trim.duration - span);
+  trim.view = [from, from + span];
+  drawTrim();
+}
+
+function zoomBy(factor, center) {
+  const [v0, v1] = trim.view;
+  setView(center ?? (v0 + v1) / 2, (v1 - v0) / factor);
+}
+
+/** Fait défiler l'onde zoomée pour garder la poignée réglée à l'écran. */
+function keepVisible(ms) {
+  const [v0, v1] = trim.view;
+  const span = v1 - v0;
+  if (ms < v0) setView(ms + span / 2 - span * 0.1, span);
+  else if (ms > v1) setView(ms - span / 2 + span * 0.1, span);
+}
+
+zoomInBtn.addEventListener("click", () => zoomBy(2, trim.focus === "end" ? trim.end : trim.start));
+zoomOutBtn.addEventListener("click", () => zoomBy(0.5));
+// Ctrl + molette : zoom là où est la souris ; molette de côté ou Maj +
+// molette : défilement de l'onde zoomée. La molette seule fait défiler la
+// fenêtre comme d'habitude.
+canvas.addEventListener(
+  "wheel",
+  (e) => {
+    if (!trim.duration) return;
+    const [v0, v1] = trim.view;
+    if (e.ctrlKey) {
+      e.preventDefault();
+      zoomBy(e.deltaY < 0 ? 1.5 : 1 / 1.5, msAt(e));
+    } else if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      if (v1 - v0 >= trim.duration) return;
+      e.preventDefault();
+      const d = (e.shiftKey ? e.deltaY : e.deltaX) || e.deltaX;
+      setView((v0 + v1) / 2 + (d / canvas.clientWidth) * (v1 - v0), v1 - v0);
+    }
+  },
+  { passive: false },
+);
 
 function msAt(e) {
   const r = canvas.getBoundingClientRect();
   const ratio = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
-  return Math.round(ratio * trim.duration);
+  const [v0, v1] = trim.view;
+  return Math.round(v0 + ratio * (v1 - v0));
 }
 
 const MIN_TRIM_MS = 50;
@@ -998,6 +1211,8 @@ canvas.addEventListener("pointerdown", (e) => {
   if (!trim.duration) return;
   const ms = msAt(e);
   trim.drag = Math.abs(ms - trim.start) <= Math.abs(ms - trim.end) ? "start" : "end";
+  trim.focus = trim.drag;
+  canvas.focus({ preventScroll: true });
   canvas.setPointerCapture(e.pointerId);
   moveHandle(ms);
 });
@@ -1019,8 +1234,71 @@ function moveHandle(ms) {
 $('[data-action="reset-trim"]', dlgSound).addEventListener("click", () => {
   trim.start = 0;
   trim.end = trim.duration;
+  trim.view = [0, trim.duration];
   drawTrim();
   commitEdit();
+});
+
+// Flèches : la poignée choisie bouge de 0,1 s (Maj : 0,01 s). Tab ou
+// Début/Fin passent d'une poignée à l'autre.
+canvas.addEventListener("keydown", (e) => {
+  if (!trim.duration || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    const step = (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 10 : 100);
+    trim.drag = trim.focus;
+    moveHandle((trim.focus === "start" ? trim.start : trim.end) + step);
+    trim.drag = null;
+    keepVisible(trim.focus === "start" ? trim.start : trim.end);
+  } else if (e.key === "Home" || e.key === "End") {
+    trim.focus = e.key === "Home" ? "start" : "end";
+    keepVisible(trim[trim.focus]);
+    drawTrim();
+  } else if (e.key === "Tab" && trim.focus === (e.shiftKey ? "end" : "start")) {
+    trim.focus = e.shiftKey ? "start" : "end";
+    keepVisible(trim[trim.focus]);
+    drawTrim();
+  } else return;
+  e.preventDefault();
+});
+canvas.addEventListener("keyup", (e) => {
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") commitEdit();
+});
+canvas.addEventListener("focus", () => drawTrim());
+canvas.addEventListener("blur", () => drawTrim());
+
+// Coupe le silence au début et à la fin du passage gardé (marge de 30 ms
+// avant le son, 80 ms après pour ne pas manger la fin qui s'éteint).
+$('[data-action="trim-silence"]', dlgSound).addEventListener("click", () => {
+  const n = trim.peaks.length;
+  if (!n || !trim.duration) return;
+  const per = trim.duration / n;
+  const i0 = Math.floor(trim.start / per);
+  const i1 = Math.min(n, Math.ceil(trim.end / per));
+  const loudest = trim.peaks.slice(i0, i1).reduce((m, v) => Math.max(m, v), 0);
+  const floor = Math.max(0.004, loudest * 0.03);
+  let a = i0;
+  while (a < i1 && trim.peaks[a] < floor) a++;
+  let b = i1 - 1;
+  while (b > a && trim.peaks[b] < floor) b--;
+  if (a >= i1) return toast("Ce passage n'est que du silence.");
+  const start = Math.max(trim.start, Math.round(a * per - 30));
+  const end = Math.min(trim.end, Math.round((b + 1) * per + 80));
+  if (start - trim.start < 20 && trim.end - end < 20) return toast("Pas de blanc à couper.");
+  trim.start = start;
+  trim.end = Math.max(end, start + MIN_TRIM_MS);
+  drawTrim();
+  commitEdit();
+});
+
+// Double-clic sur un curseur : retour à sa valeur normale.
+dlgSound.addEventListener("dblclick", (e) => {
+  const el = e.target;
+  if (el.type !== "range") return;
+  const normal = el.dataset.fx ? FX_DEFAULT[el.dataset.fx] : el.name === "volume" ? 1 : null;
+  if (normal == null || Number(el.value) === normal) return;
+  el.value = normal;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
 });
 
 const PREVIEW_ID = "__preview";
@@ -1271,13 +1549,19 @@ async function refreshDevices() {
   } catch {}
 }
 
-async function openSettings() {
-  await refreshDevices();
-  const s = state.config.settings;
+function fillDeviceSelects(chosen) {
   const d = state.devices;
-  fillSelect(formSettings.monitor_device, d.outputs, s.monitor_device, `Par défaut (${d.default_output ?? "aucun"})`);
-  fillSelect(formSettings.virtual_device, d.outputs, s.virtual_device, "Aucun (sons uniquement dans le casque)");
-  fillSelect(formSettings.mic_device, d.inputs, s.mic_device, `Par défaut (${d.default_input ?? "aucun"})`);
+  fillSelect(formSettings.monitor_device, d.outputs, chosen.monitor_device, `Par défaut (${d.default_output ?? "aucun"})`);
+  fillSelect(formSettings.virtual_device, d.outputs, chosen.virtual_device, "Aucun (sons uniquement dans le casque)");
+  fillSelect(formSettings.mic_device, d.inputs, chosen.mic_device, `Par défaut (${d.default_input ?? "aucun"})`);
+}
+
+// Les réglages s'ouvrent tout de suite avec la liste des périphériques déjà
+// connue (tenue à jour toutes les 3 s) ; la liste fraîche, lente à obtenir
+// de Windows, arrive juste après sans perdre ce qui a été choisi.
+async function openSettings() {
+  const s = state.config.settings;
+  fillDeviceSelects(s);
   formSettings.mic_enabled.checked = s.mic_enabled;
   formSettings.denoise_mode.value = !s.noise_suppression ? "off" : s.strong_denoise ? "strong" : "light";
   formSettings.voice_gate.checked = s.voice_gate;
@@ -1306,6 +1590,18 @@ async function openSettings() {
   dlgSettings.returnValue = "";
   dlgSettings.showModal();
   startMeter();
+  invoke("refresh_devices").then((snap) => {
+    // Rien de neuf : pas besoin de redessiner toute la grille derrière.
+    if (JSON.stringify(snap.devices) === JSON.stringify(state.devices)) return;
+    render(snap);
+    if (!dlgSettings.open) return;
+    const f = formSettings;
+    fillDeviceSelects({
+      monitor_device: f.monitor_device.value || null,
+      virtual_device: f.virtual_device.value || null,
+      mic_device: f.mic_device.value || null,
+    });
+  }).catch(() => {});
 }
 
 function nearestTarget(v) {
@@ -1885,6 +2181,86 @@ $('[data-action="close"]', dlgDiag).addEventListener("click", () => dlgDiag.clos
 $('[data-action="listen"]', dlgDiag).addEventListener("click", () => setListening(!listening));
 dlgDiag.addEventListener("close", () => listening && setListening(false));
 
+// ---------- Mode Surprise ----------
+
+const dlgSurprise = $("#dlg-surprise");
+const formSurprise = $("form", dlgSurprise);
+
+function renderSurprise() {
+  const pill = $("#surprise-toggle");
+  const s = state.config.settings;
+  pill.className = "pill" + (state.surprise_on ? " ok" : "");
+  pill.textContent = state.surprise_on ? "🎲 Surprise activée" : "🎲 Surprise";
+  pill.title = state.surprise_on
+    ? `Un son au hasard toutes les ${s.surprise_min_minutes} à ${s.surprise_max_minutes} min. Clique pour régler ou arrêter.`
+    : "Des sons qui partent tout seuls, au hasard";
+}
+
+function surpriseCount() {
+  const boxes = $$("#surprise-list input");
+  const n = boxes.filter((b) => b.checked).length;
+  $("#surprise-count").textContent =
+    n === 0 ? "Aucun coché : tous les sons peuvent sortir." : `${n} son${n > 1 ? "s" : ""} sur ${boxes.length}`;
+}
+
+function openSurprise() {
+  const s = state.config.settings;
+  const chosen = new Set(s.surprise_sounds || []);
+  formSurprise.on.checked = state.surprise_on;
+  formSurprise.min.value = s.surprise_min_minutes;
+  formSurprise.max.value = s.surprise_max_minutes;
+  const list = $("#surprise-list");
+  list.replaceChildren(
+    ...state.config.sounds.map((snd) => {
+      const row = document.createElement("label");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.value = snd.id;
+      box.checked = chosen.has(snd.id);
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.style.setProperty("--pad-color", snd.color);
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = (snd.emoji ? snd.emoji + " " : "") + snd.name;
+      row.append(box, dot, name);
+      return row;
+    }),
+  );
+  if (!state.config.sounds.length) list.textContent = "Ajoute d'abord quelques sons.";
+  surpriseCount();
+  dlgSurprise.returnValue = "";
+  dlgSurprise.showModal();
+}
+
+$("#surprise-list").addEventListener("change", surpriseCount);
+for (const [action, checked] of [["all", true], ["none", false]]) {
+  $(`[data-action="${action}"]`, dlgSurprise).addEventListener("click", () => {
+    $$("#surprise-list input").forEach((b) => (b.checked = checked));
+    surpriseCount();
+  });
+}
+$('[data-action="cancel"]', dlgSurprise).addEventListener("click", () => dlgSurprise.close());
+dlgSurprise.addEventListener("close", async () => {
+  if (dlgSurprise.returnValue !== "save") return;
+  const minutes = (v, d) => Math.min(1440, Math.max(1, Math.round(Number(v)) || d));
+  let min = minutes(formSurprise.min.value, 10);
+  let max = minutes(formSurprise.max.value, 60);
+  if (max < min) [min, max] = [max, min];
+  const settings = {
+    ...state.config.settings,
+    surprise_min_minutes: min,
+    surprise_max_minutes: max,
+    surprise_sounds: $$("#surprise-list input").filter((b) => b.checked).map((b) => b.value),
+  };
+  if (!(await call("update_settings", { settings }))) return;
+  const on = formSurprise.on.checked;
+  // Relancer aussi quand c'était déjà en marche : le nouvel intervalle s'applique tout de suite.
+  if (on || state.surprise_on) await call("set_surprise", { on });
+  toast(on ? `Mode Surprise activé : un son toutes les ${min} à ${max} min` : "Réglages enregistrés");
+});
+$("#surprise-toggle").addEventListener("click", openSurprise);
+
 // ---------- Statistiques ----------
 
 const dlgStats = $("#dlg-stats");
@@ -2018,10 +2394,38 @@ $("#cable-status").addEventListener("click", () => (state.devices.vb_cable ? ope
 $("#btn-stats").addEventListener("click", openStats);
 $("#search").addEventListener("input", renderGrid);
 $("#search").addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && e.target.value) {
+  if (e.key === "Escape") {
+    if (!e.target.value) return e.target.blur();
     e.target.value = "";
     renderGrid();
+  } else if (e.key === "Enter") {
+    // Entrée joue le premier son trouvé.
+    const pad = $("#grid .pad.first-hit");
+    if (!pad) return;
+    e.preventDefault();
+    flash(pad.dataset.id);
+    playSound(pad.dataset.id);
+  } else if (e.key === "ArrowDown") {
+    const pad = $("#grid .pad");
+    if (pad) {
+      e.preventDefault();
+      pad.focus();
+    }
   }
+});
+// Taper une lettre n'importe où lance la recherche, sans cliquer dedans.
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && (selecting || selection.size) && !document.querySelector("dialog[open]")) {
+    return clearSelection();
+  }
+  if (e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey || e.key.length !== 1 || e.key === " ") return;
+  if (document.querySelector("dialog[open]")) return;
+  if (e.target.closest?.("input, textarea, select, [contenteditable]")) return;
+  const search = $("#search");
+  e.preventDefault();
+  search.focus();
+  search.value += e.key;
+  renderGrid();
 });
 $("#mic-toggle").addEventListener("click", () => call("set_mic_muted", { muted: !state.mic_muted }));
 listen("mic-muted", ({ payload }) => {
