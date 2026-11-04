@@ -193,6 +193,7 @@ fn phone_request(app: &AppHandle, req: phone::Request) -> Result<serde_json::Val
         }
         phone::Request::Stop => {
             state.audio.stop_all();
+            clip::close(app);
             Ok(serde_json::json!({ "ok": true }))
         }
         phone::Request::Random(category) => {
@@ -2295,10 +2296,8 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // La fenêtre des extraits se cache simplement.
+                // La fenêtre des extraits se ferme simplement (sans quitter l'app).
                 if clip::is_clip_window(window.label()) {
-                    api.prevent_close();
-                    let _ = window.hide();
                     return;
                 }
                 let state = window.state::<AppState>();

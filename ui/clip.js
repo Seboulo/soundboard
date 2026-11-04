@@ -24,6 +24,7 @@ function bar(el, ms) {
 
 function reset() {
   clearTimeout(timer);
+  video.onended = video.onerror = video.onloadedmetadata = img.onerror = null;
   video.pause();
   video.removeAttribute("src");
   img.removeAttribute("src");
@@ -68,6 +69,7 @@ function play(c) {
     video.onended = close;
     video.onerror = close;
     video.onloadedmetadata = () => {
+      if (current !== c) return;
       const d = Math.min(MAX_MS, (video.duration || 15) * 1000);
       bar($("#show .bar"), d);
       clearTimeout(timer);
@@ -79,22 +81,25 @@ function play(c) {
     video.hidden = true;
     img.hidden = false;
     img.src = convertFileSrc(c.media);
+    img.onerror = close;
     if (c.sound) {
-      audio = new Audio(convertFileSrc(c.sound));
-      audio.volume = vol;
+      const a = new Audio(convertFileSrc(c.sound));
+      audio = a;
+      a.volume = vol;
       const start = (c.start_ms || 0) / 1000;
       const end = c.end_ms ? c.end_ms / 1000 : Infinity;
-      audio.onloadedmetadata = () => {
-        audio.currentTime = start;
-        const d = Math.min(MAX_MS, (Math.min(end, audio.duration || 6) - start) * 1000);
+      a.onloadedmetadata = () => {
+        if (audio !== a) return;
+        a.currentTime = start;
+        const d = Math.min(MAX_MS, (Math.min(end, a.duration || 6) - start) * 1000);
         bar($("#show .bar"), Math.max(IMAGE_MS, d));
         clearTimeout(timer);
         timer = setTimeout(close, Math.max(IMAGE_MS, d + 300));
       };
-      audio.ontimeupdate = () => {
-        if (audio && audio.currentTime >= end) audio.pause();
+      a.ontimeupdate = () => {
+        if (a.currentTime >= end) a.pause();
       };
-      audio.play().catch(() => {});
+      a.play().catch(() => {});
       ms = MAX_MS;
     }
   }

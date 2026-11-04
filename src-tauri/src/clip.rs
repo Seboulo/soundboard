@@ -10,7 +10,7 @@
 use super::*;
 use crate::room::Msg;
 use std::time::{Duration, Instant};
-use tauri::{LogicalSize, PhysicalPosition, WebviewUrl, WebviewWindowBuilder};
+use tauri::{LogicalSize, WebviewUrl, WebviewWindowBuilder};
 
 /// Taille d'un extrait envoyé (image ou vidéo + son).
 pub const MAX_CLIP: u64 = 10 * 1024 * 1024;
@@ -252,18 +252,26 @@ fn window_size(ask: bool) -> (f64, f64) {
     if ask { (380.0, 132.0) } else { (500.0, 380.0) }
 }
 
-/// En bas à droite de l'écran principal, au-dessus de la barre des tâches.
+/// Coin en bas à droite de l'écran principal, au-dessus de la barre des
+/// tâches (en pixels logiques).
+fn corner(app: &AppHandle, ask: bool) -> Option<(f64, f64)> {
+    let (width, height) = window_size(ask);
+    let m = app.primary_monitor().ok().flatten()?;
+    let scale = m.scale_factor();
+    let area = m.work_area();
+    let x = (area.position.x as f64 + area.size.width as f64) / scale - width - 20.0;
+    let y = (area.position.y as f64 + area.size.height as f64) / scale - height - 20.0;
+    Some((x, y))
+}
+
+/// Taille et place de la fenêtre déjà ouverte. (Pas de show/hide après la
+/// création : sous Windows, `show()` active la fenêtre et sortirait le
+/// pote de son jeu ; on ferme la fenêtre à la fin et on la recrée.)
 fn place(app: &AppHandle, w: &tauri::WebviewWindow, ask: bool) {
     let (width, height) = window_size(ask);
     let _ = w.set_size(LogicalSize::new(width, height));
-    let monitor = w.primary_monitor().ok().flatten().or_else(|| app.primary_monitor().ok().flatten());
-    if let Some(m) = monitor {
-        let scale = m.scale_factor();
-        let area = m.work_area();
-        let margin = (20.0 * scale) as i32;
-        let x = area.position.x + area.size.width as i32 - (width * scale) as i32 - margin;
-        let y = area.position.y + area.size.height as i32 - (height * scale) as i32 - margin;
-        let _ = w.set_position(PhysicalPosition::new(x, y));
+    if let Some((x, y)) = corner(app, ask) {
+        let _ = w.set_position(tauri::LogicalPosition::new(x, y));
     }
 }
 
@@ -271,36 +279,30 @@ fn show_window(app: &AppHandle, show: ClipShow) -> Result<(), String> {
     let state = app.state::<AppState>();
     let ask = show.ask;
     *state.clips.pending.lock().unwrap() = Some(show.clone());
-    let w = match app.get_webview_window(WINDOW) {
-        Some(w) => w,
-        None => {
-            let (width, height) = window_size(ask);
-            // La fenêtre se charge et lit l'extrait en attente (clip_pending).
-            return WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::App("clip.html".into()))
-                .title("Soundboard — extrait")
-                .inner_size(width, height)
-                .decorations(false)
-                .transparent(true)
-                .shadow(false)
-                .resizable(false)
-                .always_on_top(true)
-                .skip_taskbar(true)
-                // Cliquer dessus ne retire pas la main au jeu.
-                .focusable(false)
-                .focused(false)
-                .visible(false)
-                .build()
-                .map(|w| {
-                    place(app, &w, ask);
-                    let _ = w.show();
-                })
-                .map_err(|e| e.to_string());
-        }
-    };
-    place(app, &w, ask);
-    let _ = w.show();
-    let _ = w.set_always_on_top(true);
-    app.emit_to(WINDOW, "clip-show", &show).map_err(|e| e.to_string())
+    if let Some(w) = app.get_webview_window(WINDOW) {
+        place(app, &w, ask);
+        return app.emit_to(WINDOW, "clip-show", &show).map_err(|e| e.to_string());
+    }
+    let (width, height) = window_size(ask);
+    let mut builder = WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::App("clip.html".into()))
+        .title("Soundboard — extrait")
+        .inner_size(width, height)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .resizable(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        // Créée visible mais sans le focus (affichée sans être activée), et
+        // cliquer dessus ne retire pas la main au jeu.
+        .focusable(false)
+        .focused(false)
+        .visible(true);
+    if let Some((x, y)) = corner(app, ask) {
+        builder = builder.position(x, y);
+    }
+    // La fenêtre se charge puis lit l'extrait en attente (clip_pending).
+    builder.build().map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// L'extrait en attente (lu par la fenêtre quand elle s'ouvre).
@@ -328,8 +330,7 @@ pub fn close(app: &AppHandle) {
         state.clips.pending.lock().unwrap().take();
     }
     if let Some(w) = app.get_webview_window(WINDOW) {
-        let _ = app.emit_to(WINDOW, "clip-stop", ());
-        let _ = w.hide();
+        let _ = w.destroy();
     }
 }
 
