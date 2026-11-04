@@ -24,6 +24,7 @@
       <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M16 4h4v4M4 20 20 4M20 16v4h-4M14.5 14.5 20 20M4 4l5 5"/></symbol>
       <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></symbol>
       <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></symbol>
+      <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/></symbol>
       <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4zM13 7l4 4"/></symbol>
       <symbol id="i-check" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="m8 12.5 3 3 5-6"/></symbol>
       <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></symbol>
@@ -33,6 +34,7 @@
       <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2.5"/><path d="M7 10h.01M11 10h.01M15 10h.01M8 14h8"/></symbol>
       <symbol id="i-phone" viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M11 17.5h2"/></symbol>
       <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/></symbol>
+      <symbol id="i-note" viewBox="0 0 24 24"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></symbol>
       <symbol id="i-logo" viewBox="0 0 24 24"><path d="M5 10v4M9 7v10M13 4v16M17 8v8M21 11v2"/></symbol>
     </defs>
   </svg>
@@ -40,7 +42,6 @@
     <div class="brand"><span class="logo"><svg class="ico"><use href="#i-logo"/></svg></span><h1>Soundboard</h1></div>
     <button id="cable-status" class="pill" type="button" title="État du câble virtuel"></button>
     <button id="mic-toggle" class="pill" type="button" hidden></button>
-    <button id="surprise-toggle" class="pill" type="button" title="Des sons qui partent tout seuls, au hasard">🎲 Surprise</button>
     <div class="spacer"></div>
     <label class="search-box"><svg class="ico"><use href="#i-search"/></svg><input id="search" type="search" placeholder="Rechercher un son… (tape n'importe où)" autocomplete="off"></label>
     <button id="btn-online" type="button" title="Chercher des sons sur internet"><svg class="ico"><use href="#i-globe"/></svg><span class="lbl">En ligne</span></button>
@@ -78,9 +79,15 @@
     </div>
     <label class="size" title="Taille des pads"><input id="pad-size" type="range" min="100" max="220" step="10"></label>
     <button id="btn-random" type="button" title="Jouer un son au hasard de cet onglet"><svg class="ico"><use href="#i-shuffle"/></svg><span class="lbl">Au hasard</span></button>
-    <button id="btn-select" type="button" class="icon" title="Sélectionner plusieurs sons pour les ranger d'un coup (ou Ctrl + clic sur un son)"><svg class="ico"><use href="#i-check"/></svg></button>
-    <button id="btn-export" type="button" class="icon" title="Exporter : enregistrer les sons de cet onglet dans un .zip à partager"><svg class="ico"><use href="#i-upload"/></svg></button>
-    <button id="btn-import" type="button" class="icon" title="Importer : ajouter les sons d'un pack .zip"><svg class="ico"><use href="#i-download"/></svg></button>
+    <button id="surprise-toggle" type="button" title="Mode Surprise : des sons qui partent tout seuls, au hasard"><span class="dice" aria-hidden="true">🎲</span><span class="lbl">Surprise</span></button>
+    <div class="more">
+      <button id="btn-more" type="button" class="icon" title="Plus d'actions" aria-haspopup="menu" aria-expanded="false"><svg class="ico"><use href="#i-more"/></svg></button>
+      <div id="more-menu" class="menu" role="menu" hidden>
+        <button id="btn-select" type="button" role="menuitem" title="Sélectionner plusieurs sons pour les ranger d'un coup (ou Ctrl + clic sur un son)"><svg class="ico"><use href="#i-check"/></svg>Sélectionner plusieurs sons</button>
+        <button id="btn-export" type="button" role="menuitem" title="Exporter : enregistrer les sons de cet onglet dans un .zip à partager"><svg class="ico"><use href="#i-upload"/></svg>Exporter en .zip</button>
+        <button id="btn-import" type="button" role="menuitem" title="Importer : ajouter les sons d'un pack .zip"><svg class="ico"><use href="#i-download"/></svg>Importer un pack .zip</button>
+      </div>
+    </div>
   </nav>
 
   <main>
@@ -96,6 +103,11 @@
     <div id="grid" class="grid"></div>
     <div id="search-empty" class="empty" hidden>
       <p>Aucun son ne correspond à ta recherche.</p>
+      <button type="button" data-action="search-online"><svg class="ico"><use href="#i-globe"/></svg><span></span></button>
+    </div>
+    <div id="top-empty" class="empty" hidden>
+      <p class="big">Aucun son joué pour l'instant</p>
+      <p>Les 20 sons que tu joues le plus apparaîtront ici, du plus joué au moins joué.</p>
     </div>
     <div id="recent-empty" class="empty" hidden>
       <p class="big">Aucun son joué pour l'instant</p>
@@ -107,11 +119,12 @@
       <ol class="start-steps">
         <li data-step="cable"><span class="mark"></span><span class="txt"><b>Installer le micro virtuel</b><small>Pour que Discord entende les sons.</small></span><button type="button" data-action="start-wizard">Assistant</button></li>
         <li data-step="discord"><span class="mark"></span><span class="txt"><b>Régler Discord</b><small>Choisir « CABLE Output » comme micro.</small></span><button type="button" data-action="start-wizard">Assistant</button></li>
-        <li data-step="sound"><span class="mark"></span><span class="txt"><b>Ajouter ton premier son</b><small>Glisse des fichiers audio dans la fenêtre, ou :</small></span><button type="button" class="primary" data-action="start-add">Ajouter des sons</button></li>
+        <li data-step="sound"><span class="mark"></span><span class="txt"><b>Ajouter ton premier son</b><small>Glisse des fichiers audio dans la fenêtre, ou :</small></span><span class="start-btns"><button type="button" class="primary" data-action="start-add">Ajouter des sons</button><button type="button" data-action="start-online">En ligne</button><button type="button" data-action="start-import">Pack .zip</button></span></li>
       </ol>
     </div>
   </main>
 
+  <datalist id="tick-100"><option value="1"></option></datalist>
   <footer id="version" class="version"></footer>
 
   <div id="drop-overlay" class="drop-overlay" hidden><p>Lâche tes fichiers pour les ajouter</p></div>
@@ -122,13 +135,28 @@
     <form method="dialog" class="form">
       <h2>Modifier le son</h2>
       <label>Nom <input name="sound_name" required maxlength="60"></label>
+      <div class="emoji-row">
+        <label>Emoji <input name="emoji" maxlength="16" placeholder="🙂" class="emoji-input"></label>
+        <div id="emoji-picks" class="emoji-picks"></div>
+      </div>
+      <p class="hint">Choisis-en un ou tape celui que tu veux (Windows + . ouvre le clavier d'emojis).</p>
+      <div class="row2">
+        <label>Onglet
+          <input name="category" list="categories" maxlength="30" placeholder="Aucun (seulement dans « Tous »)">
+        </label>
+        <label>Couleur <input name="color" type="color"></label>
+      </div>
+      <datalist id="categories"></datalist>
       <label>Raccourci global
         <input name="hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche">
       </label>
       <p class="hint">Astuce : le pavé numérique (Num 1, Num 2…) ou F13–F24 évitent les conflits avec les jeux. Retour arrière pour effacer.</p>
+      <label>Volume <span class="value" data-for="volume"></span>
+        <input name="volume" type="range" list="tick-100" min="0" max="2" step="0.05">
+      </label>
       <div class="trim">
         <div class="trim-head">
-          <span class="label">Découpe : glisse les poignées, ou clique sur l'une puis règle-la avec ← →</span>
+          <span class="label">Découpe <small>glisse les poignées, ou ← → pour affiner</small></span>
           <div class="spacer"></div>
           <button type="button" class="hist-btn" data-action="zoom-out" title="Dézoomer (Ctrl + molette sur l'onde)" aria-label="Dézoomer">−</button>
           <button type="button" class="hist-btn" data-action="zoom-in" title="Zoomer sur la poignée (Ctrl + molette sur l'onde)" aria-label="Zoomer">+</button>
@@ -144,9 +172,9 @@
           <button type="button" data-action="reset-trim">Tout garder</button>
         </div>
       </div>
-      <div class="fx">
-        <div class="fx-head">
-          <span class="label">Effets</span>
+      <details class="fx">
+        <summary class="fx-head"><span class="label">Effets</span><span id="fx-state" class="fx-state"></span></summary>
+        <div class="fx-sub">
           <span class="hint">Le fichier d'origine n'est jamais modifié.</span>
           <div class="spacer"></div>
           <button type="button" data-action="fx-reset">Sans effet</button>
@@ -188,10 +216,7 @@
           </label>
         </div>
         <label class="set-row"><span class="txt"><b>À l'envers</b><small>Le passage découpé est joué de la fin vers le début.</small></span><input type="checkbox" class="switch" data-fx="reverse"></label>
-      </div>
-      <label>Volume <span class="value" data-for="volume"></span>
-        <input name="volume" type="range" min="0" max="2" step="0.05">
-      </label>
+      </details>
       <div class="illus">
         <div class="illus-head">
           <div id="image-preview" class="image-preview"></div>
@@ -214,18 +239,6 @@
           <span class="hint powered">Images fournies par GIPHY</span>
         </div>
       </div>
-      <div class="emoji-row">
-        <label>Emoji <input name="emoji" maxlength="16" placeholder="🙂" class="emoji-input"></label>
-        <div id="emoji-picks" class="emoji-picks"></div>
-      </div>
-      <p class="hint">Choisis-en un ou tape celui que tu veux (Windows + . ouvre le clavier d'emojis).</p>
-      <div class="row2">
-        <label>Onglet
-          <input name="category" list="categories" maxlength="30" placeholder="Aucun (seulement dans « Tous »)">
-        </label>
-        <label>Couleur <input name="color" type="color"></label>
-      </div>
-      <datalist id="categories"></datalist>
       <label class="set-row"><span class="txt"><b>Jouer en boucle</b><small>Avec un fondu au début et à la fin. Clique à nouveau sur le son pour l'arrêter.</small></span><input name="looping" type="checkbox" class="switch"></label>
       <label class="set-row"><span class="txt"><b>Ne jamais être coupé par les autres sons</b><small>Pratique pour une musique de fond.</small></span><input name="keep_playing" type="checkbox" class="switch"></label>
       <div class="actions">
@@ -267,10 +280,10 @@
           <h3>Volume</h3>
           <div class="set-card">
           <label class="set-field">Volume des sons dans Discord <span class="value" data-for="master_volume"></span>
-            <input name="master_volume" type="range" min="0" max="1.5" step="0.05">
+            <input name="master_volume" type="range" list="tick-100" min="0" max="1.5" step="0.05">
           </label>
           <label class="set-field">Volume des sons dans ton casque <span class="value" data-for="monitor_volume"></span>
-            <input name="monitor_volume" type="range" min="0" max="1.5" step="0.05">
+            <input name="monitor_volume" type="range" list="tick-100" min="0" max="1.5" step="0.05">
           </label>
           <label class="advanced set-row"><span class="txt"><b>Égaliser le volume des sons</b><small>Mesure chaque son comme à la télé (norme EBU R128) et calme les cris et les pics.</small></span><input name="normalize" type="checkbox" class="switch"></label>
           <label class="advanced set-row"><span class="txt"><b>Niveau des sons face à ta voix</b><small>Si les sons couvrent encore les voix, choisis « Plus bas ».</small></span>
@@ -291,7 +304,7 @@
           </label>
           <label class="set-row"><span class="txt"><b>Envoyer ma voix dans Discord avec les sons</b><small>Dans Discord, choisis « CABLE Output » comme micro.</small></span><input name="mic_enabled" type="checkbox" class="switch"></label>
           <label class="set-field">Volume de ta voix <span class="value" data-for="mic_volume"></span>
-            <input name="mic_volume" type="range" min="0" max="2" step="0.05">
+            <input name="mic_volume" type="range" list="tick-100" min="0" max="2" step="0.05">
           </label>
           <label class="set-field">Effet sur ta voix
             <select name="voice_effect">
@@ -511,7 +524,7 @@
         <h2>1. Installer le micro virtuel</h2>
         <p>Pour que Discord entende les sons, l'app les joue dans un « micro virtuel » gratuit : <b>VB-Audio Virtual Cable</b>.</p>
         <div class="status" data-cable></div>
-        <ol>
+        <ol data-install>
           <li>Télécharge le pack Windows sur le site de VB-Audio.</li>
           <li>Décompresse-le, puis clic droit sur <code>VBCABLE_Setup_x64.exe</code> → « Exécuter en tant qu'administrateur » → <i>Install Driver</i>.</li>
           <li>Redémarre ton PC si l'installeur le demande, puis reviens ici.</li>
@@ -540,13 +553,13 @@
       </section>
       <section data-step="3" hidden>
         <h2>3. Régler Discord</h2>
-        <ol>
-          <li>Discord → <b>Paramètres utilisateur</b> → <b>Voix et vidéo</b>.</li>
-          <li><b>Périphérique d'entrée</b> : choisis <code>CABLE Output (VB-Audio Virtual Cable)</code>.</li>
-          <li>Désactive la <b>suppression du bruit (Krisp)</b> et l'<b>annulation de l'écho</b> : sinon Discord filtre une partie des sons. Pas d'inquiétude pour ton clavier, l'app nettoie ton micro elle-même. Seule exception : si tu joues sur des enceintes et pas au casque, garde l'annulation de l'écho, sinon tes potes s'entendent en écho.</li>
-          <li>Désactive aussi le <b>contrôle automatique du gain</b> (section Traitement de la voix) : l'app règle déjà le volume de ta voix, et deux réglages automatiques l'un sur l'autre font « pomper » le son.</li>
-          <li>Dans <b>Atténuation</b> (même page), mets le curseur à <b>0 %</b> : sinon Discord baisse les sons de l'app, que tes potes entendent, dès que quelqu'un parle. Pareil côté Windows : Panneau de configuration → Son → onglet <b>Communications</b> → <b>Ne rien faire</b>.</li>
-          <li>En mode <b>Détection de la voix</b>, désactive « Déterminer automatiquement la sensibilité » et mets le curseur presque tout à gauche, pour que les sons passent même quand tu ne parles pas.</li>
+        <p class="hint">Dans Discord : <b>Paramètres utilisateur → Voix et vidéo</b>.</p>
+        <ol class="steps-list">
+          <li><b>Périphérique d'entrée : <code>CABLE Output (VB-Audio Virtual Cable)</code></b><small>C'est par là que passent ta voix et les sons.</small></li>
+          <li><b>Suppression du bruit (Krisp) et annulation de l'écho : désactivées</b><small>Sinon Discord filtre une partie des sons. L'app nettoie déjà ton micro. Sur des enceintes (sans casque), garde l'annulation de l'écho.</small></li>
+          <li><b>Contrôle automatique du gain : désactivé</b><small>Section Traitement de la voix. L'app règle déjà ton volume, deux réglages automatiques font « pomper » le son.</small></li>
+          <li><b>Atténuation : 0 %</b><small>Sinon Discord baisse les sons dès que quelqu'un parle. Pareil dans Windows : Panneau de configuration → Son → Communications → « Ne rien faire ».</small></li>
+          <li><b>Détection de la voix : sensibilité manuelle, curseur presque tout à gauche</b><small>Pour que les sons passent même quand tu ne parles pas.</small></li>
         </ol>
         <p class="hint">Tu peux revenir à cet assistant à tout moment depuis les réglages.</p>
         <div class="actions">

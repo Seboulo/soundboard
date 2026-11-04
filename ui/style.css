@@ -1250,3 +1250,192 @@ dialog { border-radius: 18px; }
 .surprise-list input { width: auto; margin: 0; flex-shrink: 0; }
 .surprise-list .name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .surprise-list .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; background: var(--pad-color, var(--accent)); }
+
+/* ---------- Ergonomie 1.7 ---------- */
+
+/* Barre du haut : toujours sur une ligne, c'est la recherche qui rétrécit. */
+.topbar { flex-wrap: nowrap; }
+.topbar .search-box { flex: 0 1 200px; min-width: 110px; }
+.topbar .search-box #search { width: 100%; }
+@media (max-width: 900px) { .topbar .search-box #search { width: 100%; } }
+@media (max-width: 760px) {
+  #btn-stop .lbl, #btn-add .lbl { display: none; }
+  #btn-stop, #btn-add { width: 36px; padding: 0; }
+}
+
+/* Onglets : ils passent à la ligne entre eux, les outils restent groupés à droite. */
+.tabbar { flex-wrap: nowrap; align-items: flex-start; }
+.tabbar .tabs { flex: 1 1 auto; min-width: 0; }
+.tabbar > .spacer { display: none; }
+.tabbar > :not(.tabs) { flex-shrink: 0; }
+.tabbar .size { height: 34px; }
+
+/* Mode Surprise : un bouton comme « Au hasard », coloré quand il est actif. */
+#surprise-toggle .dice { font-size: 15px; line-height: 1; }
+#surprise-toggle.on { background: color-mix(in srgb, var(--accent) 12%, var(--panel)); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--accent); }
+@media (max-width: 1040px) {
+  #surprise-toggle .lbl { display: none; }
+  #surprise-toggle { width: 34px; padding: 0; }
+}
+
+/* Menu « ⋯ ». */
+.more { position: relative; }
+#btn-more.on { background: var(--panel-2); }
+.menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .14);
+}
+.menu[hidden] { display: none; }
+.menu button {
+  justify-content: flex-start;
+  gap: 10px;
+  height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text);
+  font-size: 13.5px;
+  white-space: nowrap;
+}
+.menu button:hover, .menu button:focus-visible { background: var(--panel-2); }
+.menu .ico { width: 17px; height: 17px; color: var(--muted); }
+/* Sélection en cours : on garde un repère sur le bouton du menu. */
+.more:has(#btn-select.on) #btn-more { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.menu #btn-select.on { background: transparent; color: var(--accent); }
+.menu #btn-select.on .ico { color: var(--accent); }
+
+/* Pads en grille : l'emoji ou l'initiale posés directement sur la couleur du pad. */
+.grid:not(.list) .pad .icon:not(.image) { background: transparent; box-shadow: none; }
+.grid:not(.list) .pad .icon.emoji { font-size: 40px; }
+.grid:not(.list) .pad .icon:not(.image):not(.emoji) { font-size: 30px; color: color-mix(in srgb, var(--c) 70%, var(--text)); }
+
+/* Le numéro de version reste en bas de la page au lieu de flotter sur la liste. */
+.version { position: static; display: block; text-align: right; padding: 0 16px 10px; }
+main { padding-bottom: 12px; }
+
+/* Barre des onglets et titres de groupe toujours visibles en défilant. */
+.tabbar {
+  position: sticky;
+  top: var(--topbar-h, 57px);
+  z-index: 4;
+  padding-bottom: 10px;
+  background: var(--bg);
+}
+.group-head {
+  position: sticky;
+  top: var(--sticky-h, 110px);
+  z-index: 3;
+  justify-self: stretch;
+  background: var(--bg);
+  border-radius: 0;
+}
+.group-head:hover { background: var(--bg); }
+.group-head:hover .group-name { color: var(--accent); }
+.selection-bar { top: var(--sticky-h, 110px); }
+
+#sort[hidden] { display: none; }
+.grid.list .pad .meta:empty { display: none; }
+/* Le corps grandit avec la page : sinon la barre du haut (et Stop) partait
+   au-delà d'un écran de défilement. */
+body { height: auto; min-height: 100%; }
+
+/* ---------- Retouches visuelles ---------- */
+
+/* Couleurs de pads un peu plus franches. */
+:root { --tint-amount: 21%; }
+:root[data-theme="dark"] { --tint-amount: 24%; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --tint-amount: 24%; } }
+
+/* Son sans emoji : une note dans sa couleur. */
+.pad .icon.note .ico { width: 30px; height: 30px; color: color-mix(in srgb, var(--c) 80%, var(--text)); stroke-width: 2; }
+.grid.list .pad .icon.note .ico { width: 20px; height: 20px; }
+
+/* Son en cours : fond plus soutenu, contour net, barre épaisse. */
+.pad.playing {
+  background: color-mix(in srgb, var(--c) calc(var(--tint-amount) + 18%), var(--pad-base));
+  border-color: var(--c);
+  box-shadow: 0 0 0 2px var(--c), 0 10px 26px color-mix(in srgb, var(--c) 30%, transparent);
+}
+.grid:not(.list) .pad .progress { height: 7px; background: var(--c); border-radius: 0 4px 4px 0; }
+.grid:not(.list) .pad.playing .key::after { content: "■ Arrêter"; }
+.grid.list .pad.playing { background: color-mix(in srgb, var(--c) 24%, transparent); }
+.grid.list .pad .progress { height: 3px; }
+
+/* Onglets inactifs lisibles : fond clair, texte plus foncé. */
+.tab:not(.active) { background: var(--panel); border-color: var(--border); color: color-mix(in srgb, var(--text) 78%, var(--muted)); }
+.tab:not(.active):hover { color: var(--text); border-color: color-mix(in srgb, var(--text) 25%, var(--border)); }
+
+/* Pastille Micro : neutre allumée, rouge coupée. */
+#mic-toggle { background: var(--panel); border-color: var(--border); color: var(--text); }
+#mic-toggle.off { background: color-mix(in srgb, var(--danger, #e5484d) 12%, var(--panel)); border-color: color-mix(in srgb, var(--danger, #e5484d) 45%, var(--border)); color: color-mix(in srgb, var(--danger, #e5484d) 85%, var(--text)); }
+
+/* ---------- Fenêtre « Modifier le son » ---------- */
+
+/* Titre et boutons toujours visibles : plus besoin de descendre pour Enregistrer. */
+#dlg-sound .form { padding-top: 0; padding-bottom: 0; }
+#dlg-sound .form > h2 {
+  position: sticky; top: 0; z-index: 2;
+  margin: 0 -20px; padding: 18px 20px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+#dlg-sound .form > .actions {
+  position: sticky; bottom: 0; z-index: 2;
+  margin: 6px -20px 0; padding: 12px 20px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+#dlg-sound .trim-head .label small { font-weight: 400; color: var(--muted); margin-left: 6px; }
+
+/* Effets repliables, avec un résumé de ce qui est actif. */
+details.fx > summary { list-style: none; cursor: pointer; align-items: center; }
+details.fx > summary::-webkit-details-marker { display: none; }
+details.fx > summary::before { content: "▸"; color: var(--muted); width: 12px; transition: transform .15s; }
+details.fx[open] > summary::before { transform: rotate(90deg); }
+details.fx:not([open]) { gap: 0; }
+.fx-state { font-size: 12.5px; color: var(--muted); }
+.fx-state.on { color: var(--accent); font-weight: 600; }
+.fx-sub { display: flex; align-items: center; gap: 10px; }
+
+/* App vide : seule l'importation (menu « ⋯ ») reste dans la barre des onglets. */
+/* App vide : la barre des onglets n'a rien d'utile (l'import est proposé au centre). */
+body.no-sounds .tabbar { display: none; }
+li:has(> .start-btns) { flex-wrap: wrap; }
+.start-btns { display: flex; gap: 6px; flex-basis: 100%; padding-left: 38px; }
+.start-btns button { white-space: nowrap; }
+
+/* Assistant : une action par ligne, l'explication en dessous en plus petit. */
+.steps-list { display: flex; flex-direction: column; gap: 10px; margin: 0; padding-left: 22px; }
+.steps-list li b { display: block; font-weight: 600; }
+.steps-list li small { display: block; color: var(--muted); font-size: 12.5px; line-height: 1.4; margin-top: 2px; }
+.steps-list code { font-size: 12px; }
+
+/* En liste, la taille des pads ne change rien : on cache le curseur. */
+body:has(.grid.list) .tabbar .size { display: none; }
+
+/* Notifications : carte flottante, plus lisible. */
+.toast {
+  display: flex; align-items: center; gap: 4px;
+  bottom: 20px;
+  padding: 10px 14px 10px 16px;
+  background: var(--panel);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .16);
+  font-weight: 500;
+  z-index: 50;
+}
+.toast.error { border-color: color-mix(in srgb, var(--danger) 50%, var(--border)); }
+.toast.error::before { content: "!"; color: var(--danger); font-weight: 700; margin-right: 8px; }
+.list-head .dur { font-size: 11px; }

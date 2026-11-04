@@ -159,7 +159,10 @@ function setHotkeyInput(input, hotkey) {
 function bindRangeLabels(form) {
   form.querySelectorAll("input[type=range]").forEach((r) => {
     const label = form.querySelector(`.value[data-for="${r.name}"]`);
-    const update = () => label && (label.textContent = Math.round(r.value * 100) + " %");
+    // Au-delà du repère 100 % (list="tick-100"), le son est amplifié : on le dit.
+    const boost = r.getAttribute("list") === "tick-100";
+    const update = () =>
+      label && (label.textContent = Math.round(r.value * 100) + " %" + (boost && r.value > 1 ? " · amplifié" : ""));
     r.addEventListener("input", update);
     r.update = update;
   });
@@ -202,7 +205,8 @@ function renderMic() {
   const pill = $("#mic-toggle");
   const muted = state.mic_muted;
   pill.hidden = !state.config.settings.mic_enabled;
-  pill.className = "pill " + (muted ? "ko" : "ok");
+  // Neutre quand tout va bien, rouge seulement quand le micro est coupé.
+  pill.className = "pill" + (muted ? " off" : "");
   pill.textContent = muted ? "🔇 Micro coupé" : "🎙 Micro";
   const hk = hotkeyLabel(state.config.settings.mute_hotkey);
   pill.title = (muted ? "Rallumer ton micro" : "Couper ton micro (les sons passent toujours)") + (hk ? ` — ${hk}` : "");
@@ -223,6 +227,10 @@ function categories() {
 
 // Onglet spécial des derniers sons joués (aucun nom d'onglet ne commence par \u0000).
 const RECENT_TAB = "\u0000recent";
+// Onglet spécial des sons les plus joués.
+const TOP_TAB = "\u0000top";
+const TOP_COUNT = 20;
+const isSpecialTab = (tab) => tab === RECENT_TAB || tab === TOP_TAB;
 const RECENT_KEY = "soundboard.recent";
 let recent = [];
 try {
@@ -254,12 +262,12 @@ function remember(id) {
 
 /** Onglet à passer aux commandes (au hasard, export) : « Récents » vaut « Tous ». */
 function tabCategory() {
-  return currentTab === RECENT_TAB ? null : currentTab;
+  return isSpecialTab(currentTab) ? null : currentTab;
 }
 
 function renderTabs() {
   const cats = categories();
-  if (currentTab && currentTab !== RECENT_TAB && !cats.includes(currentTab)) currentTab = null;
+  if (currentTab && !isSpecialTab(currentTab) && !cats.includes(currentTab)) currentTab = null;
   const tab = (label, value, iconName) => {
     const b = document.createElement("button");
     b.type = "button";
@@ -267,7 +275,7 @@ function renderTabs() {
     if (iconName) b.append(svgIcon(iconName));
     b.append(label);
     // Un son glissé sur l'onglet y est rangé.
-    if (value && value !== RECENT_TAB) b.dataset.cat = value;
+    if (value && !isSpecialTab(value)) b.dataset.cat = value;
     b.addEventListener("click", () => {
       currentTab = value;
       try {
@@ -276,10 +284,20 @@ function renderTabs() {
       } catch {}
       renderTabs();
       renderGrid();
+      // La barre des onglets reste visible : on repart du haut du nouvel onglet.
+      window.scrollTo({ top: 0 });
     });
     return b;
   };
-  $("#tabs").replaceChildren(tab("Tous", null), tab("Récents", RECENT_TAB, "clock"), ...cats.map((c) => tab(c, c)));
+  // Sans aucun son, les outils de tri et d'affichage ne servent à rien : on les cache.
+  const empty = state.config.sounds.length === 0;
+  document.body.classList.toggle("no-sounds", empty);
+  const special = empty ? [] : [tab("Tous", null), tab("Récents", RECENT_TAB, "clock"), tab("Top", TOP_TAB, "chart")];
+  // Nom court pour garder les onglets sur une ligne ; le nom complet en info-bulle.
+  if (special.length) special[2].title = "Les plus utilisés : tes 20 sons les plus joués";
+  $("#tabs").replaceChildren(...special, ...cats.map((c) => tab(c, c)));
+  // « Récents » et « Les plus utilisés » ont leur propre ordre : le tri n'y sert à rien.
+  $("#sort").hidden = currentTab === RECENT_TAB || currentTab === TOP_TAB;
   $("#categories").replaceChildren(...cats.map((c) => new Option(c)));
   $("#btn-export").title = tabCategory()
     ? `Exporter « ${tabCategory()} » : enregistrer ses sons dans un .zip à partager`
@@ -363,7 +381,13 @@ function renderGrid() {
   // Sans accents ni majuscules, dans le nom ou l'onglet.
   const matches = (s) => !q || fold(s.name).includes(q) || fold(s.category || "").includes(q);
   let sounds;
-  if (currentTab === RECENT_TAB) {
+  if (currentTab === TOP_TAB) {
+    sounds = state.config.sounds
+      .filter((s) => s.plays > 0)
+      .sort((a, b) => b.plays - a.plays)
+      .slice(0, TOP_COUNT)
+      .filter(matches);
+  } else if (currentTab === RECENT_TAB) {
     const byId = new Map(state.config.sounds.map((s) => [s.id, s]));
     sounds = recent.map((id) => byId.get(id)).filter((s) => s && matches(s));
   } else {
@@ -393,8 +417,10 @@ function renderGrid() {
   renderSelectionBar();
   $("#empty").hidden = state.config.sounds.length > 0;
   renderStartSteps();
+  $("#top-empty").hidden = !(currentTab === TOP_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
   $("#recent-empty").hidden = !(currentTab === RECENT_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
   $("#search-empty").hidden = !(q && sounds.length === 0 && state.config.sounds.length > 0);
+  $('#search-empty [data-action="search-online"] span').textContent = `Chercher « ${$("#search").value.trim()} » en ligne`;
   renderPlaying();
 }
 
@@ -668,7 +694,7 @@ function sortSounds(list) {
 
 /** Le glisser-déposer ne sert qu'aux ordres choisis à la main. */
 function canReorder() {
-  return currentTab !== RECENT_TAB && (sortMode === "manual" || sortMode === "favorites");
+  return !isSpecialTab(currentTab) && (sortMode === "manual" || sortMode === "favorites");
 }
 
 function applyView() {
@@ -700,7 +726,7 @@ applyView();
 function listHeader() {
   const head = document.createElement("div");
   head.className = "list-head";
-  for (const [cls, text] of [["num", "#"], ["title", "Titre"], ["key", "Raccourci"], ["dur", "⏱"], ["tools", ""]]) {
+  for (const [cls, text] of [["num", "#"], ["title", "Titre"], ["key", "Raccourci"], ["dur", "Durée"], ["tools", ""]]) {
     const cell = document.createElement("span");
     cell.className = cls;
     cell.textContent = text;
@@ -728,9 +754,11 @@ function padElement(sound, index) {
     img.src = fileSrc(sound.image_still);
     icon.append(img);
   } else {
-    icon.className = "icon" + (emoji ? " emoji" : "");
-    // Sans emoji : l'initiale du son dans une pastille de sa couleur.
-    icon.textContent = emoji || [...sound.name.trim()][0]?.toUpperCase() || "♪";
+    icon.className = "icon" + (emoji ? " emoji" : " note");
+    // Sans emoji : une note dans la couleur du son (des initiales se
+    // répétaient : « S », « S », « S »…).
+    if (emoji) icon.textContent = emoji;
+    else icon.append(svgIcon("note"));
   }
   const eq = document.createElement("span");
   eq.className = "eq";
@@ -744,7 +772,9 @@ function padElement(sound, index) {
   num.textContent = index + 1;
   const meta = document.createElement("span");
   meta.className = "meta";
-  meta.textContent = sound.category || "";
+  // Pas d'onglet répété quand l'onglet ouvert ou le groupe le dit déjà.
+  const tabShown = (currentTab && currentTab !== RECENT_TAB && currentTab !== TOP_TAB) || (!currentTab && !sound.favorite && categories().length);
+  meta.textContent = tabShown ? "" : sound.category || "";
   const label = document.createElement("span");
   label.className = "label";
   label.append(name, meta);
@@ -949,6 +979,8 @@ function openSoundDialog(sound) {
   $("#image-results").replaceChildren();
   $("#image-query").value = sound.name;
   setFx(sound.fx);
+  // Effets repliés tant qu'il n'y en a pas : la fenêtre reste courte.
+  fxBox.open = $("#fx-state").classList.contains("on");
   dlgSound.returnValue = "";
   dlgSound.showModal();
   openTrim(sound);
@@ -1142,7 +1174,7 @@ function drawTrim() {
   const zoom = trim.duration / (v1 - v0);
   $("#trim-info").textContent =
     (now !== null ? `▶ ${fmtTime(now)}  ·  ` : "") +
-    `${fmtTime(trim.start)} → ${fmtTime(trim.end)}  (durée ${fmtTime(trim.end - trim.start)})` +
+    `${fmtTime(trim.start)} → ${fmtTime(trim.end)}  ·  ${fmtTime(trim.end - trim.start)}` +
     (zoom > 1.01 ? `  ·  zoom × ${Math.round(zoom)}` : "");
   zoomOutBtn.disabled = zoom <= 1.01;
   zoomInBtn.disabled = zoom >= MAX_ZOOM - 0.01;
@@ -1440,10 +1472,18 @@ function setFx(fx) {
 function refreshFx() {
   const fx = currentFx();
   for (const span of fxBox.querySelectorAll("[data-fxv]")) span.textContent = fmtFx(span.dataset.fxv, fx[span.dataset.fxv]);
+  const active = [];
   for (const b of fxBox.querySelectorAll("[data-preset]")) {
     const preset = FX_PRESETS[b.dataset.preset];
-    b.classList.toggle("active", Object.entries(preset).every(([k, v]) => fx[k] === v));
+    const on = Object.entries(preset).every(([k, v]) => fx[k] === v);
+    b.classList.toggle("active", on);
+    if (on) active.push(b.textContent.trim());
   }
+  // Résumé visible même replié : « aucun », les effets choisis, ou « réglages perso ».
+  const isDefault = Object.entries(FX_DEFAULT).every(([k, v]) => fx[k] === v);
+  const state = $("#fx-state");
+  state.textContent = isDefault ? "aucun" : active.length ? active.join(" · ") : "réglages perso";
+  state.classList.toggle("on", !isDefault);
 }
 
 for (const el of fxInputs) {
@@ -1826,6 +1866,10 @@ function renderWizardCable() {
   el.textContent = found
     ? `✓ VB-Cable est installé (${found}). Tu peux passer à la suite.`
     : "VB-Cable n'est pas encore détecté sur ce PC.";
+  // Déjà installé : on cache la marche à suivre pour l'installer.
+  $("[data-install]", dlgWizard).hidden = !!found;
+  $('[data-action="open-vb"]', dlgWizard).hidden = !!found;
+  $('[data-action="recheck"]', dlgWizard).hidden = !!found;
 }
 
 async function openWizard() {
@@ -2189,8 +2233,8 @@ const formSurprise = $("form", dlgSurprise);
 function renderSurprise() {
   const pill = $("#surprise-toggle");
   const s = state.config.settings;
-  pill.className = "pill" + (state.surprise_on ? " ok" : "");
-  pill.textContent = state.surprise_on ? "🎲 Surprise activée" : "🎲 Surprise";
+  pill.classList.toggle("on", state.surprise_on);
+  pill.querySelector(".lbl").textContent = state.surprise_on ? "Surprise activée" : "Surprise";
   pill.title = state.surprise_on
     ? `Un son au hasard toutes les ${s.surprise_min_minutes} à ${s.surprise_max_minutes} min. Clique pour régler ou arrêter.`
     : "Des sons qui partent tout seuls, au hasard";
@@ -2388,6 +2432,8 @@ function renderStartSteps() {
 }
 for (const b of $$('#empty [data-action="start-wizard"]')) b.addEventListener("click", () => openWizard());
 $('#empty [data-action="start-add"]').addEventListener("click", () => call("pick_sounds"));
+$('#empty [data-action="start-online"]').addEventListener("click", () => $("#btn-online").click());
+$('#empty [data-action="start-import"]').addEventListener("click", () => importPack());
 $("#btn-stop").addEventListener("click", () => call("stop_all"));
 $("#btn-settings").addEventListener("click", openSettings);
 $("#cable-status").addEventListener("click", () => (state.devices.vb_cable ? openDiagnostics() : openWizard()));
@@ -2447,6 +2493,48 @@ $("#btn-export").addEventListener("click", async () => {
 });
 
 $("#btn-import").addEventListener("click", () => importPack());
+
+// Barre des onglets collée sous la barre du haut : sa position sert aux titres
+// de groupe, qui restent visibles juste en dessous pendant le défilement.
+{
+  const root = document.documentElement;
+  const sync = () => {
+    const top = $(".topbar").offsetHeight;
+    root.style.setProperty("--topbar-h", top + "px");
+    root.style.setProperty("--sticky-h", top + $(".tabbar").offsetHeight + "px");
+  };
+  new ResizeObserver(sync).observe($(".tabbar"));
+  new ResizeObserver(sync).observe($(".topbar"));
+  sync();
+}
+
+// Menu « ⋯ » de la barre des onglets : sélection, export et import.
+const tabMoreBtn = $("#btn-more");
+const tabMoreMenu = $("#more-menu");
+function setTabMoreMenu(open) {
+  tabMoreMenu.hidden = !open;
+  tabMoreBtn.setAttribute("aria-expanded", String(open));
+  tabMoreBtn.classList.toggle("on", open);
+  if (open) $("button", tabMoreMenu).focus();
+}
+tabMoreBtn.addEventListener("click", () => setTabMoreMenu(tabMoreMenu.hidden));
+// Une action choisie referme le menu.
+tabMoreMenu.addEventListener("click", (e) => e.target.closest("button") && setTabMoreMenu(false));
+document.addEventListener("pointerdown", (e) => {
+  if (!tabMoreMenu.hidden && !e.target.closest(".more")) setTabMoreMenu(false);
+});
+tabMoreMenu.addEventListener("keydown", (e) => {
+  const items = $$("button", tabMoreMenu);
+  const i = items.indexOf(document.activeElement);
+  if (e.key === "Escape") {
+    e.stopPropagation();
+    setTabMoreMenu(false);
+    tabMoreBtn.focus();
+  } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
+  }
+});
 
 async function importPack(path) {
   const res = await call("import_pack", { path });
@@ -2712,6 +2800,12 @@ $("#btn-online").addEventListener("click", () => {
   onlineForm.q.select();
 });
 $('[data-action="close"]', dlgOnline).addEventListener("click", () => dlgOnline.close());
+// Recherche sans résultat dans mes sons : on la relance sur internet.
+$('#search-empty [data-action="search-online"]').addEventListener("click", () => {
+  $("#btn-online").click();
+  onlineForm.q.value = $("#search").value.trim();
+  onlineForm.requestSubmit();
+});
 dlgOnline.addEventListener("close", stopOnlinePreview);
 
 onlineForm.addEventListener("submit", (e) => {
