@@ -486,6 +486,10 @@ dialog[open] { animation: dlg-in .16s ease-out; }
 @keyframes dlg-in { from { opacity: 0; transform: translateY(8px) scale(.98); } }
 dialog.wide { width: min(640px, 94vw); }
 dialog::backdrop { background: rgba(16, 24, 40, .35); backdrop-filter: blur(2px); }
+/* Fenêtre ouverte : la molette ne fait plus défiler la grille derrière,
+   ni quand la fenêtre arrive en bas de sa propre liste. */
+html:has(dialog[open]), html:has(dialog[open]) body { overflow: hidden; }
+dialog, .set-panes, .results { overscroll-behavior: contain; }
 
 .form {
   display: flex;
