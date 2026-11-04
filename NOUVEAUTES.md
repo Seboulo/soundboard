@@ -1,6 +1,16 @@
 Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
 Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
+Nouveautés de la 1.7 :
+- Nouvel onglet « Top » : tes 20 sons les plus joués, du plus joué au moins joué.
+- Affichage plus net : les barres du haut tiennent sur une ligne, et la barre du haut (avec Stop) ne disparaît plus quand tu fais défiler. Les onglets et le nom du groupe restent visibles en défilant.
+- Sélection, export et import sont rangés dans le menu « ⋯ » ; le mode Surprise 🎲 est à côté d'« Au hasard ».
+- Pads plus colorés, emoji posé directement sur le pad, une note de la couleur du son quand il n'a pas d'emoji, et le son en cours se voit mieux (« ■ Arrêter »).
+- Fenêtre « Modifier le son » : boutons Enregistrer / Annuler toujours visibles, ordre plus logique, effets repliés quand il n'y en a pas.
+- Curseurs de volume : repère à 100 % et mention « amplifié » au-delà.
+- Recherche sans résultat : bouton pour chercher le même mot en ligne. App vide : « En ligne » et « Pack .zip » proposés pour commencer.
+- Assistant : réglages Discord plus lisibles, étape VB-Cable raccourcie s'il est déjà installé.
+
 Nouveautés de la 1.6 :
 - Mode Surprise (bouton 🎲 en haut) : un son au hasard part tout seul sur Discord, à un moment au hasard (attente entre X et Y minutes, sons au choix). Jamais actif au lancement.
 - Sons mieux rangés : « Tous » est groupé par onglet (groupes repliables), favoris épinglés en haut, glisse un son sur un onglet pour l'y ranger, ou sélectionne-en plusieurs (Ctrl + clic ou « Sélectionner ») et range-les d'un coup.
