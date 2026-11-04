@@ -1415,3 +1415,9 @@ body.no-sounds .tabbar { display: none; }
 li:has(> .start-btns) { flex-wrap: wrap; }
 .start-btns { display: flex; gap: 6px; flex-basis: 100%; padding-left: 38px; }
 .start-btns button { white-space: nowrap; }
+
+/* Assistant : une action par ligne, l'explication en dessous en plus petit. */
+.steps-list { display: flex; flex-direction: column; gap: 10px; margin: 0; padding-left: 22px; }
+.steps-list li b { display: block; font-weight: 600; }
+.steps-list li small { display: block; color: var(--muted); font-size: 12.5px; line-height: 1.4; margin-top: 2px; }
+.steps-list code { font-size: 12px; }

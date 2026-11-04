@@ -520,7 +520,7 @@
         <h2>1. Installer le micro virtuel</h2>
         <p>Pour que Discord entende les sons, l'app les joue dans un « micro virtuel » gratuit : <b>VB-Audio Virtual Cable</b>.</p>
         <div class="status" data-cable></div>
-        <ol>
+        <ol data-install>
           <li>Télécharge le pack Windows sur le site de VB-Audio.</li>
           <li>Décompresse-le, puis clic droit sur <code>VBCABLE_Setup_x64.exe</code> → « Exécuter en tant qu'administrateur » → <i>Install Driver</i>.</li>
           <li>Redémarre ton PC si l'installeur le demande, puis reviens ici.</li>
@@ -549,13 +549,13 @@
       </section>
       <section data-step="3" hidden>
         <h2>3. Régler Discord</h2>
-        <ol>
-          <li>Discord → <b>Paramètres utilisateur</b> → <b>Voix et vidéo</b>.</li>
-          <li><b>Périphérique d'entrée</b> : choisis <code>CABLE Output (VB-Audio Virtual Cable)</code>.</li>
-          <li>Désactive la <b>suppression du bruit (Krisp)</b> et l'<b>annulation de l'écho</b> : sinon Discord filtre une partie des sons. Pas d'inquiétude pour ton clavier, l'app nettoie ton micro elle-même. Seule exception : si tu joues sur des enceintes et pas au casque, garde l'annulation de l'écho, sinon tes potes s'entendent en écho.</li>
-          <li>Désactive aussi le <b>contrôle automatique du gain</b> (section Traitement de la voix) : l'app règle déjà le volume de ta voix, et deux réglages automatiques l'un sur l'autre font « pomper » le son.</li>
-          <li>Dans <b>Atténuation</b> (même page), mets le curseur à <b>0 %</b> : sinon Discord baisse les sons de l'app, que tes potes entendent, dès que quelqu'un parle. Pareil côté Windows : Panneau de configuration → Son → onglet <b>Communications</b> → <b>Ne rien faire</b>.</li>
-          <li>En mode <b>Détection de la voix</b>, désactive « Déterminer automatiquement la sensibilité » et mets le curseur presque tout à gauche, pour que les sons passent même quand tu ne parles pas.</li>
+        <p class="hint">Dans Discord : <b>Paramètres utilisateur → Voix et vidéo</b>.</p>
+        <ol class="steps-list">
+          <li><b>Périphérique d'entrée : <code>CABLE Output (VB-Audio Virtual Cable)</code></b><small>C'est par là que passent ta voix et les sons.</small></li>
+          <li><b>Suppression du bruit (Krisp) et annulation de l'écho : désactivées</b><small>Sinon Discord filtre une partie des sons. L'app nettoie déjà ton micro. Sur des enceintes (sans casque), garde l'annulation de l'écho.</small></li>
+          <li><b>Contrôle automatique du gain : désactivé</b><small>Section Traitement de la voix. L'app règle déjà ton volume, deux réglages automatiques font « pomper » le son.</small></li>
+          <li><b>Atténuation : 0 %</b><small>Sinon Discord baisse les sons dès que quelqu'un parle. Pareil dans Windows : Panneau de configuration → Son → Communications → « Ne rien faire ».</small></li>
+          <li><b>Détection de la voix : sensibilité manuelle, curseur presque tout à gauche</b><small>Pour que les sons passent même quand tu ne parles pas.</small></li>
         </ol>
         <p class="hint">Tu peux revenir à cet assistant à tout moment depuis les réglages.</p>
         <div class="actions">

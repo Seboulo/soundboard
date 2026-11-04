@@ -1852,6 +1852,10 @@ function renderWizardCable() {
   el.textContent = found
     ? `✓ VB-Cable est installé (${found}). Tu peux passer à la suite.`
     : "VB-Cable n'est pas encore détecté sur ce PC.";
+  // Déjà installé : on cache la marche à suivre pour l'installer.
+  $("[data-install]", dlgWizard).hidden = !!found;
+  $('[data-action="open-vb"]', dlgWizard).hidden = !!found;
+  $('[data-action="recheck"]', dlgWizard).hidden = !!found;
 }
 
 async function openWizard() {
