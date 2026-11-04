@@ -313,6 +313,8 @@ impl Default for Settings {
 pub struct Config {
     pub sounds: Vec<Sound>,
     pub settings: Settings,
+    /// Ordre des onglets choisi à la main ; garde aussi les onglets encore vides.
+    pub categories: Vec<String>,
 }
 
 impl Config {

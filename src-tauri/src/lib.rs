@@ -1603,6 +1603,54 @@ fn set_category(state: State<AppState>, ids: Vec<String>, category: Option<Strin
     Ok(state.snapshot())
 }
 
+/// Enregistre la liste des onglets dans l'ordre voulu (création, réordonnancement).
+#[tauri::command]
+fn set_tabs(state: State<AppState>, names: Vec<String>) -> Result<Snapshot, String> {
+    {
+        let mut config = state.config.lock().unwrap();
+        let mut tabs: Vec<String> = Vec::new();
+        for name in names.into_iter().filter_map(|n| clean_category(Some(n))) {
+            if !tabs.contains(&name) {
+                tabs.push(name);
+            }
+        }
+        config.categories = tabs;
+        state.save(&config)?;
+    }
+    Ok(state.snapshot())
+}
+
+/// Renomme un onglet (ses sons suivent) ; sans nouveau nom, le supprime :
+/// ses sons passent « Sans onglet ».
+#[tauri::command]
+fn rename_tab(state: State<AppState>, old: String, new: Option<String>) -> Result<Snapshot, String> {
+    {
+        let mut config = state.config.lock().unwrap();
+        let new = clean_category(new);
+        for sound in config.sounds.iter_mut().filter(|s| s.category.as_deref() == Some(old.as_str())) {
+            sound.category = new.clone();
+        }
+        let mut tabs = std::mem::take(&mut config.categories);
+        match &new {
+            Some(name) => {
+                // Fusion si le nouveau nom existe déjà.
+                let exists = tabs.iter().any(|t| t == name && *t != old);
+                if exists {
+                    tabs.retain(|t| *t != old);
+                } else if let Some(t) = tabs.iter_mut().find(|t| **t == old) {
+                    *t = name.clone();
+                } else {
+                    tabs.push(name.clone());
+                }
+            }
+            None => tabs.retain(|t| *t != old),
+        }
+        config.categories = tabs;
+        state.save(&config)?;
+    }
+    Ok(state.snapshot())
+}
+
 /// Ajoute un son à partir d'un lien direct vers un fichier audio.
 #[tauri::command]
 async fn add_from_url(app: AppHandle, url: String) -> Result<Snapshot, String> {
@@ -2297,6 +2345,8 @@ pub fn run() {
             set_mic_muted,
             toggle_favorite,
             set_category,
+            set_tabs,
+            rename_tab,
             add_from_url,
             add_from_youtube,
             play_random,

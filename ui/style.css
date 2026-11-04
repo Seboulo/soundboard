@@ -1439,3 +1439,24 @@ body:has(.grid.list) .tabbar .size { display: none; }
 .toast.error { border-color: color-mix(in srgb, var(--danger) 50%, var(--border)); }
 .toast.error::before { content: "!"; color: var(--danger); font-weight: 700; margin-right: 8px; }
 .list-head .dur { font-size: 11px; }
+
+/* Clic droit sur le fond : menu posé sous la souris. */
+.menu.ctx-menu { position: fixed; right: auto; top: 0; left: 0; min-width: 200px; z-index: 60; }
+.ctx-menu button.danger { background: transparent; color: var(--danger); }
+.ctx-menu button.danger .ico { color: var(--danger); }
+.ctx-menu button.danger:hover, .ctx-menu button.danger:focus-visible { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+#dlg-tab { width: min(400px, calc(100vw - 32px)); }
+#dlg-tab label[hidden] { display: none; }
+
+/* Onglet vide dans « Tous » : une zone où déposer des sons. */
+.group-empty {
+  grid-column: 1 / -1;
+  padding: 14px;
+  border: 1.5px dashed var(--border);
+  border-radius: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+/* Onglet ou titre de groupe en train d'être déplacé. */
+.tab.dragging, .group-head.dragging { opacity: .5; }
