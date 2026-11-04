@@ -265,6 +265,8 @@ function renderTabs() {
     b.className = "tab" + (currentTab === value ? " active" : "");
     if (iconName) b.append(svgIcon(iconName));
     b.append(label);
+    // Un son glissé sur l'onglet y est rangé.
+    if (value && value !== RECENT_TAB) b.dataset.cat = value;
     b.addEventListener("click", () => {
       currentTab = value;
       try {
@@ -366,16 +368,147 @@ function renderGrid() {
   } else {
     sounds = sortSounds(state.config.sounds.filter((s) => (!currentTab || s.category === currentTab) && matches(s)));
   }
-  const pads = sounds.map(padElement);
+  // Oubli des sons sélectionnés qui n'existent plus.
+  for (const id of selection) if (!soundById(id)) selection.delete(id);
+  const pads = [];
   // En liste, une ligne d'en-tête comme une playlist.
-  if (viewMode === "list" && pads.length) pads.unshift(listHeader());
+  if (viewMode === "list" && sounds.length) pads.push(listHeader());
+  const groups = !currentTab && categories().length ? soundGroups(sounds) : null;
+  if (groups) {
+    let n = 0;
+    for (const g of groups) {
+      // Une recherche montre tout, même les groupes repliés.
+      const open = !!q || !closedGroups.has(g.key);
+      pads.push(groupHeader(g, open));
+      if (open) pads.push(...g.sounds.map((s) => padElement(s, n++)));
+      else n += g.sounds.length;
+    }
+  } else {
+    pads.push(...sounds.map(padElement));
+  }
   grid.replaceChildren(...pads);
+  // Entrée dans la recherche joue ce son : on le montre.
+  if (q) $("#grid .pad:not(.missing)")?.classList.add("first-hit");
+  renderSelectionBar();
   $("#empty").hidden = state.config.sounds.length > 0;
   renderStartSteps();
   $("#recent-empty").hidden = !(currentTab === RECENT_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
   $("#search-empty").hidden = !(q && sounds.length === 0 && state.config.sounds.length > 0);
   renderPlaying();
 }
+
+// ---------- Groupes de « Tous » ----------
+
+// Dans « Tous » : les favoris en haut, puis un groupe repliable par onglet.
+const FAV_GROUP = "\u0000fav";
+const NO_TAB_GROUP = "\u0000none";
+const GROUPS_KEY = "soundboard.closedGroups";
+let closedGroups = new Set();
+try {
+  closedGroups = new Set(JSON.parse(localStorage.getItem(GROUPS_KEY) || "[]"));
+} catch {}
+
+function soundGroups(sounds) {
+  const groups = [];
+  const add = (key, label, list) => list.length && groups.push({ key, label, sounds: list });
+  add(FAV_GROUP, "Favoris", sounds.filter((s) => s.favorite));
+  const rest = sounds.filter((s) => !s.favorite);
+  for (const c of categories()) add(c, c, rest.filter((s) => s.category === c));
+  add(NO_TAB_GROUP, "Sans onglet", rest.filter((s) => !s.category));
+  return groups;
+}
+
+function groupHeader(group, open) {
+  const head = document.createElement("button");
+  head.type = "button";
+  head.className = "group-head" + (open ? "" : " closed");
+  head.setAttribute("aria-expanded", open);
+  // Glisser un son sur le titre le range dans cet onglet.
+  if (group.key === NO_TAB_GROUP) head.dataset.cat = "";
+  else if (group.key !== FAV_GROUP) head.dataset.cat = group.key;
+  const chev = document.createElement("span");
+  chev.className = "chev";
+  chev.textContent = "▾";
+  const name = document.createElement("span");
+  name.className = "group-name";
+  if (group.key === FAV_GROUP) name.append(svgIcon("star"));
+  name.append(group.label);
+  const count = document.createElement("span");
+  count.className = "group-count";
+  count.textContent = group.sounds.length;
+  head.append(chev, name, count);
+  head.title = open ? "Replier" : "Déplier";
+  head.addEventListener("click", () => {
+    if (reorder.justDropped) return;
+    if (closedGroups.has(group.key)) closedGroups.delete(group.key);
+    else closedGroups.add(group.key);
+    try {
+      localStorage.setItem(GROUPS_KEY, JSON.stringify([...closedGroups]));
+    } catch {}
+    renderGrid();
+  });
+  return head;
+}
+
+// ---------- Sélection de plusieurs sons ----------
+
+// Ctrl + clic (ou le bouton « Sélectionner ») coche des sons, qu'on range
+// ensuite d'un coup dans un onglet.
+const selection = new Set();
+let selecting = false;
+
+function toggleSelected(id) {
+  if (selection.has(id)) selection.delete(id);
+  else selection.add(id);
+  document.querySelector(`#grid .pad[data-id="${CSS.escape(id)}"]`)?.classList.toggle("selected", selection.has(id));
+  renderSelectionBar();
+}
+
+function clearSelection() {
+  selection.clear();
+  selecting = false;
+  $$("#grid .pad.selected").forEach((p) => p.classList.remove("selected"));
+  renderSelectionBar();
+}
+
+function renderSelectionBar() {
+  const bar = $("#selection-bar");
+  bar.hidden = !selecting && selection.size === 0;
+  $("#btn-select").classList.toggle("on", selecting || selection.size > 0);
+  $("#grid").classList.toggle("selecting", selecting);
+  const n = selection.size;
+  $("#selection-count").textContent = n
+    ? `${n} son${n > 1 ? "s" : ""} sélectionné${n > 1 ? "s" : ""}`
+    : "Clique sur les sons à ranger";
+  $("#selection-form").hidden = n === 0;
+}
+
+/** Range des sons dans un onglet (vide : aucun onglet). */
+async function moveToCategory(ids, category) {
+  const name = category?.trim() || null;
+  const res = await call("set_category", { ids, category: name });
+  if (!res) return;
+  const what = ids.length > 1 ? `${ids.length} sons rangés` : `« ${soundById(ids[0])?.name ?? "Son"} » rangé`;
+  toast(name ? `${what} dans « ${name} »` : `${what} sans onglet`);
+}
+
+$("#btn-select").addEventListener("click", () => {
+  if (selecting || selection.size) clearSelection();
+  else {
+    selecting = true;
+    renderSelectionBar();
+  }
+});
+$("#selection-cancel").addEventListener("click", clearSelection);
+$("#selection-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = $("#selection-target");
+  if (!selection.size) return;
+  const ids = [...selection];
+  clearSelection();
+  await moveToCategory(ids, input.value);
+  input.value = "";
+});
 
 // Sons en cours, envoyés par le moteur audio ~10 fois par seconde.
 let playing = [];
@@ -578,7 +711,7 @@ function listHeader() {
 function padElement(sound, index) {
   const pad = document.createElement("button");
   pad.type = "button";
-  pad.className = "pad";
+  pad.className = "pad" + (selection.has(sound.id) ? " selected" : "");
   pad.dataset.id = sound.id;
   pad.style.setProperty("--pad-color", sound.color);
 
@@ -664,6 +797,7 @@ function padElement(sound, index) {
 
   pad.addEventListener("click", (e) => {
     if (reorder.justDropped) return;
+    if (selecting || e.ctrlKey || e.metaKey) return toggleSelected(sound.id);
     if (edit.contains(e.target)) return openSoundDialog(sound);
     if (fav.contains(e.target)) return call("toggle_favorite", { id: sound.id });
     if (addKey?.contains(e.target)) return captureHotkey(sound, addKey);
@@ -734,7 +868,7 @@ async function replaceSoundFile(sound) {
 const reorder = { justDropped: false };
 
 function startReorder(e, pad, sound) {
-  if (e.button !== 0 || !canReorder()) return;
+  if (e.button !== 0 || e.ctrlKey || e.metaKey) return;
   const x0 = e.clientX;
   const y0 = e.clientY;
   let dragging = false;
@@ -744,9 +878,11 @@ function startReorder(e, pad, sound) {
     if (!dragging && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 8) return;
     dragging = true;
     pad.style.opacity = "0.5";
-    const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".pad");
+    // Sur un pad : changer l'ordre. Sur un onglet ou un titre de groupe : y ranger le son.
+    let over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest("[data-cat], #grid .pad");
+    if (over?.classList.contains("pad") && (over === pad || !canReorder())) over = null;
     if (target && target !== over) target.classList.remove("drag-over");
-    target = over && over !== pad ? over : null;
+    target = over;
     target?.classList.add("drag-over");
   };
   const up = () => {
@@ -758,9 +894,20 @@ function startReorder(e, pad, sound) {
     // Le clic qui suit le relâchement ne doit pas jouer le son.
     reorder.justDropped = true;
     setTimeout(() => (reorder.justDropped = false), 0);
-    if (target) {
+    if (target?.dataset.cat != null) {
+      // Un son sélectionné emmène toute la sélection.
+      const ids = selection.has(sound.id) ? [...selection] : [sound.id];
+      if (selection.has(sound.id)) clearSelection();
+      moveToCategory(ids, target.dataset.cat);
+    } else if (target) {
+      const other = soundById(target.dataset.id);
       const to = state.config.sounds.findIndex((s) => s.id === target.dataset.id);
-      call("move_sound", { id: sound.id, to });
+      call("move_sound", { id: sound.id, to }).then((res) => {
+        // Dans « Tous », déposé dans le groupe d'un autre onglet : il y passe.
+        if (res && !currentTab && other && !other.favorite && !sound.favorite && other.category !== sound.category) {
+          moveToCategory([sound.id], other.category ?? "");
+        }
+      });
     }
   };
   window.addEventListener("pointermove", move);
@@ -2018,10 +2165,38 @@ $("#cable-status").addEventListener("click", () => (state.devices.vb_cable ? ope
 $("#btn-stats").addEventListener("click", openStats);
 $("#search").addEventListener("input", renderGrid);
 $("#search").addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && e.target.value) {
+  if (e.key === "Escape") {
+    if (!e.target.value) return e.target.blur();
     e.target.value = "";
     renderGrid();
+  } else if (e.key === "Enter") {
+    // Entrée joue le premier son trouvé.
+    const pad = $("#grid .pad.first-hit");
+    if (!pad) return;
+    e.preventDefault();
+    flash(pad.dataset.id);
+    playSound(pad.dataset.id);
+  } else if (e.key === "ArrowDown") {
+    const pad = $("#grid .pad");
+    if (pad) {
+      e.preventDefault();
+      pad.focus();
+    }
   }
+});
+// Taper une lettre n'importe où lance la recherche, sans cliquer dedans.
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && (selecting || selection.size) && !document.querySelector("dialog[open]")) {
+    return clearSelection();
+  }
+  if (e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey || e.key.length !== 1 || e.key === " ") return;
+  if (document.querySelector("dialog[open]")) return;
+  if (e.target.closest?.("input, textarea, select, [contenteditable]")) return;
+  const search = $("#search");
+  e.preventDefault();
+  search.focus();
+  search.value += e.key;
+  renderGrid();
 });
 $("#mic-toggle").addEventListener("click", () => call("set_mic_muted", { muted: !state.mic_muted }));
 listen("mic-muted", ({ payload }) => {
