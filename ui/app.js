@@ -159,7 +159,10 @@ function setHotkeyInput(input, hotkey) {
 function bindRangeLabels(form) {
   form.querySelectorAll("input[type=range]").forEach((r) => {
     const label = form.querySelector(`.value[data-for="${r.name}"]`);
-    const update = () => label && (label.textContent = Math.round(r.value * 100) + " %");
+    // Au-delà du repère 100 % (list="tick-100"), le son est amplifié : on le dit.
+    const boost = r.getAttribute("list") === "tick-100";
+    const update = () =>
+      label && (label.textContent = Math.round(r.value * 100) + " %" + (boost && r.value > 1 ? " · amplifié" : ""));
     r.addEventListener("input", update);
     r.update = update;
   });
@@ -2189,8 +2192,8 @@ const formSurprise = $("form", dlgSurprise);
 function renderSurprise() {
   const pill = $("#surprise-toggle");
   const s = state.config.settings;
-  pill.className = "pill" + (state.surprise_on ? " ok" : "");
-  pill.textContent = state.surprise_on ? "🎲 Surprise activée" : "🎲 Surprise";
+  pill.classList.toggle("on", state.surprise_on);
+  pill.querySelector(".lbl").textContent = state.surprise_on ? "Surprise activée" : "Surprise";
   pill.title = state.surprise_on
     ? `Un son au hasard toutes les ${s.surprise_min_minutes} à ${s.surprise_max_minutes} min. Clique pour régler ou arrêter.`
     : "Des sons qui partent tout seuls, au hasard";
@@ -2447,6 +2450,34 @@ $("#btn-export").addEventListener("click", async () => {
 });
 
 $("#btn-import").addEventListener("click", () => importPack());
+
+// Menu « ⋯ » de la barre des onglets : sélection, export et import.
+const tabMoreBtn = $("#btn-more");
+const tabMoreMenu = $("#more-menu");
+function setTabMoreMenu(open) {
+  tabMoreMenu.hidden = !open;
+  tabMoreBtn.setAttribute("aria-expanded", String(open));
+  tabMoreBtn.classList.toggle("on", open);
+  if (open) $("button", tabMoreMenu).focus();
+}
+tabMoreBtn.addEventListener("click", () => setTabMoreMenu(tabMoreMenu.hidden));
+// Une action choisie referme le menu.
+tabMoreMenu.addEventListener("click", (e) => e.target.closest("button") && setTabMoreMenu(false));
+document.addEventListener("pointerdown", (e) => {
+  if (!tabMoreMenu.hidden && !e.target.closest(".more")) setTabMoreMenu(false);
+});
+tabMoreMenu.addEventListener("keydown", (e) => {
+  const items = $$("button", tabMoreMenu);
+  const i = items.indexOf(document.activeElement);
+  if (e.key === "Escape") {
+    e.stopPropagation();
+    setTabMoreMenu(false);
+    tabMoreBtn.focus();
+  } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
+  }
+});
 
 async function importPack(path) {
   const res = await call("import_pack", { path });

@@ -24,6 +24,7 @@
       <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M16 4h4v4M4 20 20 4M20 16v4h-4M14.5 14.5 20 20M4 4l5 5"/></symbol>
       <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></symbol>
       <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></symbol>
+      <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/></symbol>
       <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4zM13 7l4 4"/></symbol>
       <symbol id="i-check" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="m8 12.5 3 3 5-6"/></symbol>
       <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></symbol>
@@ -40,7 +41,6 @@
     <div class="brand"><span class="logo"><svg class="ico"><use href="#i-logo"/></svg></span><h1>Soundboard</h1></div>
     <button id="cable-status" class="pill" type="button" title="État du câble virtuel"></button>
     <button id="mic-toggle" class="pill" type="button" hidden></button>
-    <button id="surprise-toggle" class="pill" type="button" title="Des sons qui partent tout seuls, au hasard">🎲 Surprise</button>
     <div class="spacer"></div>
     <label class="search-box"><svg class="ico"><use href="#i-search"/></svg><input id="search" type="search" placeholder="Rechercher un son… (tape n'importe où)" autocomplete="off"></label>
     <button id="btn-online" type="button" title="Chercher des sons sur internet"><svg class="ico"><use href="#i-globe"/></svg><span class="lbl">En ligne</span></button>
@@ -78,9 +78,15 @@
     </div>
     <label class="size" title="Taille des pads"><input id="pad-size" type="range" min="100" max="220" step="10"></label>
     <button id="btn-random" type="button" title="Jouer un son au hasard de cet onglet"><svg class="ico"><use href="#i-shuffle"/></svg><span class="lbl">Au hasard</span></button>
-    <button id="btn-select" type="button" class="icon" title="Sélectionner plusieurs sons pour les ranger d'un coup (ou Ctrl + clic sur un son)"><svg class="ico"><use href="#i-check"/></svg></button>
-    <button id="btn-export" type="button" class="icon" title="Exporter : enregistrer les sons de cet onglet dans un .zip à partager"><svg class="ico"><use href="#i-upload"/></svg></button>
-    <button id="btn-import" type="button" class="icon" title="Importer : ajouter les sons d'un pack .zip"><svg class="ico"><use href="#i-download"/></svg></button>
+    <button id="surprise-toggle" type="button" title="Mode Surprise : des sons qui partent tout seuls, au hasard"><span class="dice" aria-hidden="true">🎲</span><span class="lbl">Surprise</span></button>
+    <div class="more">
+      <button id="btn-more" type="button" class="icon" title="Plus d'actions" aria-haspopup="menu" aria-expanded="false"><svg class="ico"><use href="#i-more"/></svg></button>
+      <div id="more-menu" class="menu" role="menu" hidden>
+        <button id="btn-select" type="button" role="menuitem" title="Sélectionner plusieurs sons pour les ranger d'un coup (ou Ctrl + clic sur un son)"><svg class="ico"><use href="#i-check"/></svg>Sélectionner plusieurs sons</button>
+        <button id="btn-export" type="button" role="menuitem" title="Exporter : enregistrer les sons de cet onglet dans un .zip à partager"><svg class="ico"><use href="#i-upload"/></svg>Exporter en .zip</button>
+        <button id="btn-import" type="button" role="menuitem" title="Importer : ajouter les sons d'un pack .zip"><svg class="ico"><use href="#i-download"/></svg>Importer un pack .zip</button>
+      </div>
+    </div>
   </nav>
 
   <main>
@@ -112,6 +118,7 @@
     </div>
   </main>
 
+  <datalist id="tick-100"><option value="1"></option></datalist>
   <footer id="version" class="version"></footer>
 
   <div id="drop-overlay" class="drop-overlay" hidden><p>Lâche tes fichiers pour les ajouter</p></div>
@@ -190,7 +197,7 @@
         <label class="set-row"><span class="txt"><b>À l'envers</b><small>Le passage découpé est joué de la fin vers le début.</small></span><input type="checkbox" class="switch" data-fx="reverse"></label>
       </div>
       <label>Volume <span class="value" data-for="volume"></span>
-        <input name="volume" type="range" min="0" max="2" step="0.05">
+        <input name="volume" type="range" list="tick-100" min="0" max="2" step="0.05">
       </label>
       <div class="illus">
         <div class="illus-head">
@@ -267,10 +274,10 @@
           <h3>Volume</h3>
           <div class="set-card">
           <label class="set-field">Volume des sons dans Discord <span class="value" data-for="master_volume"></span>
-            <input name="master_volume" type="range" min="0" max="1.5" step="0.05">
+            <input name="master_volume" type="range" list="tick-100" min="0" max="1.5" step="0.05">
           </label>
           <label class="set-field">Volume des sons dans ton casque <span class="value" data-for="monitor_volume"></span>
-            <input name="monitor_volume" type="range" min="0" max="1.5" step="0.05">
+            <input name="monitor_volume" type="range" list="tick-100" min="0" max="1.5" step="0.05">
           </label>
           <label class="advanced set-row"><span class="txt"><b>Égaliser le volume des sons</b><small>Mesure chaque son comme à la télé (norme EBU R128) et calme les cris et les pics.</small></span><input name="normalize" type="checkbox" class="switch"></label>
           <label class="advanced set-row"><span class="txt"><b>Niveau des sons face à ta voix</b><small>Si les sons couvrent encore les voix, choisis « Plus bas ».</small></span>
@@ -291,7 +298,7 @@
           </label>
           <label class="set-row"><span class="txt"><b>Envoyer ma voix dans Discord avec les sons</b><small>Dans Discord, choisis « CABLE Output » comme micro.</small></span><input name="mic_enabled" type="checkbox" class="switch"></label>
           <label class="set-field">Volume de ta voix <span class="value" data-for="mic_volume"></span>
-            <input name="mic_volume" type="range" min="0" max="2" step="0.05">
+            <input name="mic_volume" type="range" list="tick-100" min="0" max="2" step="0.05">
           </label>
           <label class="set-field">Effet sur ta voix
             <select name="voice_effect">

@@ -1250,3 +1250,77 @@ dialog { border-radius: 18px; }
 .surprise-list input { width: auto; margin: 0; flex-shrink: 0; }
 .surprise-list .name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .surprise-list .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; background: var(--pad-color, var(--accent)); }
+
+/* ---------- Ergonomie 1.7 ---------- */
+
+/* Barre du haut : toujours sur une ligne, c'est la recherche qui rétrécit. */
+.topbar { flex-wrap: nowrap; }
+.topbar .search-box { flex: 0 1 200px; min-width: 110px; }
+.topbar .search-box #search { width: 100%; }
+@media (max-width: 900px) { .topbar .search-box #search { width: 100%; } }
+@media (max-width: 760px) {
+  #btn-stop .lbl, #btn-add .lbl { display: none; }
+  #btn-stop, #btn-add { width: 36px; padding: 0; }
+}
+
+/* Onglets : ils passent à la ligne entre eux, les outils restent groupés à droite. */
+.tabbar { flex-wrap: nowrap; align-items: flex-start; }
+.tabbar .tabs { flex: 1 1 auto; min-width: 0; }
+.tabbar > .spacer { display: none; }
+.tabbar > :not(.tabs) { flex-shrink: 0; }
+.tabbar .size { height: 34px; }
+
+/* Mode Surprise : un bouton comme « Au hasard », coloré quand il est actif. */
+#surprise-toggle .dice { font-size: 15px; line-height: 1; }
+#surprise-toggle.on { background: color-mix(in srgb, var(--accent) 12%, var(--panel)); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--accent); }
+@media (max-width: 1040px) {
+  #surprise-toggle .lbl { display: none; }
+  #surprise-toggle { width: 34px; padding: 0; }
+}
+
+/* Menu « ⋯ ». */
+.more { position: relative; }
+#btn-more.on { background: var(--panel-2); }
+.menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .14);
+}
+.menu[hidden] { display: none; }
+.menu button {
+  justify-content: flex-start;
+  gap: 10px;
+  height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text);
+  font-size: 13.5px;
+  white-space: nowrap;
+}
+.menu button:hover, .menu button:focus-visible { background: var(--panel-2); }
+.menu .ico { width: 17px; height: 17px; color: var(--muted); }
+/* Sélection en cours : on garde un repère sur le bouton du menu. */
+.more:has(#btn-select.on) #btn-more { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.menu #btn-select.on { background: transparent; color: var(--accent); }
+.menu #btn-select.on .ico { color: var(--accent); }
+
+/* Pads en grille : l'emoji ou l'initiale posés directement sur la couleur du pad. */
+.grid:not(.list) .pad .icon:not(.image) { background: transparent; box-shadow: none; }
+.grid:not(.list) .pad .icon.emoji { font-size: 40px; }
+.grid:not(.list) .pad .icon:not(.image):not(.emoji) { font-size: 30px; color: color-mix(in srgb, var(--c) 70%, var(--text)); }
+
+/* Le numéro de version reste en bas de la page au lieu de flotter sur la liste. */
+.version { position: static; display: block; text-align: right; padding: 0 16px 10px; }
+main { padding-bottom: 12px; }
