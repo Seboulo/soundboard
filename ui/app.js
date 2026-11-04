@@ -227,6 +227,10 @@ function categories() {
 
 // Onglet spécial des derniers sons joués (aucun nom d'onglet ne commence par \u0000).
 const RECENT_TAB = "\u0000recent";
+// Onglet spécial des sons les plus joués.
+const TOP_TAB = "\u0000top";
+const TOP_COUNT = 20;
+const isSpecialTab = (tab) => tab === RECENT_TAB || tab === TOP_TAB;
 const RECENT_KEY = "soundboard.recent";
 let recent = [];
 try {
@@ -258,12 +262,12 @@ function remember(id) {
 
 /** Onglet à passer aux commandes (au hasard, export) : « Récents » vaut « Tous ». */
 function tabCategory() {
-  return currentTab === RECENT_TAB ? null : currentTab;
+  return isSpecialTab(currentTab) ? null : currentTab;
 }
 
 function renderTabs() {
   const cats = categories();
-  if (currentTab && currentTab !== RECENT_TAB && !cats.includes(currentTab)) currentTab = null;
+  if (currentTab && !isSpecialTab(currentTab) && !cats.includes(currentTab)) currentTab = null;
   const tab = (label, value, iconName) => {
     const b = document.createElement("button");
     b.type = "button";
@@ -271,7 +275,7 @@ function renderTabs() {
     if (iconName) b.append(svgIcon(iconName));
     b.append(label);
     // Un son glissé sur l'onglet y est rangé.
-    if (value && value !== RECENT_TAB) b.dataset.cat = value;
+    if (value && !isSpecialTab(value)) b.dataset.cat = value;
     b.addEventListener("click", () => {
       currentTab = value;
       try {
@@ -288,9 +292,12 @@ function renderTabs() {
   // Sans aucun son, les outils de tri et d'affichage ne servent à rien : on les cache.
   const empty = state.config.sounds.length === 0;
   document.body.classList.toggle("no-sounds", empty);
-  $("#tabs").replaceChildren(...(empty ? [] : [tab("Tous", null), tab("Récents", RECENT_TAB, "clock")]), ...cats.map((c) => tab(c, c)));
-  // « Récents » suit l'ordre d'écoute : le tri n'y sert à rien.
-  $("#sort").hidden = currentTab === RECENT_TAB;
+  const special = empty ? [] : [tab("Tous", null), tab("Récents", RECENT_TAB, "clock"), tab("Top", TOP_TAB, "chart")];
+  // Nom court pour garder les onglets sur une ligne ; le nom complet en info-bulle.
+  if (special.length) special[2].title = "Les plus utilisés : tes 20 sons les plus joués";
+  $("#tabs").replaceChildren(...special, ...cats.map((c) => tab(c, c)));
+  // « Récents » et « Les plus utilisés » ont leur propre ordre : le tri n'y sert à rien.
+  $("#sort").hidden = currentTab === RECENT_TAB || currentTab === TOP_TAB;
   $("#categories").replaceChildren(...cats.map((c) => new Option(c)));
   $("#btn-export").title = tabCategory()
     ? `Exporter « ${tabCategory()} » : enregistrer ses sons dans un .zip à partager`
@@ -374,7 +381,13 @@ function renderGrid() {
   // Sans accents ni majuscules, dans le nom ou l'onglet.
   const matches = (s) => !q || fold(s.name).includes(q) || fold(s.category || "").includes(q);
   let sounds;
-  if (currentTab === RECENT_TAB) {
+  if (currentTab === TOP_TAB) {
+    sounds = state.config.sounds
+      .filter((s) => s.plays > 0)
+      .sort((a, b) => b.plays - a.plays)
+      .slice(0, TOP_COUNT)
+      .filter(matches);
+  } else if (currentTab === RECENT_TAB) {
     const byId = new Map(state.config.sounds.map((s) => [s.id, s]));
     sounds = recent.map((id) => byId.get(id)).filter((s) => s && matches(s));
   } else {
@@ -404,6 +417,7 @@ function renderGrid() {
   renderSelectionBar();
   $("#empty").hidden = state.config.sounds.length > 0;
   renderStartSteps();
+  $("#top-empty").hidden = !(currentTab === TOP_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
   $("#recent-empty").hidden = !(currentTab === RECENT_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
   $("#search-empty").hidden = !(q && sounds.length === 0 && state.config.sounds.length > 0);
   $('#search-empty [data-action="search-online"] span').textContent = `Chercher « ${$("#search").value.trim()} » en ligne`;
@@ -680,7 +694,7 @@ function sortSounds(list) {
 
 /** Le glisser-déposer ne sert qu'aux ordres choisis à la main. */
 function canReorder() {
-  return currentTab !== RECENT_TAB && (sortMode === "manual" || sortMode === "favorites");
+  return !isSpecialTab(currentTab) && (sortMode === "manual" || sortMode === "favorites");
 }
 
 function applyView() {
@@ -759,7 +773,7 @@ function padElement(sound, index) {
   const meta = document.createElement("span");
   meta.className = "meta";
   // Pas d'onglet répété quand l'onglet ouvert ou le groupe le dit déjà.
-  const tabShown = (currentTab && currentTab !== RECENT_TAB) || (!currentTab && !sound.favorite && categories().length);
+  const tabShown = (currentTab && currentTab !== RECENT_TAB && currentTab !== TOP_TAB) || (!currentTab && !sound.favorite && categories().length);
   meta.textContent = tabShown ? "" : sound.category || "";
   const label = document.createElement("span");
   label.className = "label";
