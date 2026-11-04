@@ -279,10 +279,14 @@ function renderTabs() {
       } catch {}
       renderTabs();
       renderGrid();
+      // La barre des onglets reste visible : on repart du haut du nouvel onglet.
+      window.scrollTo({ top: 0 });
     });
     return b;
   };
   $("#tabs").replaceChildren(tab("Tous", null), tab("Récents", RECENT_TAB, "clock"), ...cats.map((c) => tab(c, c)));
+  // « Récents » suit l'ordre d'écoute : le tri n'y sert à rien.
+  $("#sort").hidden = currentTab === RECENT_TAB;
   $("#categories").replaceChildren(...cats.map((c) => new Option(c)));
   $("#btn-export").title = tabCategory()
     ? `Exporter « ${tabCategory()} » : enregistrer ses sons dans un .zip à partager`
@@ -747,7 +751,9 @@ function padElement(sound, index) {
   num.textContent = index + 1;
   const meta = document.createElement("span");
   meta.className = "meta";
-  meta.textContent = sound.category || "";
+  // Pas d'onglet répété quand l'onglet ouvert ou le groupe le dit déjà.
+  const tabShown = (currentTab && currentTab !== RECENT_TAB) || (!currentTab && !sound.favorite && categories().length);
+  meta.textContent = tabShown ? "" : sound.category || "";
   const label = document.createElement("span");
   label.className = "label";
   label.append(name, meta);
@@ -2450,6 +2456,20 @@ $("#btn-export").addEventListener("click", async () => {
 });
 
 $("#btn-import").addEventListener("click", () => importPack());
+
+// Barre des onglets collée sous la barre du haut : sa position sert aux titres
+// de groupe, qui restent visibles juste en dessous pendant le défilement.
+{
+  const root = document.documentElement;
+  const sync = () => {
+    const top = $(".topbar").offsetHeight;
+    root.style.setProperty("--topbar-h", top + "px");
+    root.style.setProperty("--sticky-h", top + $(".tabbar").offsetHeight + "px");
+  };
+  new ResizeObserver(sync).observe($(".tabbar"));
+  new ResizeObserver(sync).observe($(".topbar"));
+  sync();
+}
 
 // Menu « ⋯ » de la barre des onglets : sélection, export et import.
 const tabMoreBtn = $("#btn-more");

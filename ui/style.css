@@ -1324,3 +1324,29 @@ dialog { border-radius: 18px; }
 /* Le numéro de version reste en bas de la page au lieu de flotter sur la liste. */
 .version { position: static; display: block; text-align: right; padding: 0 16px 10px; }
 main { padding-bottom: 12px; }
+
+/* Barre des onglets et titres de groupe toujours visibles en défilant. */
+.tabbar {
+  position: sticky;
+  top: var(--topbar-h, 57px);
+  z-index: 4;
+  padding-bottom: 10px;
+  background: var(--bg);
+}
+.group-head {
+  position: sticky;
+  top: var(--sticky-h, 110px);
+  z-index: 3;
+  justify-self: stretch;
+  background: var(--bg);
+  border-radius: 0;
+}
+.group-head:hover { background: var(--bg); }
+.group-head:hover .group-name { color: var(--accent); }
+.selection-bar { top: var(--sticky-h, 110px); }
+
+#sort[hidden] { display: none; }
+.grid.list .pad .meta:empty { display: none; }
+/* Le corps grandit avec la page : sinon la barre du haut (et Stop) partait
+   au-delà d'un écran de défilement. */
+body { height: auto; min-height: 100%; }
