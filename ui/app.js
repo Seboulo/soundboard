@@ -712,7 +712,7 @@ applyView();
 function listHeader() {
   const head = document.createElement("div");
   head.className = "list-head";
-  for (const [cls, text] of [["num", "#"], ["title", "Titre"], ["key", "Raccourci"], ["dur", "⏱"], ["tools", ""]]) {
+  for (const [cls, text] of [["num", "#"], ["title", "Titre"], ["key", "Raccourci"], ["dur", "Durée"], ["tools", ""]]) {
     const cell = document.createElement("span");
     cell.className = cls;
     cell.textContent = text;
