@@ -94,6 +94,7 @@
         <button id="btn-replay" type="button" role="menuitem" title="Fait un son de ce qui s'est dit dans Discord ces 30 dernières secondes (raccourci dans Réglages)"><span class="emo" aria-hidden="true">⏪</span>Rejouer les 30 dernières secondes</button>
         <button id="btn-record" type="button" role="menuitem" title="Enregistre un son avec ton micro"><span class="emo" aria-hidden="true">🎙️</span>Enregistrer au micro</button>
         <button id="btn-tts" type="button" role="menuitem" title="Une voix de Windows lit ce que tu écris"><span class="emo" aria-hidden="true">🗣️</span>Texte → voix</button>
+        <button id="btn-clip" type="button" role="menuitem" title="Une image, un GIF ou une vidéo qui s'affiche sur l'écran d'un pote du salon"><span class="emo" aria-hidden="true">🎬</span>Envoyer un extrait à un pote</button>
         <hr>
         <button id="btn-publish" type="button" role="menuitem" title="Tes potes reçoivent les sons de cet onglet, et ceux que tu y ajoutes ensuite"><span class="emo" aria-hidden="true">🔗</span>Partager cet onglet par lien</button>
         <button id="btn-follow" type="button" role="menuitem" title="Colle le lien du pack d'un pote : ses nouveaux sons arrivent tout seuls"><span class="emo" aria-hidden="true">📥</span>Suivre le pack d'un pote</button>
@@ -400,6 +401,13 @@
               <input name="room_name" maxlength="32" autocomplete="off" placeholder="Ton pseudo">
             </label>
             <label class="set-row"><span class="txt"><b>Mes potes peuvent jouer des sons chez moi</b><small>30 secondes au plus par son. « Tout arrêter » les coupe aussi.</small></span><input name="room_accept" type="checkbox" class="switch"></label>
+            <label class="set-row"><span class="txt"><b>Extraits des potes sur mon écran</b><small>Image, GIF ou vidéo dans un coin de l'écran, 15 secondes au plus, sans quitter le jeu. Ferme-le avec ✕ ou « Tout arrêter ».</small></span>
+              <select name="clips_mode">
+                <option value="ask">Me demander</option>
+                <option value="auto">Afficher direct</option>
+                <option value="off">Refuser</option>
+              </select>
+            </label>
             <p class="hint" id="room-state"></p>
           </div>
           <h3>Packs que je suis</h3>
@@ -582,6 +590,33 @@
         <div class="spacer"></div>
         <button type="button" data-action="say">▶ Dire dans Discord</button>
         <button type="button" class="primary" data-action="create">Créer un pad</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Extrait sur l'écran d'un pote -->
+  <dialog id="dlg-clip">
+    <form class="form" method="dialog">
+      <h2>🎬 Envoyer un extrait</h2>
+      <button type="button" class="clip-drop" data-action="pick">
+        <span class="clip-empty"><span class="emo" aria-hidden="true">🖼️</span><b>Choisir une image, un GIF ou une vidéo</b><small>PNG, JPG, GIF, WebP, MP4 ou WebM · 8 Mo au plus</small></span>
+        <img class="clip-preview" alt="" hidden>
+        <video class="clip-preview" muted loop playsinline hidden></video>
+      </button>
+      <label class="set-field">Titre <small>(facultatif)</small>
+        <input name="title" maxlength="60" autocomplete="off" placeholder="Ex. : la tête de Kevin">
+      </label>
+      <label class="set-field" data-for-image>Son avec l'image
+        <select name="sound"></select>
+      </label>
+      <label class="set-field">Envoyer à
+        <select name="to"></select>
+      </label>
+      <p class="hint">L'extrait s'affiche dans un coin de son écran, 15 secondes au plus, sans le sortir de son jeu. Ton pote peut le refuser ou le fermer, et choisit dans ses réglages s'il veut être prévenu avant.</p>
+      <div class="actions">
+        <button type="button" data-action="close">Fermer</button>
+        <div class="spacer"></div>
+        <button type="button" class="primary" data-action="send" disabled>Envoyer</button>
       </div>
     </form>
   </dialog>

@@ -50,6 +50,8 @@ pub enum Msg {
     },
     /// « Je n'ai pas ce son, envoie-le. »
     Need { from: String, to: String, hash: String },
+    /// Extrait à afficher sur l'écran de `to` (vide : tout le salon), en pièce jointe.
+    Clip { from: String, name: String, #[serde(default)] to: String, #[serde(default)] title: String },
 }
 
 fn one() -> f32 {
@@ -59,7 +61,7 @@ fn one() -> f32 {
 impl Msg {
     pub fn from(&self) -> &str {
         match self {
-            Msg::Hi { from, .. } | Msg::Bye { from } | Msg::Play { from, .. } | Msg::Need { from, .. } => from,
+            Msg::Hi { from, .. } | Msg::Bye { from } | Msg::Play { from, .. } | Msg::Need { from, .. } | Msg::Clip { from, .. } => from,
         }
     }
 }
@@ -274,6 +276,14 @@ impl Room {
                 on_change();
             }
             Msg::Play { to, from, name, .. } if *to == me => {
+                {
+                    let mut inner = self.inner.lock().unwrap();
+                    let name: String = name.chars().take(32).collect();
+                    inner.members.insert(from.clone(), (name, Instant::now()));
+                }
+                on_event(incoming);
+            }
+            Msg::Clip { to, from, name, .. } if to.is_empty() || *to == me => {
                 {
                     let mut inner = self.inner.lock().unwrap();
                     let name: String = name.chars().take(32).collect();

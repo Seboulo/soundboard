@@ -731,6 +731,7 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
             let _ = app.emit("room-played", (name, title));
             Ok(())
         }
+        Msg::Clip { from, name, title, .. } => clip::receive(app, from, name, title, inc.attachment).await,
         _ => Ok(()),
     }
 }

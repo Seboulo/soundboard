@@ -288,6 +288,8 @@ pub struct Settings {
     pub room_id: String,
     /// Les potes du salon peuvent jouer des sons chez toi.
     pub room_accept: bool,
+    /// Extraits des potes sur mon écran : "off", "ask" (demander) ou "auto".
+    pub clips_mode: String,
     /// Packs de potes suivis par lien.
     pub subscriptions: Vec<Subscription>,
     /// Onglets que tu partages par lien.
@@ -362,6 +364,7 @@ impl Default for Settings {
             room_name: String::new(),
             room_id: String::new(),
             room_accept: true,
+            clips_mode: "ask".into(),
             subscriptions: Vec::new(),
             published: Vec::new(),
         }

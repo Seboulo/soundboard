@@ -20,6 +20,7 @@ mod replay;
 mod room;
 mod share;
 mod tts;
+mod clip;
 
 use audio::{AudioEvent, AudioHandle, DeviceList, PlayOutcome, PlayRequest};
 use config::{Config, Settings, Sound};
@@ -87,6 +88,8 @@ struct AppState {
     surprise_gen: AtomicU64,
     /// Salon entre potes et ce qui va avec (voir `extras`).
     extras: extras::Extras,
+    /// Extraits reçus des potes (voir `clip`).
+    clips: clip::Clips,
 }
 
 #[derive(Clone, Serialize)]
@@ -476,6 +479,7 @@ fn on_hotkey(app: &AppHandle, shortcut: &Shortcut) {
         }
         Some(HotkeyAction::StopAll) => {
             state.audio.stop_all();
+            clip::close(app);
             let _ = app.emit("stopped", ());
         }
         Some(HotkeyAction::ToggleMute) => {
@@ -1733,8 +1737,9 @@ fn regenerate_phone_token(app: AppHandle, state: State<AppState>) -> Result<Snap
 }
 
 #[tauri::command]
-fn stop_all(state: State<AppState>) {
+fn stop_all(app: AppHandle, state: State<AppState>) {
     state.audio.stop_all();
+    clip::close(&app);
 }
 
 #[tauri::command]
@@ -2162,6 +2167,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             "show" => show_window(app),
             "stop" => {
                 app.state::<AppState>().audio.stop_all();
+                clip::close(app);
             }
             "quit" => app.exit(0),
             _ => {}
@@ -2253,6 +2259,7 @@ pub fn run() {
                 surprise_on: AtomicBool::new(false),
                 surprise_gen: AtomicU64::new(0),
                 extras: Default::default(),
+                clips: Default::default(),
             };
             empty_trash(&state);
             if let Some(note) = config_note {
@@ -2288,6 +2295,12 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
+                // La fenêtre des extraits se cache simplement.
+                if clip::is_clip_window(window.label()) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    return;
+                }
                 let state = window.state::<AppState>();
                 let to_tray = state.config.lock().unwrap().settings.close_to_tray;
                 if to_tray {
@@ -2368,6 +2381,11 @@ pub fn run() {
             extras::room_status,
             extras::set_room_target,
             extras::new_room_code,
+            clip::pick_clip_media,
+            clip::send_clip,
+            clip::clip_pending,
+            clip::clip_accept,
+            clip::clip_close,
         ])
         .run(tauri::generate_context!())
         .expect("erreur au lancement de l'application");

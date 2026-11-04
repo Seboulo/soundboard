@@ -1834,6 +1834,7 @@ dlgSettings.addEventListener("close", () => {
     room_code: f.room_code.value.trim().toUpperCase(),
     room_name: f.room_name.value.trim(),
     room_accept: f.room_accept.checked,
+    clips_mode: f.clips_mode.value,
   });
 });
 
@@ -3203,6 +3204,16 @@ function setRoomMenu(open) {
       : "Connexion au salon…";
     items.push(note);
   }
+  const clipBtn = document.createElement("button");
+  clipBtn.type = "button";
+  clipBtn.setAttribute("role", "menuitem");
+  clipBtn.className = "room-clip";
+  clipBtn.textContent = "🎬 Envoyer un extrait…";
+  clipBtn.addEventListener("click", () => {
+    setRoomMenu(false);
+    openClipDialog();
+  });
+  items.push(clipBtn);
   roomMenu.replaceChildren(...items);
 }
 roomPill.addEventListener("click", () => setRoomMenu(roomMenu.hidden));
@@ -3227,6 +3238,84 @@ listen("room-sent", ({ payload }) => {
   toast(`« ${payload} » envoyé chez ${t?.name ?? "ton pote"}`);
 });
 listen("room-error", ({ payload }) => toast(String(payload), true));
+listen("clip-received", ({ payload: [who, title] }) => toast(`🎬 ${who} t'envoie un extrait${title ? ` : « ${title} »` : ""}`));
+
+// ---------- 2.0 : extrait sur l'écran d'un pote ----------
+
+const dlgClip = $("#dlg-clip");
+const formClip = $("form", dlgClip);
+const clipImg = $("img.clip-preview", dlgClip);
+const clipVideo = $("video.clip-preview", dlgClip);
+let clipMedia = null;
+
+function clipUi() {
+  $(".clip-empty", dlgClip).hidden = !!clipMedia;
+  clipImg.hidden = clipMedia?.kind !== "image";
+  clipVideo.hidden = clipMedia?.kind !== "video";
+  // Une vidéo garde son propre son.
+  $("[data-for-image]", dlgClip).hidden = clipMedia?.kind === "video";
+  $('[data-action="send"]', dlgClip).disabled = !clipMedia;
+}
+function openClipDialog(to) {
+  if (!state.config.settings.room_code) return toast("Rejoins d'abord un salon avec tes potes : Réglages → Potes", true);
+  const sounds = [...state.config.sounds].sort((a, b) => a.name.localeCompare(b.name, "fr"));
+  formClip.sound.replaceChildren(new Option("Pas de son", ""), ...sounds.map((s) => new Option(`${s.emoji ? s.emoji + " " : ""}${s.name}`, s.id)));
+  formClip.to.replaceChildren(new Option(`Tout le salon (${room.members.length} en ligne)`, ""), ...room.members.map((m) => new Option(m.name, m.id)));
+  formClip.to.value = to ?? room.target ?? "";
+  clipUi();
+  dlgClip.showModal();
+}
+$("#btn-clip").addEventListener("click", () => openClipDialog());
+$('[data-action="pick"]', dlgClip).addEventListener("click", async () => {
+  const picked = await call("pick_clip_media");
+  if (!picked) return;
+  clipMedia = picked;
+  const src = fileSrc(picked.path);
+  if (picked.kind === "video") {
+    clipImg.removeAttribute("src");
+    clipVideo.src = src;
+    clipVideo.play().catch(() => {});
+  } else {
+    clipVideo.removeAttribute("src");
+    clipImg.src = src;
+  }
+  clipUi();
+});
+clipVideo.addEventListener("loadedmetadata", () => {
+  if (clipVideo.duration > 15.5) toast("Vidéo de plus de 15 s : seules les 15 premières secondes seront montrées");
+});
+$('[data-action="send"]', dlgClip).addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  if (!clipMedia) return;
+  if (!room.members.length) return toast("Aucun pote en ligne dans le salon pour l'instant", true);
+  btn.disabled = true;
+  btn.textContent = "Envoi…";
+  const to = formClip.to.value || null;
+  try {
+    await invoke("send_clip", {
+      media: clipMedia.path,
+      soundId: clipMedia.kind === "image" ? formClip.sound.value || null : null,
+      title: formClip.title.value,
+      to,
+    });
+  } catch (err) {
+    return toast(String(err), true);
+  } finally {
+    btn.textContent = "Envoyer";
+    btn.disabled = !clipMedia;
+  }
+  const who = room.members.find((m) => m.id === to)?.name;
+  toast(`🎬 Extrait envoyé ${who ? `à ${who}` : "au salon"}`);
+  dlgClip.close();
+});
+$('[data-action="close"]', dlgClip).addEventListener("click", () => dlgClip.close());
+dlgClip.addEventListener("close", () => {
+  clipVideo.pause();
+  clipVideo.removeAttribute("src");
+  clipImg.removeAttribute("src");
+  clipMedia = null;
+  formClip.title.value = "";
+});
 invoke("room_status").then((r) => {
   room = r;
   if (state) renderRoom();
@@ -3245,6 +3334,7 @@ function fillFriendsSettings(s) {
   f.room_code.value = s.room_code ?? "";
   f.room_name.value = s.room_name ?? "";
   f.room_accept.checked = s.room_accept ?? true;
+  f.clips_mode.value = s.clips_mode || "ask";
   renderRoom();
   renderLinkLists();
 }
