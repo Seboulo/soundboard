@@ -285,7 +285,7 @@
     function openSheet(open) {
       $("sheet").hidden = $("sheet-bg").hidden = !open;
       if (!open) return;
-      $("cto").replaceChildren(new Option(`Tout le salon (${room.members.length} en ligne)`, ""), ...room.members.map((m) => new Option(m.name, m.id)));
+      $("cto").replaceChildren(new Option(`Tout le salon (${room.members.length} en ligne)`, ""), new Option("Tout le salon et moi (test)", "*moi"), ...room.members.map((m) => new Option(m.name, m.id)));
       $("cto").value = room.target || "";
     }
     $("clip").onclick = () => openSheet(true);

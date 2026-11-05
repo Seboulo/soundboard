@@ -2475,6 +2475,7 @@ pub fn run() {
             clip::clip_audio,
             clip::clip_listen,
             clip::clip_recents,
+            clip::clip_history,
             clip::clip_preview,
             clip::clip_keep,
             extras::set_friend_blocked,

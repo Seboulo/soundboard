@@ -3465,6 +3465,7 @@ const clipVideo = $("video.clip-preview", dlgClip);
 const clipGifs = $(".clip-gifs", dlgClip);
 let clipMedia = null;
 let clipSource = "file";
+try { clipSource = localStorage.getItem("soundboard.clipSource") || "file"; } catch {}
 
 function clipUi() {
   $(".clip-empty", dlgClip).hidden = !!clipMedia;
@@ -3479,15 +3480,21 @@ function clipUi() {
     clipMedia?.kind === "video" ? "Son de la vidéo " : "Son avec l'image ",
     Object.assign(document.createElement("span"), { className: "value", textContent: clipMedia?.kind === "video" ? `${Math.round(Number(formClip.cvol.value) * 100)} %` : "" }),
   );
+  dlgClip.classList.toggle("no-media", !clipMedia);
   $('[data-action="send"]', dlgClip).disabled = !clipMedia;
+  $('[data-action="send"]', dlgClip).title = clipMedia ? "" : "Choisis d'abord une image, une vidéo ou un GIF";
   $('[data-action="preview"]', dlgClip).disabled = !clipMedia;
   $(".meme-text", dlgClip).textContent = clipMedia ? formClip.title.value.trim() : "";
 }
 function setClipSource(source) {
   clipSource = source;
+  try { localStorage.setItem("soundboard.clipSource", source); } catch {}
+  dlgClip.classList.toggle("src-file", source === "file");
   dlgClip.querySelectorAll("#clip-source button").forEach((b) => b.classList.toggle("active", b.dataset.source === source));
   dlgClip.querySelectorAll("[data-pane]").forEach((p) => (p.hidden = p.dataset.pane !== source));
+  clipUi();
   if (source === "link") formClip.link.focus();
+  if (source === "history") renderClipHistory();
   if (source === "gif") {
     if (!state.config.settings.giphy_key) toast("Ajoute ta clé GIPHY gratuite dans les réglages (⚙ → Général) pour chercher des GIF", true);
     formClip.gifq.focus();
@@ -3511,52 +3518,93 @@ function showClipMedia(picked, startS = 0) {
   clipTrimFrom = startS;
   formClip.start.value = String(startS);
   clipUi();
+  // L'aperçu peut être sous la liste : on le montre.
+  requestAnimationFrame(() => $(".clip-frame", dlgClip).scrollIntoView({ behavior: "smooth", block: "nearest" }));
 }
 function openClipDialog(to) {
   if (!state.config.settings.room_code) return toast("Rejoins d'abord un salon avec tes potes : Réglages → Potes", true);
   const sounds = [...state.config.sounds].sort((a, b) => a.name.localeCompare(b.name, "fr"));
   formClip.sound.replaceChildren(new Option("Pas de son", ""), ...sounds.map((s) => new Option(`${s.emoji ? s.emoji + " " : ""}${s.name}`, s.id)));
-  formClip.to.replaceChildren(new Option(`Tout le salon (${room.members.length} en ligne)`, ""), ...room.members.map((m) => new Option(m.name, m.id)));
+  formClip.to.replaceChildren(
+    new Option(`Tout le salon (${room.members.length} en ligne)`, ""),
+    new Option("Tout le salon et moi (pour vérifier que ça marche)", "*moi"),
+    ...room.members.map((m) => new Option(m.name, m.id)),
+  );
   formClip.to.value = to ?? room.target ?? "";
   setClipSource(clipSource);
   clipUi();
   dlgClip.showModal();
   renderClipRecents();
 }
-// Les 5 derniers extraits envoyés : un clic les remet tels quels.
+const tileObserver = new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    if (!e.isIntersecting) continue;
+    e.target.src = e.target.dataset.src;
+    tileObserver.unobserve(e.target);
+  }
+});
+// Vignette d'un extrait envoyé ou reçu : un clic le remet tel quel.
+function clipTile(r, caption) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.title = [caption, r.title ? `« ${r.title} »` : r.kind === "video" ? "Vidéo" : "Image"].filter(Boolean).join(" · ");
+  if (r.kind === "video") {
+    const v = document.createElement("video");
+    v.muted = true;
+    v.preload = "metadata";
+    // L'image de la vidéo n'est lue que quand la vignette devient visible.
+    v.dataset.src = `${fileSrc(r.path)}#t=${(r.start_s || 0) + 0.5}`;
+    tileObserver.observe(v);
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    tag.textContent = "▶";
+    b.append(v, tag);
+  } else {
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.src = fileSrc(r.path);
+    img.alt = "";
+    b.append(img);
+  }
+  if (caption) {
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = caption;
+    b.append(name);
+  }
+  b.addEventListener("click", () => {
+    clipTrimEnd = r.kind === "video" ? r.end_s ?? null : null;
+    showClipMedia({ path: r.path, kind: r.kind }, r.start_s || 0);
+    formClip.title.value = r.title || "";
+    formClip.cvol.value = String(r.volume ?? 1);
+    if (r.kind === "image") formClip.sound.value = r.sound_id || "";
+    clipUi();
+  });
+  return b;
+}
+const fmtWhen = (at) => (at ? new Date(at * 1000).toLocaleString("fr-FR", { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "");
+// Les 5 derniers extraits envoyés, en haut de la fenêtre.
 async function renderClipRecents() {
-  const recents = await invoke("clip_recents").catch(() => []);
+  const recents = (await invoke("clip_recents").catch(() => [])).slice(0, 5);
   const box = $(".clip-recents", dlgClip);
   box.hidden = !recents.length;
-  $(".clip-recents-list", dlgClip).replaceChildren(...recents.map((r) => {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.title = r.title ? `« ${r.title} »` : r.kind === "video" ? "Vidéo" : "Image";
-    if (r.kind === "video") {
-      const v = document.createElement("video");
-      v.muted = true;
-      v.preload = "metadata";
-      v.src = `${fileSrc(r.path)}#t=${(r.start_s || 0) + 0.5}`;
-      const tag = document.createElement("span");
-      tag.className = "tag";
-      tag.textContent = "▶";
-      b.append(v, tag);
-    } else {
-      const img = document.createElement("img");
-      img.src = fileSrc(r.path);
-      img.alt = "";
-      b.append(img);
+  $(".clip-recents-list", dlgClip).replaceChildren(...recents.map((r) => clipTile(r)));
+}
+// Onglet « Historique » : les 20 derniers envoyés et reçus.
+async function renderClipHistory() {
+  const h = await invoke("clip_history").catch(() => ({ sent: [], received: [] }));
+  for (const [key, list] of Object.entries(h)) {
+    const box = $(`[data-list="${key}"]`, dlgClip);
+    if (!list.length) {
+      const note = document.createElement("p");
+      note.className = "hint";
+      note.textContent = key === "sent" ? "Rien envoyé pour l'instant." : "Rien reçu pour l'instant.";
+      box.replaceChildren(note);
+      continue;
     }
-    b.addEventListener("click", () => {
-      clipTrimEnd = r.kind === "video" ? r.end_s ?? null : null;
-      showClipMedia({ path: r.path, kind: r.kind }, r.start_s || 0);
-      formClip.title.value = r.title || "";
-      formClip.cvol.value = String(r.volume ?? 1);
-      if (r.kind === "image") formClip.sound.value = r.sound_id || "";
-      clipUi();
-    });
-    return b;
-  }));
+    box.replaceChildren(...list.map((r) => clipTile(r, [r.from ? `de ${r.from}` : "", fmtWhen(r.at)].filter(Boolean).join(" · "))));
+  }
 }
 $('[data-action="preview"]', dlgClip).addEventListener("click", () => {
   if (!clipMedia) return;
@@ -3592,10 +3640,18 @@ const isLink = (v) => /^https?:\/\/\S+$/i.test(v.trim());
 formClip.link.addEventListener("input", () => {
   fetchLinkBtn.textContent = isLink(formClip.link.value) ? "Récupérer" : "Chercher";
 });
+// Avancement du téléchargement, sur la vignette ou le bouton.
+let clipFetchTile = null;
+listen("clip-progress", ({ payload }) => {
+  const text = `Récupération… ${payload} %`;
+  if (clipFetchTile) clipFetchTile.dataset.progress = text;
+  else if (fetchLinkBtn.disabled) fetchLinkBtn.textContent = text;
+});
 async function fetchClipLink(url, tile) {
+  clipFetchTile = tile || null;
   fetchLinkBtn.disabled = true;
   const label = fetchLinkBtn.textContent;
-  if (tile) tile.classList.add("loading");
+  if (tile) { tile.dataset.progress = "Récupération…"; tile.classList.add("loading"); }
   else fetchLinkBtn.textContent = "Récupération…";
   try {
     const picked = await invoke("clip_from_link", { url });
@@ -3607,6 +3663,8 @@ async function fetchClipLink(url, tile) {
     fetchLinkBtn.disabled = false;
     fetchLinkBtn.textContent = label;
     tile?.classList.remove("loading");
+    if (tile) delete tile.dataset.progress;
+    clipFetchTile = null;
   }
 }
 // Mots-clés : on cherche sur YouTube et on montre les miniatures ;
@@ -3729,7 +3787,7 @@ $('[data-action="search-gif"]', dlgClip).addEventListener("click", async (e) => 
     b.append(img);
     b.addEventListener("click", async () => {
       clipGifs.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
-      b.classList.add("loading");
+      b.dataset.progress = "Récupération…"; b.classList.add("loading");
       try {
         showClipMedia(await invoke("clip_from_gif", { url: r.big || r.anim }));
       } catch (err) {
@@ -3773,7 +3831,7 @@ async function clipListen() {
     clipListening = true;
     listenBtn.textContent = "■ Arrêter";
     clearTimeout(clipListenTimer);
-    clipListenTimer = setTimeout(() => { clipListening = false; listenBtn.textContent = "▶ Écouter"; }, 15_500);
+    clipListenTimer = setTimeout(() => { clipListening = false; listenBtn.textContent = "▶ Écouter"; }, 30_500);
     if (clipMedia.kind === "video") {
       clipVideo.currentTime = Number(formClip.start.value) || 0;
       clipVideo.play().catch(() => {});
@@ -3785,8 +3843,8 @@ async function clipListen() {
 }
 listenBtn.addEventListener("click", () => (clipListening ? stopClipListen() : clipListen()));
 
-// ---------- Découpe de la vidéo : début et fin, 15 s au plus ----------
-const CLIP_MAX_S = 15;
+// ---------- Découpe de la vidéo : début et fin, 30 s au plus ----------
+const CLIP_MAX_S = 30;
 let clipTrimFrom = 0;
 let clipTrimEnd = null;
 const fmtS = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`;
@@ -3867,9 +3925,9 @@ clipVideo.addEventListener("timeupdate", () => {
 $('[data-action="send"]', dlgClip).addEventListener("click", async (e) => {
   const btn = e.currentTarget;
   if (!clipMedia) return;
-  if (!room.members.length) return toast("Aucun pote en ligne dans le salon pour l'instant", true);
+  if (!room.members.length && formClip.to.value !== "*moi") return toast("Aucun pote en ligne dans le salon pour l'instant : choisis « Tout le salon et moi » pour tester seul", true);
   btn.disabled = true;
-  btn.textContent = "Envoi…";
+  btn.textContent = "Envoi… (jusqu'à 1 min)";
   const to = formClip.to.value || null;
   try {
     await invoke("send_clip", {
@@ -3888,7 +3946,7 @@ $('[data-action="send"]', dlgClip).addEventListener("click", async (e) => {
     btn.disabled = !clipMedia;
   }
   const who = room.members.find((m) => m.id === to)?.name;
-  toast(`🎬 Extrait envoyé ${who ? `à ${who}` : "au salon"}`);
+  toast(to === "*moi" ? "🎬 Extrait envoyé : il va aussi s'afficher chez toi dans quelques secondes" : `🎬 Extrait envoyé ${who ? `à ${who}` : "au salon"}`);
   dlgClip.close();
 });
 $('[data-action="close"]', dlgClip).addEventListener("click", () => dlgClip.close());

@@ -406,7 +406,7 @@
               <input name="room_name" maxlength="32" autocomplete="off" placeholder="Ton pseudo">
             </label>
             <label class="set-row"><span class="txt"><b>Mes potes peuvent jouer des sons chez moi</b><small>30 secondes au plus par son. « Tout arrêter » les coupe aussi.</small></span><input name="room_accept" type="checkbox" class="switch"></label>
-            <label class="set-row"><span class="txt"><b>Extraits des potes sur mon écran</b><small>Image, GIF ou vidéo dans un coin de l'écran, 15 secondes au plus, sans quitter le jeu. Ferme-le avec ✕ ou « Tout arrêter ».</small></span>
+            <label class="set-row"><span class="txt"><b>Extraits des potes sur mon écran</b><small>Image, GIF ou vidéo dans un coin de l'écran, 30 secondes au plus, sans quitter le jeu. Ferme-le avec ✕ ou « Tout arrêter ».</small></span>
               <select name="clips_mode">
                 <option value="ask">Me demander</option>
                 <option value="auto">Afficher direct</option>
@@ -613,6 +613,7 @@
         <button type="button" data-source="file" class="active">📁 Fichier <small>image, GIF, vidéo</small></button>
         <button type="button" data-source="link">🔗 Vidéo <small>recherche ou lien</small></button>
         <button type="button" data-source="gif">🎞️ GIF <small>recherche GIPHY</small></button>
+        <button type="button" data-source="history">🕘 Historique <small>envoyés, reçus</small></button>
       </div>
       <div data-pane="link" hidden>
         <div class="search-row">
@@ -628,6 +629,13 @@
         </div>
         <div class="clip-gifs" role="listbox" aria-label="GIF trouvés"></div>
       </div>
+      <div data-pane="history" hidden>
+        <p class="label">Envoyés</p>
+        <div class="clip-gifs clip-history" data-list="sent"></div>
+        <p class="label">Reçus</p>
+        <div class="clip-gifs clip-history" data-list="received"></div>
+        <small class="hint">Les 20 derniers de chaque côté. Un clic le remet ici : tu peux le revoir (👁 Aperçu), l'écouter ou le renvoyer.</small>
+      </div>
       <div class="clip-frame">
         <button type="button" class="clip-drop" data-action="pick">
           <span class="clip-empty"><span class="emo" aria-hidden="true">🖼️</span><b>Choisir une image, un GIF ou une vidéo</b><small>PNG, JPG, GIF, WebP, MP4 ou WebM · 14 Mo au plus</small></span>
@@ -636,19 +644,19 @@
         </button>
         <div class="meme-text" aria-hidden="true"></div>
       </div>
-      <label class="set-field">Texte en gros sur l'extrait <small>(facultatif)</small>
+      <label class="set-field clip-needs-media">Texte en gros sur l'extrait <small>(facultatif)</small>
         <input name="title" maxlength="60" autocomplete="off" placeholder="Ex. : QUAND KEVIN RATE SON TIR">
       </label>
       <div class="set-field clip-trim" data-for-video hidden>
         <span>Passage à montrer <span class="value" data-trim-label></span></span>
         <div class="clip-range">
           <div class="clip-range-sel"></div>
-          <input name="start" type="range" min="0" max="15" step="0.1" value="0" aria-label="Début du passage">
-          <input name="end" type="range" min="0" max="15" step="0.1" value="15" aria-label="Fin du passage">
+          <input name="start" type="range" min="0" max="30" step="0.1" value="0" aria-label="Début du passage">
+          <input name="end" type="range" min="0" max="30" step="0.1" value="30" aria-label="Fin du passage">
         </div>
-        <small class="hint">Glisse les deux poignées (15 secondes au plus). ← → pour affiner après un clic.</small>
+        <small class="hint">Glisse les deux poignées (30 secondes au plus). ← → pour affiner après un clic.</small>
       </div>
-      <label class="set-field" data-for-image>Son avec l'image
+      <label class="set-field clip-needs-media" data-for-image>Son avec l'image
         <select name="sound"></select>
       </label>
       <div class="set-field clip-listen" data-for-sound hidden>
@@ -662,7 +670,7 @@
       <label class="set-field">Envoyer à
         <select name="to"></select>
       </label>
-      <p class="hint">L'extrait s'affiche dans un coin de son écran, 15 secondes au plus, sans le sortir de son jeu. Ton pote peut le refuser ou le fermer, et choisit dans ses réglages s'il veut être prévenu avant.</p>
+      <p class="hint">L'extrait s'affiche dans un coin de son écran, 30 secondes au plus, sans le sortir de son jeu. Envoyé à un seul pote, le son passe aussi dans Discord par son micro (à tout le salon, chacun l'entend chez soi). Ton pote peut le refuser ou le fermer, et choisit dans ses réglages s'il veut être prévenu avant.</p>
       <div class="actions">
         <button type="button" data-action="close">Fermer</button>
         <div class="spacer"></div>

@@ -5,7 +5,7 @@ const { listen } = window.__TAURI__.event;
 const $ = (s) => document.querySelector(s);
 
 const ASK_MS = 12000; // la carte « Afficher / Refuser » attend 12 s
-const MAX_MS = 15000; // un extrait dure 15 s au plus
+const MAX_MS = 30000; // un extrait dure 30 s au plus
 const IMAGE_MS = 6000; // une image sans son reste 6 s
 
 const img = $(".stage img");

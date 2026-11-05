@@ -1,6 +1,16 @@
 Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
 Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
+Nouveautés de la 2.3 :
+- Extraits jusqu'à 30 secondes (au lieu de 15). Tes potes doivent aussi être en 2.3 pour les voir en entier.
+- Nouvel onglet « 🕘 Historique » : tes 20 derniers extraits envoyés et reçus, à revoir ou renvoyer en un clic.
+- Envoyé à un seul pote, le son de l'extrait passe aussi dans Discord par son micro (envoyé à tout le salon, chacun l'entend chez soi).
+- « Tout le salon et moi » dans « Envoyer à » : l'extrait te revient aussi, pour vérifier que l'envoi marche (même seul dans le salon).
+- Récupération de vidéo plus rapide : pourcentage affiché, 480p au plus, téléchargement en plusieurs morceaux, et Deno installé tout seul pour que YouTube marche bien avec yt-dlp.
+- Moins de lag à l'aperçu et à la réception : seul le passage choisi est traité, pas toute la vidéo.
+- Fenêtre « Envoyer un extrait » plus claire : plus courte tant que rien n'est choisi, dernier onglet retenu.
+- Envoi plus patient avec les petites connexions (4 min), et chaque envoi/réception noté dans « Copier le rapport ».
+
 Nouveautés de la 2.2 :
 - Envoyer un extrait : l'onglet « 🔗 Vidéo » cherche directement sur YouTube avec des mots-clés (plus besoin de lien). Miniatures, titres et durées ; un clic récupère la vidéo.
 - Les vidéos de plus de 10 min sont marquées « longue », « Plus de résultats » en affiche d'autres, et ta dernière recherche reste là.

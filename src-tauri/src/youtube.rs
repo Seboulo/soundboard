@@ -37,7 +37,7 @@ pub fn is_youtube(url: &str) -> bool {
 fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .user_agent(concat!("Soundboard/", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(600))
         .build()
         .map_err(|e| e.to_string())
 }
@@ -71,10 +71,59 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Deno : depuis novembre 2025, yt-dlp a besoin d'un moteur JavaScript pour
+/// YouTube (sinon des formats manquent). Posé à côté de yt-dlp.exe, il est
+/// trouvé tout seul.
+const DENO_ZIP: &str = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip";
+const DENO_MAX: usize = 120 * 1024 * 1024;
+static DENO_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Empreinte du fichier « .sha256sum » de Deno (« Hash : ABCD… »).
+fn deno_hash(text: &str) -> Option<String> {
+    text.split(|c: char| !c.is_ascii_hexdigit()).find(|w| w.len() == 64).map(|h| h.to_lowercase())
+}
+
+/// Installe Deno à côté de yt-dlp, en arrière-plan (une seule fois) : la
+/// première récupération ne l'attend pas.
+fn ensure_deno(tools_dir: &Path) {
+    if !cfg!(windows) || tools_dir.join("deno.exe").exists() {
+        return;
+    }
+    if DENO_BUSY.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let dir = tools_dir.to_path_buf();
+    tauri::async_runtime::spawn(async move {
+        let res = install_deno(&dir).await;
+        crate::journal::write(&match res {
+            Ok(()) => "Deno installé pour yt-dlp".to_string(),
+            Err(e) => format!("Deno non installé ({e})"),
+        });
+        DENO_BUSY.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
+}
+
+async fn install_deno(dir: &Path) -> Result<(), String> {
+    let sums = fetch(&format!("{DENO_ZIP}.sha256sum"), 4096).await?;
+    let expected = deno_hash(&String::from_utf8_lossy(&sums)).ok_or("empreinte de Deno introuvable")?;
+    let data = fetch(DENO_ZIP, DENO_MAX).await?;
+    if hex(&Sha256::digest(&data)) != expected {
+        return Err("empreinte de Deno différente".into());
+    }
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(data)).map_err(|e| e.to_string())?;
+    let mut file = zip.by_name("deno.exe").map_err(|e| e.to_string())?;
+    let mut exe = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut exe).map_err(|e| e.to_string())?;
+    let tmp = dir.join("deno.download");
+    fs::write(&tmp, &exe).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, dir.join("deno.exe")).map_err(|e| e.to_string())
+}
+
 /// Installe yt-dlp dans `tools_dir` s'il n'y est pas encore et renvoie son chemin.
 pub async fn ensure(tools_dir: &Path, on_status: impl Fn(&str)) -> Result<PathBuf, String> {
     let exe = tools_dir.join(EXE);
     if exe.exists() {
+        ensure_deno(tools_dir);
         return Ok(exe);
     }
     on_status("Première fois : téléchargement de yt-dlp (environ 18 Mo)…");
@@ -91,6 +140,7 @@ pub async fn ensure(tools_dir: &Path, on_status: impl Fn(&str)) -> Result<PathBu
     fs::rename(&tmp, &exe).map_err(|e| e.to_string())?;
     // L'installation vaut vérification du jour.
     let _ = fs::write(tools_dir.join("last-update"), b"");
+    ensure_deno(tools_dir);
     Ok(exe)
 }
 
@@ -164,7 +214,6 @@ pub fn download_audio(exe: &Path, url: &str, work_dir: &Path) -> Result<(Vec<u8>
         let short: String = line.chars().take(200).collect();
         return Err(format!("YouTube : {short}"));
     }
-    let title = String::from_utf8_lossy(&output.stdout).lines().next().unwrap_or("").trim().to_string();
     let file = fs::read_dir(work_dir)
         .map_err(|e| e.to_string())?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -172,6 +221,7 @@ pub fn download_audio(exe: &Path, url: &str, work_dir: &Path) -> Result<(Vec<u8>
         .ok_or_else(|| {
             format!("vidéo ignorée : pas de piste audio compatible, ou plus de {} minutes", MAX_DURATION_S / 60)
         })?;
+    let title = String::from_utf8_lossy(&output.stdout).lines().next().unwrap_or("").trim().to_string();
     let data = fs::read(&file).map_err(|e| e.to_string())?;
     let _ = fs::remove_dir_all(work_dir);
     let title: String = title.chars().take(60).collect();
@@ -193,26 +243,41 @@ pub struct WebVideo {
 
 /// Choix des formats, du plus simple au plus courant :
 /// 1. un seul fichier image + son (MP4 H.264) assez léger ;
-/// 2. image (MP4 H.264, 720p au plus, en largeur comme en hauteur pour les
+/// 2. image (MP4 H.264, 480p au plus, en largeur comme en hauteur pour les
 ///    Shorts verticaux) + son (M4A) séparés : sans ffmpeg, yt-dlp les garde
 ///    en deux fichiers, que l'appli rejoue ensemble ;
 /// 3. vidéo plus longue : la plus petite image en H.264 (240p au moins) ;
 /// 4. pareil sans exiger le H.264.
 /// Vérifié avec yt-dlp sur des fiches de Short, de vidéo et de longue vidéo.
 const VIDEO_FORMATS: &str = "b[ext=mp4][filesize<13M]/b[ext=mp4][filesize_approx<13M]\
-/bv[ext=mp4][vcodec^=avc1][height<=1280][width<=1280][filesize<12M]+ba[ext=m4a]\
-/bv[ext=mp4][vcodec^=avc1][height<=1280][width<=1280][filesize_approx<12M]+ba[ext=m4a]\
+/bv[ext=mp4][vcodec^=avc1][height<=854][width<=854][filesize<12M]+ba[ext=m4a]\
+/bv[ext=mp4][vcodec^=avc1][height<=854][width<=854][filesize_approx<12M]+ba[ext=m4a]\
 /wv[ext=mp4][vcodec^=avc1][height>=240][width>=240]+ba[ext=m4a]\
-/bv[height<=1280][width<=1280]+ba[ext=m4a]/b";
+/bv[height<=854][width<=854]+ba[ext=m4a]/b";
+
+/// Lance la mise à jour du jour sans attendre (elle ralentissait la
+/// récupération qui la précédait).
+pub fn update_in_background(exe: &Path) {
+    let exe = exe.to_path_buf();
+    std::thread::spawn(move || update_if_stale(&exe));
+}
+
+/// Pourcentage d'une ligne de progression (« SBPCT  42.3% »).
+fn progress_of(line: &str) -> Option<f32> {
+    line.trim().strip_prefix("SBPCT")?.trim().trim_end_matches('%').trim().parse().ok()
+}
 
 /// Télécharge une petite vidéo pour un extrait (13 Mo au plus).
-pub fn download_video(exe: &Path, url: &str, work_dir: &Path) -> Result<WebVideo, String> {
+/// `on_progress` reçoit l'avancement (0 à 100) de chaque fichier.
+pub fn download_video(exe: &Path, url: &str, work_dir: &Path, on_progress: impl Fn(f32)) -> Result<WebVideo, String> {
     if !is_web_link(url) {
         return Err("colle un lien qui commence par https://".into());
     }
     let _ = fs::remove_dir_all(work_dir);
     fs::create_dir_all(work_dir).map_err(|e| e.to_string())?;
-    let output = command(exe)
+    use std::io::{BufRead, BufReader, Read};
+    use std::process::Stdio;
+    let mut child = command(exe)
         .args([
             "--no-playlist",
             "--no-warnings",
@@ -220,6 +285,14 @@ pub fn download_video(exe: &Path, url: &str, work_dir: &Path) -> Result<WebVideo
             "--no-simulate",
             "--print",
             "title",
+            // Avancement, une ligne par étape, sur la sortie standard.
+            "--progress",
+            "--newline",
+            "--progress-template",
+            "download:SBPCT %(progress._percent_str)s",
+            // Plusieurs morceaux à la fois : YouTube bride une connexion seule.
+            "-N",
+            "4",
             "-f",
             VIDEO_FORMATS,
             "--max-filesize",
@@ -229,10 +302,31 @@ pub fn download_video(exe: &Path, url: &str, work_dir: &Path) -> Result<WebVideo
         .arg(work_dir.join("video.%(format_id)s.%(ext)s"))
         .arg("--")
         .arg(url.trim())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("yt-dlp n'a pas pu démarrer : {e}"))?;
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
+    let mut stderr = child.stderr.take();
+    let err_reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        if let Some(e) = stderr.as_mut() {
+            let _ = e.read_to_string(&mut s);
+        }
+        s
+    });
+    let mut title = String::new();
+    if let Some(out) = child.stdout.take() {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            match progress_of(&line) {
+                Some(p) => on_progress(p),
+                None if title.is_empty() && !line.trim().is_empty() => title = line.trim().to_string(),
+                None => {}
+            }
+        }
+    }
+    let status = child.wait().map_err(|e| e.to_string())?;
+    let err = err_reader.join().unwrap_or_default();
+    if !status.success() {
         let line = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("erreur inconnue");
         let line = line.trim().trim_start_matches("ERROR: ");
         if line.contains("Unable to download") || line.contains("connect") {
@@ -244,7 +338,6 @@ pub fn download_video(exe: &Path, url: &str, work_dir: &Path) -> Result<WebVideo
         let short: String = line.chars().take(200).collect();
         return Err(format!("vidéo : {short}"));
     }
-    let title = String::from_utf8_lossy(&output.stdout).lines().next().unwrap_or("").trim().to_string();
     let files: Vec<PathBuf> = fs::read_dir(work_dir)
         .map_err(|e| e.to_string())?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -332,6 +425,19 @@ mod tests {
         assert!(is_web_link("https://www.tiktok.com/@a/video/1"));
         assert!(!is_web_link("--exec calc"));
         assert!(!is_web_link("file:///C:/x.mp4"));
+    }
+
+    #[test]
+    fn reads_deno_hash() {
+        let text = "\r\nAlgorithm : SHA256\r\nHash      : CBA84B26E0DF5AE7F74FC66B86A95B866872A86292EBD84FA1E959927EDD93BF\r\nPath      : C:\\a\\deno.zip\r\n";
+        assert_eq!(deno_hash(text).as_deref(), Some("cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf"));
+    }
+
+    #[test]
+    fn reads_progress_lines() {
+        assert_eq!(progress_of("SBPCT   42.3%"), Some(42.3));
+        assert_eq!(progress_of("SBPCT 100.0%"), Some(100.0));
+        assert_eq!(progress_of("Mon titre"), None);
     }
 
     #[test]

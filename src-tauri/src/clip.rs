@@ -54,6 +54,10 @@ pub struct ClipShow {
     pub ask: bool,
     /// Aperçu de son propre extrait (pas de « Bloquer » ni « Garder »).
     pub preview: bool,
+    /// Envoyé à moi seul (pas à tout le salon) : son son part aussi dans
+    /// Discord. Envoyé à tous, chacun l'entend chez soi : s'il partait dans
+    /// Discord chez chacun, on l'entendrait plusieurs fois.
+    pub direct: bool,
 }
 
 /// Un extrait envoyé récemment (pour le renvoyer en un clic).
@@ -66,33 +70,64 @@ pub struct Recent {
     pub end_s: Option<f64>,
     pub volume: Option<f32>,
     pub sound_id: Option<String>,
+    /// Reçu : nom du pote, et son à part (image + son).
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub sound: Option<String>,
+    /// Date (secondes depuis 1970).
+    #[serde(default)]
+    pub at: u64,
 }
 
-const RECENTS: usize = 5;
+/// Extraits gardés dans l'historique (envoyés, et reçus).
+const RECENTS: usize = 20;
+
+fn now_s() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+fn received_file(state: &AppState) -> PathBuf {
+    clips_dir(state).join("recus").join("index.json")
+}
 
 fn recents_file(state: &AppState) -> PathBuf {
     clips_dir(state).join("recents.json")
 }
 
-fn load_recents(state: &AppState) -> Vec<Recent> {
-    let list: Vec<Recent> = fs::read(recents_file(state)).ok().and_then(|d| serde_json::from_slice(&d).ok()).unwrap_or_default();
+fn load_list(file: &Path) -> Vec<Recent> {
+    let list: Vec<Recent> = fs::read(file).ok().and_then(|d| serde_json::from_slice(&d).ok()).unwrap_or_default();
     list.into_iter().filter(|r| Path::new(&r.path).exists()).take(RECENTS).collect()
 }
 
-fn add_recent(state: &AppState, recent: Recent) {
-    let mut list = load_recents(state);
+fn add_to_list(file: &Path, recent: Recent) {
+    let mut list = load_list(file);
     list.retain(|r| r.path != recent.path);
     list.insert(0, recent);
     list.truncate(RECENTS);
     if let Ok(data) = serde_json::to_vec(&list) {
-        let _ = fs::write(recents_file(state), data);
+        let _ = fs::write(file, data);
     }
+}
+
+fn load_recents(state: &AppState) -> Vec<Recent> {
+    load_list(&recents_file(state))
+}
+
+fn add_recent(state: &AppState, recent: Recent) {
+    add_to_list(&recents_file(state), recent);
 }
 
 /// Les derniers extraits envoyés (encore sur le disque).
 #[tauri::command]
 pub fn clip_recents(state: State<AppState>) -> Vec<Recent> {
     load_recents(&state)
+}
+
+/// Historique : extraits envoyés et reçus (encore sur le disque).
+#[tauri::command]
+pub fn clip_history(state: State<AppState>) -> serde_json::Value {
+    serde_json::json!({ "sent": load_recents(&state), "received": load_list(&received_file(&state)) })
 }
 
 #[derive(Default)]
@@ -104,6 +139,7 @@ pub struct Clips {
     counter: AtomicU64,
     /// Le son de l'extrait passe par le moteur audio (dans le casque).
     audio_on: AtomicBool,
+    audio_discord: AtomicBool,
 }
 
 fn kind_of(ext: &str) -> Option<&'static str> {
@@ -148,19 +184,31 @@ fn clips_dir(state: &AppState) -> PathBuf {
     state.sounds_dir.with_file_name("extraits")
 }
 
-/// Garde au plus `keep` fichiers dans un dossier.
+/// Place maximale d'un dossier d'extraits (envoyés ou reçus).
+const DIR_MAX_BYTES: u64 = 200 * 1024 * 1024;
+
+/// Garde au plus `keep` fichiers dans un dossier, et pas plus de
+/// `DIR_MAX_BYTES` en tout : les plus anciens partent d'abord.
 fn trim_dir(dir: &Path, keep: usize) {
     let Ok(entries) = fs::read_dir(dir) else { return };
-    let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = entries
         .flatten()
-        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .filter(|e| e.path().extension().is_none_or(|x| x != "json"))
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            Some((m.modified().ok()?, m.len(), e.path()))
+        })
         .collect();
-    if files.len() <= keep {
-        return;
-    }
     files.sort();
-    for (_, p) in files.iter().take(files.len() - keep) {
+    let mut total: u64 = files.iter().map(|f| f.1).sum();
+    let mut count = files.len();
+    for (_, len, p) in &files {
+        if count <= keep && total <= DIR_MAX_BYTES {
+            break;
+        }
         let _ = fs::remove_file(p);
+        count -= 1;
+        total -= len;
     }
 }
 
@@ -214,7 +262,7 @@ fn keep_for_sending(
     let state = app.state::<AppState>();
     let dir = clips_dir(&state).join("envoi");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    trim_dir(&dir, 24);
+    trim_dir(&dir, 40);
     let id = uuid::Uuid::new_v4().simple().to_string();
     let copy = dir.join(format!("{id}.{ext}"));
     fs::write(&copy, data).map_err(|e| e.to_string())?;
@@ -246,15 +294,35 @@ pub async fn clip_from_gif(app: AppHandle, url: String) -> Result<ClipPick, Stri
 /// Vidéos YouTube trouvées par mots-clés, pour l'onglet « Lien vidéo ».
 #[tauri::command]
 pub async fn clip_search_videos(app: AppHandle, query: String, start: Option<u32>) -> Result<Vec<youtube::Found>, String> {
+    // Même recherche refaite (fenêtre rouverte, téléphone) : réponse tout de
+    // suite plutôt que de relancer yt-dlp, pendant 10 minutes.
+    static CACHE: Mutex<Vec<(String, u32, Instant, Vec<youtube::Found>)>> = Mutex::new(Vec::new());
+    let key = query.trim().to_lowercase();
+    let start = start.unwrap_or(1);
+    {
+        let mut cache = CACHE.lock().unwrap();
+        cache.retain(|c| c.2.elapsed() < Duration::from_secs(600));
+        if let Some(c) = cache.iter().find(|c| c.0 == key && c.1 == start) {
+            return Ok(c.3.clone());
+        }
+    }
     let state = app.state::<AppState>();
     let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
     let status = |msg: &str| {
         let _ = app.emit("youtube-status", msg);
     };
     let exe = youtube::ensure(&data_dir.join("tools"), status).await?;
-    tauri::async_runtime::spawn_blocking(move || youtube::search(&exe, &query, start.unwrap_or(1), 12))
+    let found = tauri::async_runtime::spawn_blocking(move || youtube::search(&exe, &query, start, 12))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())??;
+    if !found.is_empty() {
+        let mut cache = CACHE.lock().unwrap();
+        if cache.len() >= 30 {
+            cache.remove(0);
+        }
+        cache.push((key, start, Instant::now(), found.clone()));
+    }
+    Ok(found)
 }
 
 /// Vidéo d'un lien (YouTube, TikTok, X, Reddit…), avec yt-dlp.
@@ -275,9 +343,13 @@ pub async fn clip_from_link(app: AppHandle, url: String) -> Result<ClipPick, Str
         let exe = youtube::ensure(&data_dir.join("tools"), status).await?;
         let work_dir = data_dir.join("extrait-tmp");
         let wd = work_dir.clone();
+        let app2 = app.clone();
         let got = tauri::async_runtime::spawn_blocking(move || {
-            youtube::update_if_stale(&exe);
-            youtube::download_video(&exe, &url, &wd)
+            let res = youtube::download_video(&exe, &url, &wd, |p| {
+                let _ = app2.emit("clip-progress", p.round() as u32);
+            });
+            youtube::update_in_background(&exe);
+            res
         })
         .await
         .map_err(|e| e.to_string())??;
@@ -301,10 +373,10 @@ pub async fn clip_from_link(app: AppHandle, url: String) -> Result<ClipPick, Str
     res
 }
 
-/// Fin du passage choisi (15 s au plus après le début) ; `None` = jusqu'au bout.
+/// Fin du passage choisi (30 s au plus après le début) ; `None` = jusqu'au bout.
 fn video_end(start_ms: u64, end_s: Option<f64>) -> Option<u64> {
-    let end_ms = (end_s?.clamp(0.0, 36_015.0) * 1000.0) as u64;
-    (end_ms > start_ms).then(|| end_ms.min(start_ms + 15_000))
+    let end_ms = (end_s?.clamp(0.0, 36_030.0) * 1000.0) as u64;
+    (end_ms > start_ms).then(|| end_ms.min(start_ms + 30_000))
 }
 
 /// Le son d'une vidéo prête à l'envoi : à part (« <nom>-son.m4a ») ou dans la vidéo.
@@ -342,8 +414,11 @@ pub async fn clip_listen(
         }
         None => return Err("pas de son à écouter".into()),
     };
-    play_audio(app.clone(), path, start_ms, end_ms, vol).await
+    play_audio(app.clone(), path, start_ms, end_ms, vol, false).await
 }
+
+/// « Envoyer à » : tout le salon, et soi-même aussi pour tester.
+const ME_TOO: &str = "*moi";
 
 /// Envoie l'extrait à un pote (ou à tout le salon si `to` est vide).
 #[tauri::command]
@@ -409,14 +484,26 @@ pub async fn send_clip(
         return Err("l'extrait et son son font plus de 14 Mo ensemble : prends plus court".into());
     }
     let room = &state.extras.room;
-    let to = to.filter(|t| !t.is_empty()).unwrap_or_default();
+    let with_me = to.as_deref() == Some(ME_TOO);
+    let to = to.filter(|t| !t.is_empty() && t != ME_TOO).unwrap_or_default();
     if !to.is_empty() && !room.status().members.iter().any(|m| m.id == to) {
         return Err("ce pote n'est plus en ligne".into());
     }
     let title: String = title.trim().chars().take(60).collect();
     let msg_title = title.clone();
+    let to_all = to.is_empty();
     let msg = Msg::Clip { from: room.my_id(), name: room.my_name(), to, title };
-    room.publish_file(&msg, "extrait.sbclip", data).await?;
+    if with_me {
+        room.expect_echo();
+    }
+    let mb = data.len() as f64 / 1_048_576.0;
+    journal::write(&format!("Extrait : envoi de {mb:.1} Mo{}", if to_all { " au salon" } else { "" }));
+    let sent = Instant::now();
+    if let Err(e) = room.publish_file(&msg, "extrait.sbclip", data).await {
+        journal::write(&format!("Extrait : envoi raté après {} s ({e})", sent.elapsed().as_secs()));
+        return Err(e);
+    }
+    journal::write(&format!("Extrait : envoyé en {} s", sent.elapsed().as_secs()));
     *state.extras.last_sent.lock().unwrap() = Some(Instant::now());
     let is_video = kind_of(&media.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase()) == Some("video");
     add_recent(&state, Recent {
@@ -427,12 +514,15 @@ pub async fn send_clip(
         end_s: end_s.filter(|_| is_video),
         volume: volume.filter(|_| is_video),
         sound_id: sound.map(|s| s.id),
+        from: None,
+        sound: None,
+        at: now_s(),
     });
     Ok(())
 }
 
 /// Un extrait arrive d'un pote.
-pub async fn receive(app: &AppHandle, from: String, name: String, title: String, url: Option<String>) -> Result<(), String> {
+pub async fn receive(app: &AppHandle, from: String, name: String, title: String, url: Option<String>, direct: bool) -> Result<(), String> {
     let state = app.state::<AppState>();
     let mode = state.config.lock().unwrap().settings.clips_mode.clone();
     if mode == "off" {
@@ -450,11 +540,19 @@ pub async fn receive(app: &AppHandle, from: String, name: String, title: String,
         }
         last.insert(from.clone(), Instant::now());
     }
-    let data = room::fetch(&url).await?;
+    let got = Instant::now();
+    let data = match room::fetch(&url).await {
+        Ok(d) => d,
+        Err(e) => {
+            journal::write(&format!("Extrait de {name} : réception ratée après {} s ({e})", got.elapsed().as_secs()));
+            return Err(e);
+        }
+    };
+    journal::write(&format!("Extrait de {name} reçu ({:.1} Mo en {} s)", data.len() as f64 / 1_048_576.0, got.elapsed().as_secs()));
     let (h, media, sound) = unpack(&data)?;
     let dir = clips_dir(&state).join("recus");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    trim_dir(&dir, 20);
+    trim_dir(&dir, 40);
     let id = uuid::Uuid::new_v4().simple().to_string();
     let media_path = dir.join(format!("{id}.{}", h.media_ext));
     fs::write(&media_path, media).map_err(|e| e.to_string())?;
@@ -479,7 +577,20 @@ pub async fn receive(app: &AppHandle, from: String, name: String, title: String,
         volume: h.volume.clamp(0.0, 2.0),
         ask: mode != "auto",
         preview: false,
+        direct,
     };
+    add_to_list(&received_file(&state), Recent {
+        path: show.media.clone(),
+        kind: show.kind.into(),
+        title: show.title.clone(),
+        start_s: (show.kind == "video").then(|| show.start_ms as f64 / 1000.0),
+        end_s: show.end_ms.map(|e| e as f64 / 1000.0),
+        volume: Some(show.volume),
+        sound_id: None,
+        from: Some(show.from.clone()),
+        sound: show.sound.clone(),
+        at: now_s(),
+    });
     let _ = app.emit("clip-received", (&show.from, &show.title));
     show_window(app, show)
 }
@@ -561,20 +672,37 @@ pub async fn clip_audio(app: AppHandle, path: String, start_ms: u64, end_ms: Opt
     if path.parent() != Some(dir.join("recus").as_path()) && path.parent() != Some(dir.join("envoi").as_path()) {
         return Err("fichier non autorisé".into());
     }
-    play_audio(app.clone(), path, start_ms, end_ms, volume).await
+    // Extrait reçu d'un pote : son son part aussi dans Discord, comme un son
+    // du salon, pour que tout le monde l'entende. L'aperçu reste au casque.
+    let discord = state.clips.pending.lock().unwrap().as_ref().is_some_and(|c| !c.preview && c.direct);
+    play_audio(app.clone(), path, start_ms, end_ms, volume, discord).await
 }
 
-async fn play_audio(app: AppHandle, path: PathBuf, start_ms: u64, end_ms: Option<u64>, volume: f32) -> Result<(), String> {
+/// Son d'un extrait reçu, joué dans le casque et dans Discord.
+const CLIP_SOUND_ID: &str = "extrait-recu";
+
+async fn play_audio(app: AppHandle, path: PathBuf, start_ms: u64, end_ms: Option<u64>, volume: f32, discord: bool) -> Result<(), String> {
     let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app2.state::<AppState>();
-        let analysis = analysis::analyze(&path)?;
+        // Seul le passage joué est décodé et mesuré (pas toute la vidéo,
+        // qui peut durer des minutes) : moins de calcul, pas d'à-coup.
+        let end = end_ms.unwrap_or(u64::MAX).min(start_ms + 30_500);
+        let key = crate::config::SegmentKey { start_ms, end_ms: Some(end), fx: Default::default() };
+        let mut analysis = analysis::analyze_segment(&path, &key)?;
+        analysis.duration_ms += start_ms;
         let mut sound = extras::store_like(&path, analysis);
         sound.id = audio::PREVIEW_ID.into();
         sound.start_ms = start_ms;
-        let total = analysis.duration_ms;
-        sound.end_ms = Some(end_ms.unwrap_or(total).min(total).min(start_ms + 15_500));
+        sound.end_ms = Some(end.min(analysis.duration_ms));
         sound.volume = volume.clamp(0.0, 2.0);
+        if discord {
+            sound.id = CLIP_SOUND_ID.into();
+            state.audio.stop(CLIP_SOUND_ID);
+            state.audio.toggle_detached(play_request(&state, &sound));
+            state.clips.audio_discord.store(true, Ordering::SeqCst);
+            return Ok(());
+        }
         let req = play_request(&state, &sound);
         state.audio.preview(req)?;
         state.clips.audio_on.store(true, Ordering::SeqCst);
@@ -635,6 +763,7 @@ pub async fn clip_preview(
         from_id: String::new(),
         ask: false,
         preview: true,
+        direct: false,
     };
     show_window(&app, show)
 }
@@ -664,7 +793,7 @@ pub async fn clip_keep(app: AppHandle) -> Result<String, String> {
         .await
         .map_err(|e| e.to_string())??;
     sound.start_ms = c.start_ms;
-    sound.end_ms = c.end_ms.or_else(|| (c.kind == "video").then_some(c.start_ms + 15_000));
+    sound.end_ms = c.end_ms.or_else(|| (c.kind == "video").then_some(c.start_ms + 30_000));
     sound.volume = c.volume;
     let id = sound.id.clone();
     let name = sound.name.clone();
@@ -713,6 +842,9 @@ pub fn close(app: &AppHandle) {
         if state.clips.audio_on.swap(false, Ordering::SeqCst) {
             state.audio.stop_preview();
         }
+        if state.clips.audio_discord.swap(false, Ordering::SeqCst) {
+            state.audio.stop(CLIP_SOUND_ID);
+        }
     }
     for (label, w) in app.webview_windows() {
         if is_clip_window(&label) {
@@ -741,9 +873,26 @@ mod tests {
     #[test]
     fn video_end_keeps_15_seconds_at_most() {
         assert_eq!(video_end(42_000, Some(52.0)), Some(52_000));
-        assert_eq!(video_end(0, Some(40.0)), Some(15_000));
+        assert_eq!(video_end(0, Some(40.0)), Some(30_000));
         assert_eq!(video_end(10_000, Some(5.0)), None);
         assert_eq!(video_end(0, None), None);
+    }
+
+    #[test]
+    fn trims_oldest_files_but_keeps_json() {
+        let dir = std::env::temp_dir().join(format!("sb-trim-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("index.json"), b"[]").unwrap();
+        for i in 0..5 {
+            fs::write(dir.join(format!("{i}.png")), b"x").unwrap();
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        trim_dir(&dir, 3);
+        let mut left: Vec<String> = fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["2.png", "3.png", "4.png", "index.json"]);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
