@@ -18,7 +18,20 @@ pub enum Request {
     Play(String),
     Stop,
     Random(Option<String>),
+    /// Salon : jouer chez ce pote (None : chez moi).
+    Target(Option<String>),
+    /// Extraits : chercher des GIF.
+    Gifs(String),
+    /// Extraits : préparer un GIF, une vidéo par lien, ou un fichier envoyé.
+    ClipGif(String),
+    ClipLink(String),
+    ClipUpload { ext: String, data: Vec<u8> },
+    /// Extraits : envoyer ce qui a été préparé.
+    ClipSend { media: String, title: String, to: Option<String>, start: Option<f64>, sound: Option<String> },
 }
+
+/// Fichier envoyé depuis le téléphone (image, GIF ou vidéo) : 14 Mo au plus.
+const MAX_UPLOAD: u64 = 14 * 1024 * 1024;
 
 pub type Handler = Arc<dyn Fn(Request) -> Result<Value, String> + Send + Sync>;
 
@@ -105,13 +118,44 @@ pub fn route(method: &Method, url: &str, token: &str) -> Result<Option<Option<Re
         (Method::Post, "/api/random") => Some(Some(Request::Random(
             param(&params, "cat").map(percent_decode).filter(|c| !c.is_empty()),
         ))),
+        (Method::Post, "/api/target") => {
+            Some(Some(Request::Target(param(&params, "id").map(percent_decode).filter(|c| !c.is_empty()))))
+        }
+        (Method::Get, "/api/gifs") => param(&params, "q").map(|q| Some(Request::Gifs(percent_decode(q)))),
+        (Method::Post, "/api/clip/gif") => param(&params, "url").map(|u| Some(Request::ClipGif(percent_decode(u)))),
+        (Method::Post, "/api/clip/link") => param(&params, "url").map(|u| Some(Request::ClipLink(percent_decode(u)))),
+        (Method::Post, "/api/clip/upload") => param(&params, "ext")
+            .map(|e| e.to_ascii_lowercase())
+            .filter(|e| e.len() <= 5 && e.chars().all(|c| c.is_ascii_alphanumeric()))
+            .map(|ext| Some(Request::ClipUpload { ext, data: Vec::new() })),
+        (Method::Post, "/api/clip/send") => param(&params, "media").map(|m| {
+            let get = |k: &str| param(&params, k).map(percent_decode).filter(|v| !v.is_empty());
+            Some(Request::ClipSend {
+                media: percent_decode(m),
+                title: get("title").unwrap_or_default(),
+                to: get("to"),
+                start: get("start").and_then(|s| s.parse().ok()),
+                sound: get("sound"),
+            })
+        }),
         _ => None,
     };
     Ok(action)
 }
 
-fn respond(request: tiny_http::Request, token: &str, handler: &Handler) {
-    let route = route(request.method(), request.url(), token);
+fn respond(mut request: tiny_http::Request, token: &str, handler: &Handler) {
+    let mut route = route(request.method(), request.url(), token);
+    // Fichier envoyé par le téléphone : lu ici, avec une limite de taille.
+    if let Ok(Some(Some(Request::ClipUpload { data, .. }))) = &mut route {
+        use std::io::Read;
+        let mut body = Vec::new();
+        let read = request.as_reader().take(MAX_UPLOAD + 1).read_to_end(&mut body);
+        if read.is_err() || body.len() as u64 > MAX_UPLOAD {
+            let e = serde_json::json!({ "error": "fichier trop lourd (14 Mo au plus)" }).to_string();
+            return send(request, 400, "application/json", e);
+        }
+        *data = body;
+    }
     match route {
         Err(()) => send(
             request,

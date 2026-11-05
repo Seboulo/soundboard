@@ -184,6 +184,17 @@ fn keep_for_sending(
     Ok(ClipPick { path: copy.to_string_lossy().into_owned(), kind, size: total as u64, title, has_audio })
 }
 
+/// Fichier envoyé depuis la page du téléphone.
+pub fn from_upload(app: &AppHandle, ext: &str, data: &[u8]) -> Result<ClipPick, String> {
+    let ext = match ext {
+        "jpeg" => "jpg",
+        "mov" | "m4v" => return Err("vidéo iPhone (MOV) non prise en charge : envoie un MP4, ou un lien".into()),
+        e => e,
+    };
+    kind_of(ext).ok_or("choisis une image (PNG, JPG, GIF, WebP) ou une vidéo (MP4, WebM)")?;
+    keep_for_sending(app, data, ext, String::new(), None)
+}
+
 /// GIF choisi dans la recherche GIPHY.
 #[tauri::command]
 pub async fn clip_from_gif(app: AppHandle, url: String) -> Result<ClipPick, String> {
@@ -235,6 +246,37 @@ pub async fn clip_from_link(app: AppHandle, url: String) -> Result<ClipPick, Str
     res
 }
 
+/// Le son d'une vidéo prête à l'envoi : à part (« <nom>-son.m4a ») ou dans la vidéo.
+fn video_sound(dir: &Path, media: &Path) -> PathBuf {
+    let stem = media.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+    ["m4a", "mp3", "aac"].iter().map(|e| dir.join(format!("{stem}-son.{e}"))).find(|p| p.exists()).unwrap_or_else(|| media.to_path_buf())
+}
+
+/// « Écouter » avant d'envoyer : joue chez soi (casque) le son tel que le pote
+/// l'entendra (même passage, même volume, même réglage du niveau).
+#[tauri::command]
+pub async fn clip_listen(app: AppHandle, media: String, sound_id: Option<String>, start_s: Option<f64>, volume: Option<f32>) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let media = PathBuf::from(media);
+    let dir = clips_dir(&state).join("envoi");
+    if media.parent() != Some(dir.as_path()) {
+        return Err("choisis d'abord une image ou une vidéo".into());
+    }
+    let ext = media.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let (path, start_ms, end_ms, vol) = match sound_id.filter(|s| !s.is_empty()) {
+        Some(id) => {
+            let s = find_sound(&state, &id)?;
+            (s.path.clone(), s.start_ms, s.end_ms, s.volume)
+        }
+        None if kind_of(&ext) == Some("video") => {
+            let start_ms = (start_s.unwrap_or(0.0).clamp(0.0, 36_000.0) * 1000.0) as u64;
+            (video_sound(&dir, &media), start_ms, None, volume.unwrap_or(1.0))
+        }
+        None => return Err("pas de son à écouter".into()),
+    };
+    play_audio(app.clone(), path, start_ms, end_ms, vol).await
+}
+
 /// Envoie l'extrait à un pote (ou à tout le salon si `to` est vide).
 #[tauri::command]
 pub async fn send_clip(
@@ -244,6 +286,7 @@ pub async fn send_clip(
     title: String,
     to: Option<String>,
     start_s: Option<f64>,
+    volume: Option<f32>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let media = PathBuf::from(media);
@@ -276,16 +319,17 @@ pub async fn send_clip(
             // Vidéo : elle peut commencer plus loin que le début, et son son
             // peut être à part (« <nom>-son.m4a », Shorts YouTube).
             let start_ms = (start_s.unwrap_or(0.0).clamp(0.0, 36_000.0) * 1000.0) as u64;
+            let video_volume = volume.unwrap_or(1.0).clamp(0.0, 2.0);
             let stem = media.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
             let side = ["m4a", "mp3", "aac"].iter().map(|e| dir.join(format!("{stem}-son.{e}"))).find(|p| p.exists());
             match side.filter(|_| kind_of(&media_ext) == Some("video")) {
                 Some(p) => {
                     let data = fs::read(&p).map_err(|e| e.to_string())?;
                     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("m4a").to_string();
-                    let h = Header { sound_ext: ext, sound_len: data.len() as u64, start_ms, volume: 1.0, ..Default::default() };
+                    let h = Header { sound_ext: ext, sound_len: data.len() as u64, start_ms, volume: video_volume, ..Default::default() };
                     (data, h)
                 }
-                None => (Vec::new(), Header { volume: 1.0, start_ms, ..Default::default() }),
+                None => (Vec::new(), Header { volume: video_volume, start_ms, ..Default::default() }),
             }
         }
     };
@@ -434,6 +478,10 @@ pub async fn clip_audio(app: AppHandle, path: String, start_ms: u64, end_ms: Opt
     if path.parent() != Some(clips_dir(&state).join("recus").as_path()) {
         return Err("fichier non autorisé".into());
     }
+    play_audio(app.clone(), path, start_ms, end_ms, volume).await
+}
+
+async fn play_audio(app: AppHandle, path: PathBuf, start_ms: u64, end_ms: Option<u64>, volume: f32) -> Result<(), String> {
     let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app2.state::<AppState>();

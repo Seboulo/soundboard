@@ -1550,3 +1550,4 @@ body:has(.grid.list) .tabbar .size { display: none; }
   .tabbar .size { display: none; }
   #sort { max-width: 150px; }
 }
+.clip-listen input[type="range"] { flex: 1; min-width: 0; }

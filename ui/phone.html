@@ -83,25 +83,83 @@
       font-size: 14px;
     }
     [hidden] { display: none !important; }
+    .room { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 14px; color: var(--muted); }
+    .room select, .sheet input, .sheet select {
+      flex: 1; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border);
+      border-radius: 10px; padding: 8px 10px; min-width: 0; user-select: text;
+    }
+    .room.away select { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+    footer .clip { flex: 0 0 auto; padding: 14px 16px; }
+    .sheet-bg { position: fixed; inset: 0; background: rgba(0, 0, 0, .35); z-index: 5; }
+    .sheet {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; max-height: 88vh; overflow-y: auto;
+      background: var(--bg); border-radius: 18px 18px 0 0; padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .sheet h2 { margin: 0; font-size: 17px; }
+    .seg { display: flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+    .seg button { flex: 1; border: 0; background: var(--panel); color: var(--muted); padding: 9px 4px; font: inherit; font-size: 14px; }
+    .seg button.on { background: var(--accent); color: #fff; }
+    .row { display: flex; gap: 8px; }
+    .btn { border: 1px solid var(--border); border-radius: 10px; padding: 9px 14px; font: inherit; font-weight: 600; background: var(--panel); color: var(--text); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn:disabled { opacity: .5; }
+    .gifs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .gifs img { width: 100%; height: 84px; object-fit: cover; border-radius: 8px; border: 2px solid transparent; }
+    .gifs img.on { border-color: var(--accent); }
+    .ready { position: relative; border-radius: 12px; overflow: hidden; background: #000; color: #fff; min-height: 60px; display: grid; place-items: center; }
+    .ready img { max-width: 100%; max-height: 200px; display: block; }
+    .ready .msg { padding: 14px; font-size: 14px; }
+    .meme { position: absolute; left: 6px; right: 6px; bottom: 8px; text-align: center; text-transform: uppercase;
+      font: 900 22px/1.05 Impact, "Arial Black", sans-serif; color: #fff; -webkit-text-stroke: 1.2px #000; paint-order: stroke fill; }
+    .lbl { font-size: 13px; color: var(--muted); margin-bottom: -6px; }
   </style>
 </head>
 <body>
   <header>
     <h1><span class="dot" id="dot"></span>Soundboard</h1>
+    <label class="room" id="room" hidden>👥 Jouer <select id="target"></select></label>
     <nav class="tabs" id="tabs"></nav>
   </header>
   <main id="grid"></main>
   <div class="error" id="error" hidden></div>
   <footer>
     <button type="button" id="random">🎲 Au hasard</button>
+    <button type="button" class="clip" id="clip" hidden title="Envoyer un extrait à un pote">🎬</button>
     <button type="button" class="stop" id="stop">■ Stop</button>
   </footer>
+
+  <div class="sheet-bg" id="sheet-bg" hidden></div>
+  <div class="sheet" id="sheet" hidden>
+    <h2>🎬 Envoyer un extrait</h2>
+    <div class="seg" id="src">
+      <button type="button" data-src="link" class="on">🔗 Lien</button>
+      <button type="button" data-src="gif">🎞️ GIF</button>
+      <button type="button" data-src="file">📁 Fichier</button>
+    </div>
+    <div class="row" data-pane="link"><input id="link" type="url" placeholder="Lien YouTube, TikTok, X…"><button class="btn" id="get-link">OK</button></div>
+    <div data-pane="gif" hidden>
+      <div class="row"><input id="gifq" type="search" placeholder="Chercher un GIF…"><button class="btn" id="get-gifs">🔍</button></div>
+      <div class="gifs" id="gifs"></div>
+    </div>
+    <div data-pane="file" hidden><input id="file" type="file" accept="image/png,image/jpeg,image/gif,image/webp,video/mp4,video/webm"></div>
+    <div class="ready" id="ready" hidden><img id="ready-img" alt="" hidden><div class="msg" id="ready-msg"></div><div class="meme" id="meme"></div></div>
+    <div class="lbl">Texte en gros (facultatif)</div>
+    <input id="ctitle" maxlength="60" placeholder="QUAND KEVIN RATE SON TIR">
+    <div class="lbl" id="start-lbl" hidden>Commencer à (secondes)</div>
+    <input id="cstart" type="number" min="0" value="0" inputmode="numeric" hidden>
+    <div class="lbl">Envoyer à</div>
+    <select id="cto"></select>
+    <div class="row"><button class="btn" id="cclose">Fermer</button><button class="btn primary" id="csend" style="flex:1" disabled>Envoyer</button></div>
+  </div>
 
   <script>
     "use strict";
     const token = new URLSearchParams(location.search).get("t") || "";
     const FAV = "\u0000fav";
     let sounds = [];
+    let room = { members: [], target: null };
+    let picked = null;
     let playing = new Set();
     let tab = null;
     try { tab = localStorage.getItem("tab"); } catch {}
@@ -184,6 +242,8 @@
         last = key;
         sounds = state.sounds;
         playing = new Set(state.playing);
+        room = state.room || room;
+        renderRoom(state);
         render();
       } catch (e) {
         $("dot").classList.add("off");
@@ -195,6 +255,120 @@
       const cat = tab && tab !== FAV ? tab : "";
       api("/api/random", { cat }, "POST").then(refresh, (e) => showError(e.message));
     };
+
+    // ---------- Salon : chez qui jouer ----------
+    function renderRoom(state) {
+      $("room").hidden = !state.in_room;
+      $("clip").hidden = !state.in_room;
+      const sel = $("target");
+      sel.replaceChildren(new Option("chez moi", ""), ...room.members.map((m) => new Option(`chez ${m.name}`, m.id)));
+      sel.value = room.target || "";
+      $("room").classList.toggle("away", !!room.target);
+    }
+    $("target").onchange = (e) => api("/api/target", { id: e.target.value }, "POST").then(refresh, (err) => showError(err.message));
+
+    // ---------- Extraits ----------
+    function openSheet(open) {
+      $("sheet").hidden = $("sheet-bg").hidden = !open;
+      if (!open) return;
+      $("cto").replaceChildren(new Option(`Tout le salon (${room.members.length} en ligne)`, ""), ...room.members.map((m) => new Option(m.name, m.id)));
+      $("cto").value = room.target || "";
+    }
+    $("clip").onclick = () => openSheet(true);
+    $("cclose").onclick = $("sheet-bg").onclick = () => openSheet(false);
+    document.querySelectorAll("#src button").forEach((b) => (b.onclick = () => {
+      document.querySelectorAll("#src button").forEach((x) => x.classList.toggle("on", x === b));
+      document.querySelectorAll("[data-pane]").forEach((p) => (p.hidden = p.dataset.pane !== b.dataset.src));
+    }));
+    function setPicked(p, preview, msg) {
+      picked = p;
+      $("ready").hidden = !p;
+      $("ready-img").hidden = !preview;
+      if (preview) $("ready-img").src = preview;
+      $("ready-msg").hidden = !!preview;
+      $("ready-msg").textContent = msg || "";
+      $("start-lbl").hidden = $("cstart").hidden = !(p && p.kind === "video");
+      $("csend").disabled = !p;
+      $("meme").textContent = $("ctitle").value;
+    }
+    $("ctitle").oninput = () => ($("meme").textContent = $("ctitle").value);
+    async function busy(btn, job) {
+      const label = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "…";
+      try { await job(); } catch (e) { showError(e.message); }
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+    $("get-link").onclick = (e) => busy(e.currentTarget, async () => {
+      const url = $("link").value.trim();
+      if (!url) return;
+      setPicked(null);
+      $("ready").hidden = false;
+      $("ready-msg").hidden = false;
+      $("ready-msg").textContent = "Récupération de la vidéo… (jusqu'à une minute)";
+      try {
+        const p = await api("/api/clip/link", { url }, "POST");
+        let start = 0;
+        try { const t = new URL(url).searchParams.get("t") || ""; const m = t.match(/^(?:(\d+)m)?(\d+)s?$/); if (m) start = Number(m[1] || 0) * 60 + Number(m[2]); } catch {}
+        $("cstart").value = String(start);
+        setPicked(p, null, `✓ Vidéo prête${p.title ? " : " + p.title : ""}`);
+      } catch (err) {
+        setPicked(null);
+        throw err;
+      }
+    });
+    $("get-gifs").onclick = (e) => busy(e.currentTarget, async () => {
+      const q = $("gifq").value.trim();
+      if (!q) return;
+      const { gifs } = await api("/api/gifs", { q });
+      if (!gifs.length) return showError("Aucun GIF trouvé");
+      $("gifs").replaceChildren(...gifs.map((g) => {
+        const img = document.createElement("img");
+        img.src = g.anim;
+        img.alt = g.title || "GIF";
+        img.onclick = async () => {
+          document.querySelectorAll("#gifs img").forEach((x) => x.classList.toggle("on", x === img));
+          try {
+            setPicked(await api("/api/clip/gif", { url: g.big || g.anim }, "POST"), g.anim);
+          } catch (err) { showError(err.message); }
+        };
+        return img;
+      }));
+    });
+    $("gifq").onkeydown = (e) => { if (e.key === "Enter") $("get-gifs").click(); };
+    $("link").onkeydown = (e) => { if (e.key === "Enter") $("get-link").click(); };
+    $("file").onchange = async () => {
+      const f = $("file").files[0];
+      if (!f) return;
+      if (f.size > 14 * 1024 * 1024) return showError("Fichier trop lourd (14 Mo au plus)");
+      const ext = (f.name.split(".").pop() || "").toLowerCase();
+      $("ready").hidden = false;
+      $("ready-msg").hidden = false;
+      $("ready-msg").textContent = "Envoi du fichier au PC…";
+      try {
+        const q = new URLSearchParams({ t: token, ext });
+        const r = await fetch(`/api/clip/upload?${q}`, { method: "POST", body: f });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body.error || `erreur ${r.status}`);
+        setPicked(body, body.kind === "image" ? URL.createObjectURL(f) : null, "✓ Vidéo prête");
+      } catch (err) {
+        setPicked(null);
+        showError(err.message);
+      }
+    };
+    $("csend").onclick = (e) => busy(e.currentTarget, async () => {
+      if (!picked) return;
+      if (!room.members.length) throw new Error("Aucun pote en ligne dans le salon");
+      await api("/api/clip/send", {
+        media: picked.path, title: $("ctitle").value, to: $("cto").value,
+        start: picked.kind === "video" ? $("cstart").value : "",
+      }, "POST");
+      if (navigator.vibrate) navigator.vibrate(30);
+      openSheet(false);
+      setPicked(null);
+      $("ctitle").value = "";
+    });
 
     refresh();
     setInterval(refresh, 1500);

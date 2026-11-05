@@ -3472,7 +3472,13 @@ function clipUi() {
   clipVideo.hidden = clipMedia?.kind !== "video";
   // Une vidéo garde son propre son.
   $("[data-for-image]", dlgClip).hidden = clipMedia?.kind === "video";
-  $("[data-for-video]", dlgClip).hidden = clipMedia?.kind !== "video";
+  dlgClip.querySelectorAll("[data-for-video]").forEach((el) => (el.hidden = clipMedia?.kind !== "video"));
+  const hasSound = clipMedia?.kind === "video" || (clipMedia?.kind === "image" && !!formClip.sound.value);
+  $("[data-for-sound]", dlgClip).hidden = !hasSound;
+  $(".clip-listen > span", dlgClip).replaceChildren(
+    clipMedia?.kind === "video" ? "Son de la vidéo " : "Son avec l'image ",
+    Object.assign(document.createElement("span"), { className: "value", textContent: clipMedia?.kind === "video" ? `${Math.round(Number(formClip.cvol.value) * 100)} %` : "" }),
+  );
   $('[data-action="send"]', dlgClip).disabled = !clipMedia;
   $(".meme-text", dlgClip).textContent = clipMedia ? formClip.title.value.trim() : "";
 }
@@ -3489,6 +3495,7 @@ function setClipSource(source) {
 dlgClip.querySelectorAll("#clip-source button").forEach((b) => b.addEventListener("click", () => setClipSource(b.dataset.source)));
 
 function showClipMedia(picked, startS = 0) {
+  stopClipListen();
   clipMedia = picked;
   const src = fileSrc(picked.path);
   if (picked.kind === "video") {
@@ -3595,6 +3602,42 @@ formClip.addEventListener("keydown", (e) => {
   else if (e.target.name === "gifq") $('[data-action="search-gif"]', dlgClip).click();
 });
 formClip.title.addEventListener("input", clipUi);
+formClip.sound.addEventListener("change", () => { stopClipListen(); clipUi(); });
+formClip.cvol.addEventListener("input", clipUi);
+formClip.cvol.addEventListener("change", () => { if (clipListening) clipListen(); });
+// « Écouter » : joue le son dans le casque, tel que le pote l'entendra.
+let clipListening = false;
+let clipListenTimer = 0;
+const listenBtn = $('[data-action="listen"]', dlgClip);
+function stopClipListen() {
+  if (clipListening) invoke("stop_preview");
+  clipListening = false;
+  clearTimeout(clipListenTimer);
+  listenBtn.textContent = "▶ Écouter";
+}
+async function clipListen() {
+  try {
+    await invoke("clip_listen", {
+      media: clipMedia.path,
+      soundId: clipMedia.kind === "image" ? formClip.sound.value || null : null,
+      startS: Number(formClip.start.value) || 0,
+      volume: Number(formClip.cvol.value),
+    });
+    clipListening = true;
+    listenBtn.textContent = "■ Arrêter";
+    clearTimeout(clipListenTimer);
+    clipListenTimer = setTimeout(() => { clipListening = false; listenBtn.textContent = "▶ Écouter"; }, 15_500);
+    if (clipMedia.kind === "video") {
+      clipVideo.currentTime = Number(formClip.start.value) || 0;
+      clipVideo.play().catch(() => {});
+    }
+  } catch (err) {
+    stopClipListen();
+    toast(String(err), true);
+  }
+}
+listenBtn.addEventListener("click", () => (clipListening ? stopClipListen() : clipListen()));
+
 formClip.start.addEventListener("change", () => {
   if (clipMedia?.kind === "video") clipVideo.currentTime = Number(formClip.start.value) || 0;
 });
@@ -3616,6 +3659,7 @@ $('[data-action="send"]', dlgClip).addEventListener("click", async (e) => {
       title: formClip.title.value,
       to,
       startS: clipMedia.kind === "video" ? Number(formClip.start.value) || 0 : null,
+      volume: clipMedia.kind === "video" ? Number(formClip.cvol.value) : null,
     });
   } catch (err) {
     return toast(String(err), true);
@@ -3629,6 +3673,8 @@ $('[data-action="send"]', dlgClip).addEventListener("click", async (e) => {
 });
 $('[data-action="close"]', dlgClip).addEventListener("click", () => dlgClip.close());
 dlgClip.addEventListener("close", () => {
+  stopClipListen();
+  formClip.cvol.value = "1";
   clipVideo.pause();
   clipVideo.removeAttribute("src");
   clipImg.removeAttribute("src");

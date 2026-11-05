@@ -182,13 +182,43 @@ fn phone_request(app: &AppHandle, req: phone::Request) -> Result<serde_json::Val
                 })
                 .collect();
             let playing = state.playing_ids.lock().unwrap().clone();
-            Ok(serde_json::json!({ "sounds": sounds, "playing": playing }))
+            let in_room = !config.settings.room_code.trim().is_empty();
+            let giphy = config.settings.giphy_key.as_deref().is_some_and(|k| !k.trim().is_empty());
+            drop(config);
+            let room = state.extras.room.status();
+            Ok(serde_json::json!({ "sounds": sounds, "playing": playing, "in_room": in_room, "giphy": giphy, "room": room }))
         }
         phone::Request::Play(id) => {
             let sound = find_sound(&state, &id)?;
-            note_play(&state, &sound);
-            state.audio.toggle(play_request(&state, &sound))?;
-            let _ = app.emit("sound-triggered", &sound.id);
+            // Comme sur le PC : chez le pote choisi dans le salon, sinon ici.
+            extras::play_or_send(app, sound);
+            Ok(serde_json::json!({ "ok": true }))
+        }
+        phone::Request::Target(target) => {
+            state.extras.room.set_target(target);
+            let status = state.extras.room.status();
+            let _ = app.emit("room", &status);
+            Ok(serde_json::json!({ "room": status }))
+        }
+        phone::Request::Gifs(q) => {
+            let key = giphy_key(&state).ok_or("ajoute ta clé GIPHY dans les réglages de la soundboard (sur le PC)")?;
+            let res = tauri::async_runtime::block_on(giphy::search(q.trim(), &key, 18))?;
+            Ok(serde_json::json!({ "gifs": res }))
+        }
+        phone::Request::ClipGif(url) => {
+            let pick = tauri::async_runtime::block_on(clip::clip_from_gif(app.clone(), url))?;
+            Ok(serde_json::to_value(pick).map_err(|e| e.to_string())?)
+        }
+        phone::Request::ClipLink(url) => {
+            let pick = tauri::async_runtime::block_on(clip::clip_from_link(app.clone(), url))?;
+            Ok(serde_json::to_value(pick).map_err(|e| e.to_string())?)
+        }
+        phone::Request::ClipUpload { ext, data } => {
+            let pick = clip::from_upload(app, &ext, &data)?;
+            Ok(serde_json::to_value(pick).map_err(|e| e.to_string())?)
+        }
+        phone::Request::ClipSend { media, title, to, start, sound } => {
+            tauri::async_runtime::block_on(clip::send_clip(app.clone(), media, sound, title, to, start, None))?;
             Ok(serde_json::json!({ "ok": true }))
         }
         phone::Request::Stop => {
@@ -2438,6 +2468,7 @@ pub fn run() {
             clip::clip_from_gif,
             clip::clip_from_link,
             clip::clip_audio,
+            clip::clip_listen,
             extras::set_friend_blocked,
             clip::send_clip,
             clip::clip_pending,
