@@ -18,6 +18,8 @@ pub struct GifResult {
     pub still: String,
     /// Petite image animée.
     pub anim: String,
+    /// Image animée plus grande (pour un extrait envoyé à un pote).
+    pub big: String,
 }
 
 #[derive(Deserialize)]
@@ -90,7 +92,8 @@ pub fn parse(json: &str) -> Result<Vec<GifResult>, String> {
             let anim = pick(&["fixed_height_small", "fixed_height", "downsized"], true)?;
             let still = pick(&["fixed_height_small_still", "fixed_height_still", "downsized_still"], false)
                 .unwrap_or_else(|| anim.clone());
-            Some(GifResult { title: g.title, still, anim })
+            let big = pick(&["downsized_medium", "downsized", "fixed_height"], false).unwrap_or_else(|| anim.clone());
+            Some(GifResult { title: g.title, still, anim, big })
         })
         .collect())
 }

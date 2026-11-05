@@ -3437,7 +3437,9 @@ const dlgClip = $("#dlg-clip");
 const formClip = $("form", dlgClip);
 const clipImg = $("img.clip-preview", dlgClip);
 const clipVideo = $("video.clip-preview", dlgClip);
+const clipGifs = $(".clip-gifs", dlgClip);
 let clipMedia = null;
+let clipSource = "file";
 
 function clipUi() {
   $(".clip-empty", dlgClip).hidden = !!clipMedia;
@@ -3445,7 +3447,36 @@ function clipUi() {
   clipVideo.hidden = clipMedia?.kind !== "video";
   // Une vidéo garde son propre son.
   $("[data-for-image]", dlgClip).hidden = clipMedia?.kind === "video";
+  $("[data-for-video]", dlgClip).hidden = clipMedia?.kind !== "video";
   $('[data-action="send"]', dlgClip).disabled = !clipMedia;
+  $(".meme-text", dlgClip).textContent = clipMedia ? formClip.title.value.trim() : "";
+}
+function setClipSource(source) {
+  clipSource = source;
+  dlgClip.querySelectorAll("#clip-source button").forEach((b) => b.classList.toggle("active", b.dataset.source === source));
+  dlgClip.querySelectorAll("[data-pane]").forEach((p) => (p.hidden = p.dataset.pane !== source));
+  if (source === "link") formClip.link.focus();
+  if (source === "gif") {
+    if (!state.config.settings.giphy_key) toast("Ajoute ta clé GIPHY gratuite dans les réglages (⚙ → Général) pour chercher des GIF", true);
+    formClip.gifq.focus();
+  }
+}
+dlgClip.querySelectorAll("#clip-source button").forEach((b) => b.addEventListener("click", () => setClipSource(b.dataset.source)));
+
+function showClipMedia(picked, startS = 0) {
+  clipMedia = picked;
+  const src = fileSrc(picked.path);
+  if (picked.kind === "video") {
+    clipImg.removeAttribute("src");
+    clipVideo.src = src;
+    clipVideo.currentTime = startS;
+    clipVideo.play().catch(() => {});
+  } else {
+    clipVideo.removeAttribute("src");
+    clipImg.src = src;
+  }
+  formClip.start.value = String(Math.max(0, Math.round(startS)));
+  clipUi();
 }
 function openClipDialog(to) {
   if (!state.config.settings.room_code) return toast("Rejoins d'abord un salon avec tes potes : Réglages → Potes", true);
@@ -3453,27 +3484,98 @@ function openClipDialog(to) {
   formClip.sound.replaceChildren(new Option("Pas de son", ""), ...sounds.map((s) => new Option(`${s.emoji ? s.emoji + " " : ""}${s.name}`, s.id)));
   formClip.to.replaceChildren(new Option(`Tout le salon (${room.members.length} en ligne)`, ""), ...room.members.map((m) => new Option(m.name, m.id)));
   formClip.to.value = to ?? room.target ?? "";
+  setClipSource(clipSource);
   clipUi();
   dlgClip.showModal();
 }
 $("#btn-clip").addEventListener("click", () => openClipDialog());
 $('[data-action="pick"]', dlgClip).addEventListener("click", async () => {
   const picked = await call("pick_clip_media");
-  if (!picked) return;
-  clipMedia = picked;
-  const src = fileSrc(picked.path);
-  if (picked.kind === "video") {
-    clipImg.removeAttribute("src");
-    clipVideo.src = src;
-    clipVideo.play().catch(() => {});
-  } else {
-    clipVideo.removeAttribute("src");
-    clipImg.src = src;
+  if (picked) showClipMedia(picked);
+});
+// Lien YouTube : « ?t=42 » ou « &t=1m30s » donne le début.
+function linkStart(url) {
+  try {
+    const t = new URL(url).searchParams.get("t") || "";
+    const m = t.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s?)?$/);
+    return m ? (Number(m[1] || 0) * 3600 + Number(m[2] || 0) * 60 + Number(m[3] || 0)) : 0;
+  } catch {
+    return 0;
   }
-  clipUi();
+}
+$('[data-action="fetch-link"]', dlgClip).addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  const url = formClip.link.value.trim();
+  if (!url) return formClip.link.focus();
+  btn.disabled = true;
+  btn.textContent = "Récupération…";
+  try {
+    const picked = await invoke("clip_from_link", { url });
+    showClipMedia(picked, linkStart(url));
+    if (!formClip.title.value.trim() && picked.title) formClip.title.placeholder = picked.title;
+  } catch (err) {
+    toast(String(err), true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Récupérer";
+  }
+});
+$('[data-action="search-gif"]', dlgClip).addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  const q = formClip.gifq.value.trim();
+  if (!q) return formClip.gifq.focus();
+  btn.disabled = true;
+  clipGifs.replaceChildren();
+  let results = [];
+  try {
+    results = await invoke("search_images", { query: q });
+  } catch (err) {
+    toast(String(err), true);
+  }
+  btn.disabled = false;
+  if (!results.length) {
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = "Aucun GIF trouvé.";
+    return clipGifs.replaceChildren(note);
+  }
+  clipGifs.replaceChildren(...results.map((r) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("role", "option");
+    b.title = r.title || "GIF";
+    const img = document.createElement("img");
+    img.src = r.anim;
+    img.alt = r.title || "GIF";
+    img.loading = "lazy";
+    b.append(img);
+    b.addEventListener("click", async () => {
+      clipGifs.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+      b.classList.add("loading");
+      try {
+        showClipMedia(await invoke("clip_from_gif", { url: r.big || r.anim }));
+      } catch (err) {
+        toast(String(err), true);
+      }
+      b.classList.remove("loading");
+    });
+    return b;
+  }));
+});
+// Entrée dans un champ : lance l'action au lieu de fermer la fenêtre.
+formClip.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || e.target.tagName !== "INPUT") return;
+  e.preventDefault();
+  if (e.target.name === "link") $('[data-action="fetch-link"]', dlgClip).click();
+  else if (e.target.name === "gifq") $('[data-action="search-gif"]', dlgClip).click();
+});
+formClip.title.addEventListener("input", clipUi);
+formClip.start.addEventListener("change", () => {
+  if (clipMedia?.kind === "video") clipVideo.currentTime = Number(formClip.start.value) || 0;
 });
 clipVideo.addEventListener("loadedmetadata", () => {
-  if (clipVideo.duration > 15.5) toast("Vidéo de plus de 15 s : seules les 15 premières secondes seront montrées");
+  const left = clipVideo.duration - (Number(formClip.start.value) || 0);
+  if (left > 15.5) toast("Seules 15 secondes seront montrées (règle « Commencer à » pour choisir le passage)");
 });
 $('[data-action="send"]', dlgClip).addEventListener("click", async (e) => {
   const btn = e.currentTarget;
@@ -3488,6 +3590,7 @@ $('[data-action="send"]', dlgClip).addEventListener("click", async (e) => {
       soundId: clipMedia.kind === "image" ? formClip.sound.value || null : null,
       title: formClip.title.value,
       to,
+      startS: clipMedia.kind === "video" ? Number(formClip.start.value) || 0 : null,
     });
   } catch (err) {
     return toast(String(err), true);
@@ -3506,6 +3609,8 @@ dlgClip.addEventListener("close", () => {
   clipImg.removeAttribute("src");
   clipMedia = null;
   formClip.title.value = "";
+  formClip.title.placeholder = "Ex. : QUAND KEVIN RATE SON TIR";
+  formClip.start.value = "0";
 });
 invoke("room_status").then((r) => {
   room = r;

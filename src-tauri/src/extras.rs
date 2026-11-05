@@ -647,8 +647,10 @@ pub fn send_to_friend(app: &AppHandle, sound: Sound) -> Result<PlayOutcome, Stri
     state.extras.sent.lock().unwrap().insert(hash, sound.clone());
     let room = state.extras.room.clone();
     let app2 = app.clone();
+    journal::write(&format!("Salon : « {} » envoyé", sound.name));
     tauri::async_runtime::spawn(async move {
         if let Err(e) = room.publish(&msg).await {
+            journal::write(&format!("Salon : envoi impossible ({e})"));
             let _ = app2.emit("room-error", e);
         }
     });
@@ -670,7 +672,11 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
     match inc.msg {
         Msg::Need { from, hash, .. } => {
             // Le pote n'a pas le son : on le lui envoie.
-            let Some(sound) = state.extras.sent.lock().unwrap().get(&hash).cloned() else { return Ok(()) };
+            let Some(sound) = state.extras.sent.lock().unwrap().get(&hash).cloned() else {
+                journal::write("Salon : un pote demande un son inconnu");
+                return Ok(());
+            };
+            journal::write(&format!("Salon : un pote n'a pas « {} », envoi du fichier", sound.name));
             let data = fs::read(&sound.path).map_err(|e| e.to_string())?;
             if data.len() as u64 > room::MAX_ATTACHMENT {
                 let _ = app.emit("room-error", format!("« {} » est trop lourd pour être envoyé (15 Mo au plus)", sound.name));
@@ -681,13 +687,20 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
             state.extras.room.publish_file(&msg, &file, data).await
         }
         Msg::Play { from, name, hash, title, ext, start_ms, end_ms, volume, fx, .. } => {
+            journal::write(&format!(
+                "Salon : « {title} » reçu de {name}{}",
+                if inc.attachment.is_some() { " (avec le fichier)" } else { "" }
+            ));
             if !state.config.lock().unwrap().settings.room_accept {
+                journal::write("Salon : ignoré (« Mes potes peuvent jouer des sons chez moi » est coupé)");
                 return Ok(());
             }
-            // Pas plus d'un son par seconde et demie et par pote.
-            {
+            // Pas plus d'un son par seconde et demie et par pote (sauf le
+            // fichier qu'on vient de lui demander, qui arrive juste après).
+            if inc.attachment.is_none() {
                 let mut last = state.extras.last_from.lock().unwrap();
                 if last.get(&from).is_some_and(|t| t.elapsed() < Duration::from_millis(1500)) {
+                    journal::write("Salon : ignoré (trop rapproché du précédent)");
                     return Ok(());
                 }
                 last.insert(from.clone(), Instant::now());
@@ -704,7 +717,7 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
                 (None, Some(url)) => {
                     let data = room::fetch(url).await?;
                     if share::key_of(&data) != hash {
-                        return Err("fichier reçu abîmé".into());
+                        return Err(format!("fichier reçu abîmé ({} octets)", data.len()));
                     }
                     fs::create_dir_all(cache.parent().unwrap()).map_err(|e| e.to_string())?;
                     trim_cache(cache.parent().unwrap());
@@ -723,10 +736,16 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
             let mut sound = store_like(&path, analysis);
             sound.id = format!("salon-{hash}");
             sound.start_ms = start_ms;
-            // 30 s au plus, jamais en boucle.
-            sound.end_ms = Some(end_ms.unwrap_or(u64::MAX).min(start_ms + 30_000));
+            // 30 s au plus, jamais en boucle. La vraie fin du son, pas « dans
+            // 30 s » : sinon le son passait pour « en cours » 30 s et le
+            // suivant identique l'arrêtait au lieu de le rejouer.
+            let total = sound.analysis.map_or(u64::MAX, |a| a.duration_ms);
+            sound.end_ms = Some(end_ms.unwrap_or(total).min(total).min(start_ms + 30_000));
             sound.volume = volume.clamp(0.0, 2.0);
             sound.fx = fx.sanitized();
+            // Un pote qui renvoie le même son le rejoue depuis le début (on
+            // n'arrête pas celui en cours comme un clic sur un pad).
+            state.audio.stop(&sound.id);
             state.audio.toggle_detached(play_request(&state, &sound));
             let _ = app.emit("room-played", (name, title));
             Ok(())

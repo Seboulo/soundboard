@@ -32,6 +32,11 @@
     .stage { flex: 1; min-height: 0; background: #000; display: grid; place-items: center; }
     .stage { position: relative; }
     .stage img, .stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+    .meme { position: absolute; left: 10px; right: 10px; bottom: 12px; text-align: center; text-transform: uppercase;
+      color: #fff; font: 900 34px/1.05 Impact, "Arial Black", "Segoe UI Black", sans-serif; letter-spacing: .5px;
+      -webkit-text-stroke: 2px #000; paint-order: stroke fill; text-shadow: 0 2px 8px rgba(0,0,0,.6);
+      overflow-wrap: anywhere; pointer-events: none; animation: pop .25s ease-out; }
+    .meme:empty { display: none; }
   </style>
 </head>
 <body>
@@ -44,8 +49,8 @@
     <div class="bar"></div>
   </div>
   <div id="show" class="card" hidden>
-    <div class="head"><span class="emo" aria-hidden="true">🎬</span><span class="who"><b data-from></b> <small data-title></small></span><button type="button" class="x" data-action="close" title="Fermer">✕</button></div>
-    <div class="stage"><img alt=""><video playsinline></video></div>
+    <div class="head"><span class="emo" aria-hidden="true">🎬</span><span class="who"><b data-from></b> <small>t'envoie ça</small></span><button type="button" class="x" data-action="close" title="Fermer">✕</button></div>
+    <div class="stage"><img alt=""><video playsinline></video><div class="meme"></div></div>
     <div class="bar"></div>
   </div>
   <script src="clip.js"></script>

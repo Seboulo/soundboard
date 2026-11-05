@@ -178,6 +178,62 @@ pub fn download_audio(exe: &Path, url: &str, work_dir: &Path) -> Result<(Vec<u8>
     Ok((data, if title.is_empty() { "Son YouTube".into() } else { title }))
 }
 
+/// Vrai pour un lien web qu'on peut donner à yt-dlp (YouTube, TikTok, X…).
+pub fn is_web_link(url: &str) -> bool {
+    reqwest::Url::parse(url.trim()).is_ok_and(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
+}
+
+/// Télécharge une petite vidéo (image + son, 8 Mo au plus) pour un extrait.
+/// Renvoie le chemin du fichier (mp4 ou webm) et le titre.
+pub fn download_video(exe: &Path, url: &str, work_dir: &Path) -> Result<(PathBuf, String), String> {
+    if !is_web_link(url) {
+        return Err("colle un lien qui commence par https://".into());
+    }
+    let _ = fs::remove_dir_all(work_dir);
+    fs::create_dir_all(work_dir).map_err(|e| e.to_string())?;
+    let output = command(exe)
+        .args([
+            "--no-playlist",
+            "--no-warnings",
+            "--quiet",
+            "--no-simulate",
+            "--print",
+            "title",
+            // Un seul fichier avec image et son (pas besoin de ffmpeg), le
+            // plus léger qui reste net.
+            "-f",
+            "b[ext=mp4][filesize<8M][height<=720]/b[ext=mp4][filesize_approx<8M][height<=720]/b[ext=mp4][height<=480]/b[ext=webm][height<=480]/18/b",
+            "--max-filesize",
+            "8M",
+            "-o",
+        ])
+        .arg(work_dir.join("video.%(ext)s"))
+        .arg("--")
+        .arg(url.trim())
+        .output()
+        .map_err(|e| format!("yt-dlp n'a pas pu démarrer : {e}"))?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        let line = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("erreur inconnue");
+        let line = line.trim().trim_start_matches("ERROR: ");
+        if line.contains("Unable to download") || line.contains("connect") {
+            return Err("vidéo injoignable, vérifie le lien et ta connexion".into());
+        }
+        if line.contains("Unsupported URL") {
+            return Err("ce site n'est pas pris en charge".into());
+        }
+        let short: String = line.chars().take(200).collect();
+        return Err(format!("vidéo : {short}"));
+    }
+    let title = String::from_utf8_lossy(&output.stdout).lines().next().unwrap_or("").trim().to_string();
+    let file = fs::read_dir(work_dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .find(|p| p.extension().is_some_and(|e| e == "mp4" || e == "webm"))
+        .ok_or("vidéo trop lourde (8 Mo au plus) : prends une vidéo plus courte")?;
+    Ok((file, title.chars().take(60).collect()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,6 +248,9 @@ mod tests {
         assert!(!is_youtube("https://youtube.com.evil.com/watch"));
         assert!(!is_youtube("file:///C:/youtube.com"));
         assert!(!is_youtube("--exec calc"));
+        assert!(is_web_link("https://www.tiktok.com/@a/video/1"));
+        assert!(!is_web_link("--exec calc"));
+        assert!(!is_web_link("file:///C:/x.mp4"));
     }
 
     #[test]

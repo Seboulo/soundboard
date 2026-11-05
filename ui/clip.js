@@ -44,7 +44,8 @@ function close() {
 
 function fill(root, c) {
   root.querySelector("[data-from]").textContent = c.from;
-  root.querySelector("[data-title]").textContent = c.title ? `« ${c.title} »` : "";
+  const t = root.querySelector("[data-title]");
+  if (t) t.textContent = c.title ? `« ${c.title} »` : "";
 }
 
 function ask(c) {
@@ -58,6 +59,7 @@ function play(c) {
   clearTimeout(timer);
   $("#ask").hidden = true;
   fill($("#show"), c);
+  $(".meme").textContent = c.title || "";
   $("#show").hidden = false;
   const vol = Math.min(1, Math.max(0, c.volume ?? 1));
   let ms = IMAGE_MS;
@@ -66,11 +68,14 @@ function play(c) {
     video.hidden = false;
     video.volume = vol;
     video.src = convertFileSrc(c.media);
+    const from = (c.start_ms || 0) / 1000;
+    if (from) video.currentTime = from;
     video.onended = close;
     video.onerror = close;
     video.onloadedmetadata = () => {
       if (current !== c) return;
-      const d = Math.min(MAX_MS, (video.duration || 15) * 1000);
+      if (from && from < video.duration) video.currentTime = from;
+      const d = Math.max(2000, Math.min(MAX_MS, ((video.duration || 15) - (from < video.duration ? from : 0)) * 1000));
       bar($("#show .bar"), d);
       clearTimeout(timer);
       timer = setTimeout(close, d + 300);

@@ -19,9 +19,10 @@ pub const MAX_MEDIA: u64 = 8 * 1024 * 1024;
 const MAGIC: &[u8] = b"SBCLIP1\n";
 const IMAGES: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
 const VIDEOS: &[&str] = &["mp4", "webm"];
-const WINDOW: &str = "clip";
-/// Un extrait par pote toutes les 8 secondes au plus.
-const SPAM_GAP: Duration = Duration::from_secs(8);
+/// Les fenêtres d'extrait s'appellent clip-1, clip-2… (une neuve par extrait).
+const WINDOW_PREFIX: &str = "clip-";
+/// Un extrait par pote toutes les 4 secondes au plus.
+const SPAM_GAP: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -54,6 +55,9 @@ pub struct ClipShow {
 pub struct Clips {
     pending: Mutex<Option<ClipShow>>,
     last_from: Mutex<HashMap<String, Instant>>,
+    /// Fenêtre affichée en ce moment.
+    window: Mutex<Option<String>>,
+    counter: AtomicU64,
 }
 
 fn kind_of(ext: &str) -> Option<&'static str> {
@@ -119,6 +123,8 @@ pub struct ClipPick {
     path: String,
     kind: &'static str,
     size: u64,
+    /// Titre de la vidéo (lien), pour proposer un texte.
+    title: String,
 }
 
 /// Image, GIF ou vidéo choisie sur le PC, copiée dans le dossier de l'app
@@ -133,18 +139,70 @@ pub async fn pick_clip_media(app: AppHandle) -> Result<Option<ClipPick>, String>
         .blocking_pick_file();
     let Some(path) = file.and_then(|f| f.into_path().ok()) else { return Ok(None) };
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    let kind = kind_of(&ext).ok_or("choisis une image (PNG, JPG, GIF, WebP) ou une vidéo (MP4, WebM)")?;
+    kind_of(&ext).ok_or("choisis une image (PNG, JPG, GIF, WebP) ou une vidéo (MP4, WebM)")?;
     let size = fs::metadata(&path).map_err(|e| e.to_string())?.len();
     if size > MAX_MEDIA {
         return Err(format!("fichier trop lourd ({:.1} Mo) : 8 Mo au plus", size as f64 / 1048576.0));
+    }
+    let data = fs::read(&path).map_err(|e| e.to_string())?;
+    keep_for_sending(&app, &data, &ext, String::new()).map(Some)
+}
+
+/// Range l'image ou la vidéo choisie dans le dossier de l'app (pour l'aperçu
+/// et l'envoi).
+fn keep_for_sending(app: &AppHandle, data: &[u8], ext: &str, title: String) -> Result<ClipPick, String> {
+    let kind = kind_of(ext).ok_or("format non pris en charge")?;
+    if data.len() as u64 > MAX_MEDIA {
+        return Err(format!("fichier trop lourd ({:.1} Mo) : 8 Mo au plus", data.len() as f64 / 1048576.0));
     }
     let state = app.state::<AppState>();
     let dir = clips_dir(&state).join("envoi");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     trim_dir(&dir, 10);
     let copy = dir.join(format!("{}.{ext}", uuid::Uuid::new_v4().simple()));
-    fs::copy(&path, &copy).map_err(|e| e.to_string())?;
-    Ok(Some(ClipPick { path: copy.to_string_lossy().into_owned(), kind, size }))
+    fs::write(&copy, data).map_err(|e| e.to_string())?;
+    Ok(ClipPick { path: copy.to_string_lossy().into_owned(), kind, size: data.len() as u64, title })
+}
+
+/// GIF choisi dans la recherche GIPHY.
+#[tauri::command]
+pub async fn clip_from_gif(app: AppHandle, url: String) -> Result<ClipPick, String> {
+    let (data, ext) = giphy::download(&url).await?;
+    keep_for_sending(&app, &data, ext, String::new())
+}
+
+/// Vidéo d'un lien (YouTube, TikTok, X, Reddit…), avec yt-dlp.
+#[tauri::command]
+pub async fn clip_from_link(app: AppHandle, url: String) -> Result<ClipPick, String> {
+    let state = app.state::<AppState>();
+    if !youtube::is_web_link(&url) {
+        return Err("colle un lien qui commence par https://".into());
+    }
+    if state.youtube_busy.swap(true, Ordering::SeqCst) {
+        return Err("un téléchargement de vidéo est déjà en cours".into());
+    }
+    let res = async {
+        let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
+        let status = |msg: &str| {
+            let _ = app.emit("youtube-status", msg);
+        };
+        let exe = youtube::ensure(&data_dir.join("tools"), status).await?;
+        let work_dir = data_dir.join("extrait-tmp");
+        let wd = work_dir.clone();
+        let (file, title) = tauri::async_runtime::spawn_blocking(move || {
+            youtube::update_if_stale(&exe);
+            youtube::download_video(&exe, &url, &wd)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_lowercase();
+        let data = fs::read(&file).map_err(|e| e.to_string());
+        let _ = fs::remove_dir_all(&work_dir);
+        keep_for_sending(&app, &data?, &ext, title)
+    }
+    .await;
+    state.youtube_busy.store(false, Ordering::SeqCst);
+    res
 }
 
 /// Envoie l'extrait à un pote (ou à tout le salon si `to` est vide).
@@ -155,6 +213,7 @@ pub async fn send_clip(
     sound_id: Option<String>,
     title: String,
     to: Option<String>,
+    start_s: Option<f64>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let media = PathBuf::from(media);
@@ -183,7 +242,11 @@ pub async fn send_clip(
             };
             (data, h)
         }
-        None => (Vec::new(), Header { volume: 1.0, ..Default::default() }),
+        None => {
+            // Vidéo : elle peut commencer plus loin que le début.
+            let start_ms = (start_s.unwrap_or(0.0).clamp(0.0, 36_000.0) * 1000.0) as u64;
+            (Vec::new(), Header { volume: 1.0, start_ms, ..Default::default() })
+        }
     };
     let header = Header { media_ext, media_len: media_data.len() as u64, ..header };
     let data = pack(&header, &media_data, &sound_data);
@@ -279,12 +342,16 @@ fn show_window(app: &AppHandle, show: ClipShow) -> Result<(), String> {
     let state = app.state::<AppState>();
     let ask = show.ask;
     *state.clips.pending.lock().unwrap() = Some(show.clone());
-    if let Some(w) = app.get_webview_window(WINDOW) {
+    let current = state.clips.window.lock().unwrap().clone();
+    if let Some(w) = current.as_deref().and_then(|l| app.get_webview_window(l)) {
         place(app, &w, ask);
-        return app.emit_to(WINDOW, "clip-show", &show).map_err(|e| e.to_string());
+        return app.emit_to(w.label(), "clip-show", &show).map_err(|e| e.to_string());
     }
+    // Une fenêtre neuve à chaque fois : on ne réutilise jamais une fenêtre
+    // en train de se fermer.
+    let label = format!("{WINDOW_PREFIX}{}", state.clips.counter.fetch_add(1, Ordering::SeqCst) + 1);
     let (width, height) = window_size(ask);
-    let mut builder = WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::App("clip.html".into()))
+    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("clip.html".into()))
         .title("Soundboard — extrait")
         .inner_size(width, height)
         .decorations(false)
@@ -302,7 +369,9 @@ fn show_window(app: &AppHandle, show: ClipShow) -> Result<(), String> {
         builder = builder.position(x, y);
     }
     // La fenêtre se charge puis lit l'extrait en attente (clip_pending).
-    builder.build().map(|_| ()).map_err(|e| e.to_string())
+    builder.build().map_err(|e| e.to_string())?;
+    *state.clips.window.lock().unwrap() = Some(label);
+    Ok(())
 }
 
 /// L'extrait en attente (lu par la fenêtre quand elle s'ouvre).
@@ -314,28 +383,32 @@ pub fn clip_pending(state: State<AppState>) -> Option<ClipShow> {
 /// « Afficher » : la carte devient l'extrait.
 #[tauri::command]
 pub fn clip_accept(app: AppHandle) {
-    if let Some(w) = app.get_webview_window(WINDOW) {
+    let label = app.state::<AppState>().clips.window.lock().unwrap().clone();
+    if let Some(w) = label.and_then(|l| app.get_webview_window(&l)) {
         place(&app, &w, false);
     }
 }
 
 /// Ferme l'extrait (fin, refus, ✕ ou « Tout arrêter »).
 #[tauri::command]
-pub fn clip_close(app: AppHandle) {
+pub async fn clip_close(app: AppHandle) {
     close(&app);
 }
 
 pub fn close(app: &AppHandle) {
     if let Some(state) = app.try_state::<AppState>() {
         state.clips.pending.lock().unwrap().take();
+        state.clips.window.lock().unwrap().take();
     }
-    if let Some(w) = app.get_webview_window(WINDOW) {
-        let _ = w.destroy();
+    for (label, w) in app.webview_windows() {
+        if is_clip_window(&label) {
+            let _ = w.destroy();
+        }
     }
 }
 
 pub fn is_clip_window(label: &str) -> bool {
-    label == WINDOW
+    label.starts_with(WINDOW_PREFIX)
 }
 
 #[cfg(test)]

@@ -603,13 +603,35 @@
   <dialog id="dlg-clip">
     <form class="form" method="dialog">
       <h2>🎬 Envoyer un extrait</h2>
-      <button type="button" class="clip-drop" data-action="pick">
-        <span class="clip-empty"><span class="emo" aria-hidden="true">🖼️</span><b>Choisir une image, un GIF ou une vidéo</b><small>PNG, JPG, GIF, WebP, MP4 ou WebM · 8 Mo au plus</small></span>
-        <img class="clip-preview" alt="" hidden>
-        <video class="clip-preview" muted loop playsinline hidden></video>
-      </button>
-      <label class="set-field">Titre <small>(facultatif)</small>
-        <input name="title" maxlength="60" autocomplete="off" placeholder="Ex. : la tête de Kevin">
+      <div class="segmented" id="clip-source">
+        <button type="button" data-source="file" class="active">📁 Fichier <small>image, GIF, vidéo</small></button>
+        <button type="button" data-source="link">🔗 Lien vidéo <small>YouTube, TikTok…</small></button>
+        <button type="button" data-source="gif">🎞️ GIF <small>recherche GIPHY</small></button>
+      </div>
+      <div class="search-row" data-pane="link" hidden>
+        <input name="link" type="url" placeholder="Colle un lien YouTube, TikTok, X, Reddit…" autocomplete="off">
+        <button type="button" class="primary" data-action="fetch-link">Récupérer</button>
+      </div>
+      <div data-pane="gif" hidden>
+        <div class="search-row">
+          <input name="gifq" type="search" placeholder="bruh, facepalm, applaudir…" autocomplete="off">
+          <button type="button" class="primary" data-action="search-gif">Chercher</button>
+        </div>
+        <div class="clip-gifs" role="listbox" aria-label="GIF trouvés"></div>
+      </div>
+      <div class="clip-frame">
+        <button type="button" class="clip-drop" data-action="pick">
+          <span class="clip-empty"><span class="emo" aria-hidden="true">🖼️</span><b>Choisir une image, un GIF ou une vidéo</b><small>PNG, JPG, GIF, WebP, MP4 ou WebM · 8 Mo au plus</small></span>
+          <img class="clip-preview" alt="" hidden>
+          <video class="clip-preview" muted loop playsinline hidden></video>
+        </button>
+        <div class="meme-text" aria-hidden="true"></div>
+      </div>
+      <label class="set-field">Texte en gros sur l'extrait <small>(facultatif)</small>
+        <input name="title" maxlength="60" autocomplete="off" placeholder="Ex. : QUAND KEVIN RATE SON TIR">
+      </label>
+      <label class="set-field" data-for-video hidden>Commencer à (secondes)
+        <input name="start" type="number" min="0" step="1" value="0">
       </label>
       <label class="set-field" data-for-image>Son avec l'image
         <select name="sound"></select>

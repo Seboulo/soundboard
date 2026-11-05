@@ -2431,6 +2431,8 @@ pub fn run() {
             extras::set_room_target,
             extras::new_room_code,
             clip::pick_clip_media,
+            clip::clip_from_gif,
+            clip::clip_from_link,
             clip::send_clip,
             clip::clip_pending,
             clip::clip_accept,
