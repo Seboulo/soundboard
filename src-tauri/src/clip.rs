@@ -78,6 +78,17 @@ pub struct Recent {
     /// Date (secondes depuis 1970).
     #[serde(default)]
     pub at: u64,
+    /// Lien d'origine (vidéo d'un site) : renvoyée par lien, sans fichier.
+    #[serde(default)]
+    pub link: Option<String>,
+}
+
+/// Vidéo reçue par son lien : l'appli la télécharge elle-même.
+pub struct LinkClip {
+    pub url: String,
+    pub start_ms: u64,
+    pub end_ms: Option<u64>,
+    pub volume: f32,
 }
 
 /// Extraits gardés dans l'historique (envoyés, et reçus).
@@ -114,6 +125,14 @@ fn load_recents(state: &AppState) -> Vec<Recent> {
     load_list(&recents_file(state))
 }
 
+/// Lien d'où vient une vidéo préparée (cette session, ou l'historique).
+fn link_for(state: &AppState, path: &str) -> Option<String> {
+    if let Some(l) = state.clips.links.lock().unwrap().get(path) {
+        return Some(l.clone());
+    }
+    load_recents(state).into_iter().find(|r| r.path == path).and_then(|r| r.link)
+}
+
 fn add_recent(state: &AppState, recent: Recent) {
     add_to_list(&recents_file(state), recent);
 }
@@ -140,6 +159,8 @@ pub struct Clips {
     /// Le son de l'extrait passe par le moteur audio (dans le casque).
     audio_on: AtomicBool,
     audio_discord: AtomicBool,
+    /// Fichier préparé → lien d'où il vient.
+    links: Mutex<HashMap<String, String>>,
 }
 
 fn kind_of(ext: &str) -> Option<&'static str> {
@@ -344,6 +365,7 @@ pub async fn clip_from_link(app: AppHandle, url: String) -> Result<ClipPick, Str
         let work_dir = data_dir.join("extrait-tmp");
         let wd = work_dir.clone();
         let app2 = app.clone();
+        let source = url.clone();
         let got = tauri::async_runtime::spawn_blocking(move || {
             let res = youtube::download_video(&exe, &url, &wd, |p| {
                 let _ = app2.emit("clip-progress", p.round() as u32);
@@ -366,7 +388,9 @@ pub async fn clip_from_link(app: AppHandle, url: String) -> Result<ClipPick, Str
         let files = read();
         let _ = fs::remove_dir_all(&work_dir);
         let (video, audio) = files?;
-        keep_for_sending(&app, &video, &ext, got.title, audio)
+        let pick = keep_for_sending(&app, &video, &ext, got.title, audio)?;
+        state.clips.links.lock().unwrap().insert(pick.path.clone(), source);
+        Ok(pick)
     }
     .await;
     state.youtube_busy.store(false, Ordering::SeqCst);
@@ -440,6 +464,52 @@ pub async fn send_clip(
     }
     let media_ext = media.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     kind_of(&media_ext).ok_or("format non pris en charge")?;
+    let path_key = media.to_string_lossy().into_owned();
+    let link = (kind_of(&media_ext) == Some("video") && sound_id.as_deref().unwrap_or("").is_empty())
+        .then(|| link_for(&state, &path_key))
+        .flatten()
+        .filter(|l| youtube::is_shareable_link(l));
+    if let Some(link) = link {
+        // Vidéo d'un site : seul le lien et le passage partent.
+        let room = &state.extras.room;
+        let with_me = to.as_deref() == Some(ME_TOO);
+        let to = to.filter(|t| !t.is_empty() && t != ME_TOO).unwrap_or_default();
+        if !to.is_empty() && !room.status().members.iter().any(|m| m.id == to) {
+            return Err("ce pote n'est plus en ligne".into());
+        }
+        let title: String = title.trim().chars().take(60).collect();
+        let start_ms = (start_s.unwrap_or(0.0).clamp(0.0, 36_000.0) * 1000.0) as u64;
+        let msg = Msg::Clip {
+            from: room.my_id(),
+            name: room.my_name(),
+            to,
+            title: title.clone(),
+            link: link.clone(),
+            start_ms,
+            end_ms: video_end(start_ms, end_s),
+            volume: Some(volume.unwrap_or(1.0).clamp(0.0, 2.0)),
+        };
+        if with_me {
+            room.expect_echo();
+        }
+        room.publish(&msg).await?;
+        journal::write("Extrait : lien envoyé (le pote télécharge la vidéo)");
+        *state.extras.last_sent.lock().unwrap() = Some(Instant::now());
+        add_recent(&state, Recent {
+            path: path_key,
+            kind: "video".into(),
+            title,
+            start_s,
+            end_s,
+            volume,
+            sound_id: None,
+            from: None,
+            sound: None,
+            at: now_s(),
+            link: Some(link),
+        });
+        return Ok(());
+    }
     let media_data = fs::read(&media).map_err(|_| "image ou vidéo introuvable, choisis-la à nouveau".to_string())?;
     let sound = match sound_id.filter(|s| !s.is_empty()) {
         Some(id) => Some(find_sound(&state, &id)?),
@@ -492,7 +562,7 @@ pub async fn send_clip(
     let title: String = title.trim().chars().take(60).collect();
     let msg_title = title.clone();
     let to_all = to.is_empty();
-    let msg = Msg::Clip { from: room.my_id(), name: room.my_name(), to, title };
+    let msg = Msg::Clip { from: room.my_id(), name: room.my_name(), to, title, link: String::new(), start_ms: 0, end_ms: None, volume: None };
     if with_me {
         room.expect_echo();
     }
@@ -517,12 +587,54 @@ pub async fn send_clip(
         from: None,
         sound: None,
         at: now_s(),
+        link: None,
     });
     Ok(())
 }
 
+/// Télécharge la vidéo d'un extrait reçu par lien, rangée dans `dir` sous
+/// `<id>.<ext>` (et `<id>-son.<ext>` quand le son est à part).
+async fn fetch_link(app: &AppHandle, url: &str, dir: &Path, id: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+    if !youtube::is_shareable_link(url) {
+        return Err("lien non accepté".into());
+    }
+    let state = app.state::<AppState>();
+    let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
+    let exe = youtube::ensure(&data_dir.join("tools"), |_| {}).await?;
+    let work = data_dir.join(format!("extrait-recu-{id}"));
+    let (url, dir, id) = (url.to_string(), dir.to_path_buf(), id.to_string());
+    tauri::async_runtime::spawn_blocking(move || {
+        let res = youtube::download_video(&exe, &url, &work, |_| {}).and_then(|got| {
+            let ext = |p: &Path| p.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_lowercase();
+            let media = dir.join(format!("{id}.{}", ext(&got.video)));
+            fs::copy(&got.video, &media).map_err(|e| e.to_string())?;
+            let sound = match &got.audio {
+                Some(a) => {
+                    let p = dir.join(format!("{id}-son.{}", ext(a)));
+                    fs::copy(a, &p).map_err(|e| e.to_string())?;
+                    Some(p)
+                }
+                None => None,
+            };
+            Ok((media, sound))
+        });
+        let _ = fs::remove_dir_all(&work);
+        res
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Un extrait arrive d'un pote.
-pub async fn receive(app: &AppHandle, from: String, name: String, title: String, url: Option<String>, direct: bool) -> Result<(), String> {
+pub async fn receive(
+    app: &AppHandle,
+    from: String,
+    name: String,
+    title: String,
+    url: Option<String>,
+    direct: bool,
+    link: Option<LinkClip>,
+) -> Result<(), String> {
     let state = app.state::<AppState>();
     let mode = state.config.lock().unwrap().settings.clips_mode.clone();
     if mode == "off" {
@@ -532,7 +644,9 @@ pub async fn receive(app: &AppHandle, from: String, name: String, title: String,
         journal::write(&format!("Extrait de {name} ignoré (bloqué)"));
         return Ok(());
     }
-    let Some(url) = url else { return Ok(()) };
+    if url.is_none() && link.is_none() {
+        return Ok(());
+    }
     {
         let mut last = state.clips.last_from.lock().unwrap();
         if last.get(&from).is_some_and(|t| t.elapsed() < SPAM_GAP) {
@@ -540,28 +654,45 @@ pub async fn receive(app: &AppHandle, from: String, name: String, title: String,
         }
         last.insert(from.clone(), Instant::now());
     }
-    let got = Instant::now();
-    let data = match room::fetch(&url).await {
-        Ok(d) => d,
-        Err(e) => {
-            journal::write(&format!("Extrait de {name} : réception ratée après {} s ({e})", got.elapsed().as_secs()));
-            return Err(e);
-        }
-    };
-    journal::write(&format!("Extrait de {name} reçu ({:.1} Mo en {} s)", data.len() as f64 / 1_048_576.0, got.elapsed().as_secs()));
-    let (h, media, sound) = unpack(&data)?;
     let dir = clips_dir(&state).join("recus");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     trim_dir(&dir, 40);
     let id = uuid::Uuid::new_v4().simple().to_string();
-    let media_path = dir.join(format!("{id}.{}", h.media_ext));
-    fs::write(&media_path, media).map_err(|e| e.to_string())?;
-    let sound_path = if sound.is_empty() {
-        None
-    } else {
-        let p = dir.join(format!("{id}-son.{}", h.sound_ext));
-        fs::write(&p, sound).map_err(|e| e.to_string())?;
-        Some(p.to_string_lossy().into_owned())
+    let got = Instant::now();
+    let (kind, media_path, sound_path, start_ms, end_ms, volume) = match (link, url) {
+        (Some(l), _) => {
+            let (media, sound) = match fetch_link(app, &l.url, &dir, &id).await {
+                Ok(f) => f,
+                Err(e) => {
+                    journal::write(&format!("Extrait de {name} : vidéo du lien pas récupérée ({e})"));
+                    return Err(e);
+                }
+            };
+            journal::write(&format!("Extrait de {name} : vidéo téléchargée par lien en {} s", got.elapsed().as_secs()));
+            ("video", media, sound, l.start_ms, l.end_ms, l.volume)
+        }
+        (None, Some(url)) => {
+            let data = match room::fetch(&url).await {
+                Ok(d) => d,
+                Err(e) => {
+                    journal::write(&format!("Extrait de {name} : réception ratée après {} s ({e})", got.elapsed().as_secs()));
+                    return Err(e);
+                }
+            };
+            journal::write(&format!("Extrait de {name} reçu ({:.1} Mo en {} s)", data.len() as f64 / 1_048_576.0, got.elapsed().as_secs()));
+            let (h, media, sound) = unpack(&data)?;
+            let media_path = dir.join(format!("{id}.{}", h.media_ext));
+            fs::write(&media_path, media).map_err(|e| e.to_string())?;
+            let sound_path = if sound.is_empty() {
+                None
+            } else {
+                let p = dir.join(format!("{id}-son.{}", h.sound_ext));
+                fs::write(&p, sound).map_err(|e| e.to_string())?;
+                Some(p)
+            };
+            (kind_of(&h.media_ext).unwrap_or("image"), media_path, sound_path, h.start_ms, h.end_ms, h.volume)
+        }
+        (None, None) => return Ok(()),
     };
     let name: String = name.chars().take(32).collect();
     let title: String = title.chars().take(60).collect();
@@ -569,12 +700,12 @@ pub async fn receive(app: &AppHandle, from: String, name: String, title: String,
         from_id: from.clone(),
         from: name,
         title,
-        kind: kind_of(&h.media_ext).unwrap_or("image"),
+        kind,
         media: media_path.to_string_lossy().into_owned(),
-        sound: sound_path,
-        start_ms: h.start_ms,
-        end_ms: h.end_ms,
-        volume: h.volume.clamp(0.0, 2.0),
+        sound: sound_path.map(|p| p.to_string_lossy().into_owned()),
+        start_ms,
+        end_ms,
+        volume: volume.clamp(0.0, 2.0),
         ask: mode != "auto",
         preview: false,
         direct,
@@ -590,6 +721,7 @@ pub async fn receive(app: &AppHandle, from: String, name: String, title: String,
         from: Some(show.from.clone()),
         sound: show.sound.clone(),
         at: now_s(),
+        link: None,
     });
     let _ = app.emit("clip-received", (&show.from, &show.title));
     show_window(app, show)

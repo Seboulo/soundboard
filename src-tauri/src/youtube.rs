@@ -229,6 +229,19 @@ pub fn download_audio(exe: &Path, url: &str, work_dir: &Path) -> Result<(Vec<u8>
 }
 
 /// Vrai pour un lien web qu'on peut donner à yt-dlp (YouTube, TikTok, X…).
+/// Sites dont un extrait peut partir par lien seul : l'appli du pote ne
+/// télécharge que depuis ces sites connus (jamais une adresse de son réseau).
+pub fn is_shareable_link(url: &str) -> bool {
+    const SITES: [&str; 12] = [
+        "youtube.com", "youtu.be", "tiktok.com", "x.com", "twitter.com", "reddit.com",
+        "redd.it", "instagram.com", "twitch.tv", "streamable.com", "dailymotion.com", "vimeo.com",
+    ];
+    reqwest::Url::parse(url.trim()).is_ok_and(|u| {
+        u.scheme() == "https"
+            && u.host_str().is_some_and(|h| SITES.iter().any(|s| h == *s || h.ends_with(&format!(".{s}"))))
+    })
+}
+
 pub fn is_web_link(url: &str) -> bool {
     reqwest::Url::parse(url.trim()).is_ok_and(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
 }
@@ -425,6 +438,11 @@ mod tests {
         assert!(is_web_link("https://www.tiktok.com/@a/video/1"));
         assert!(!is_web_link("--exec calc"));
         assert!(!is_web_link("file:///C:/x.mp4"));
+        assert!(is_shareable_link("https://www.youtube.com/watch?v=x"));
+        assert!(is_shareable_link("https://vm.tiktok.com/abc"));
+        assert!(!is_shareable_link("https://192.168.1.1/video.mp4"));
+        assert!(!is_shareable_link("https://evil-youtube.com/x"));
+        assert!(!is_shareable_link("http://youtube.com/x"));
     }
 
     #[test]

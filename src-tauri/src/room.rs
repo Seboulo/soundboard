@@ -53,7 +53,24 @@ pub enum Msg {
     /// « Arrête ce que je t'ai envoyé » (son et extrait) ; `to` vide : tout le salon.
     Stop { from: String, #[serde(default)] to: String },
     /// Extrait à afficher sur l'écran de `to` (vide : tout le salon), en pièce jointe.
-    Clip { from: String, name: String, #[serde(default)] to: String, #[serde(default)] title: String },
+    Clip {
+        from: String,
+        name: String,
+        #[serde(default)]
+        to: String,
+        #[serde(default)]
+        title: String,
+        /// Vidéo d'un site (YouTube…) : seul le lien part, l'appli du pote la
+        /// télécharge elle-même (pas de fichier, pas de limite du relais).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        link: String,
+        #[serde(default)]
+        start_ms: u64,
+        #[serde(default)]
+        end_ms: Option<u64>,
+        #[serde(default)]
+        volume: Option<f32>,
+    },
 }
 
 fn one() -> f32 {
