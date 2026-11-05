@@ -769,7 +769,10 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
             journal::write("Salon : un pote a arrêté son envoi");
             Ok(())
         }
-        Msg::Clip { from, name, title, .. } => clip::receive(app, from, name, title, inc.attachment).await,
+        Msg::Clip { from, name, title, to } => {
+            let direct = !to.is_empty() && to == state.extras.room.my_id();
+            clip::receive(app, from, name, title, inc.attachment, direct).await
+        }
         _ => Ok(()),
     }
 }

@@ -54,6 +54,10 @@ pub struct ClipShow {
     pub ask: bool,
     /// Aperçu de son propre extrait (pas de « Bloquer » ni « Garder »).
     pub preview: bool,
+    /// Envoyé à moi seul (pas à tout le salon) : son son part aussi dans
+    /// Discord. Envoyé à tous, chacun l'entend chez soi : s'il partait dans
+    /// Discord chez chacun, on l'entendrait plusieurs fois.
+    pub direct: bool,
 }
 
 /// Un extrait envoyé récemment (pour le renvoyer en un clic).
@@ -135,6 +139,7 @@ pub struct Clips {
     counter: AtomicU64,
     /// Le son de l'extrait passe par le moteur audio (dans le casque).
     audio_on: AtomicBool,
+    audio_discord: AtomicBool,
 }
 
 fn kind_of(ext: &str) -> Option<&'static str> {
@@ -405,7 +410,7 @@ pub async fn clip_listen(
         }
         None => return Err("pas de son à écouter".into()),
     };
-    play_audio(app.clone(), path, start_ms, end_ms, vol).await
+    play_audio(app.clone(), path, start_ms, end_ms, vol, false).await
 }
 
 /// « Envoyer à » : tout le salon, et soi-même aussi pour tester.
@@ -505,7 +510,7 @@ pub async fn send_clip(
 }
 
 /// Un extrait arrive d'un pote.
-pub async fn receive(app: &AppHandle, from: String, name: String, title: String, url: Option<String>) -> Result<(), String> {
+pub async fn receive(app: &AppHandle, from: String, name: String, title: String, url: Option<String>, direct: bool) -> Result<(), String> {
     let state = app.state::<AppState>();
     let mode = state.config.lock().unwrap().settings.clips_mode.clone();
     if mode == "off" {
@@ -552,6 +557,7 @@ pub async fn receive(app: &AppHandle, from: String, name: String, title: String,
         volume: h.volume.clamp(0.0, 2.0),
         ask: mode != "auto",
         preview: false,
+        direct,
     };
     add_to_list(&received_file(&state), Recent {
         path: show.media.clone(),
@@ -646,10 +652,16 @@ pub async fn clip_audio(app: AppHandle, path: String, start_ms: u64, end_ms: Opt
     if path.parent() != Some(dir.join("recus").as_path()) && path.parent() != Some(dir.join("envoi").as_path()) {
         return Err("fichier non autorisé".into());
     }
-    play_audio(app.clone(), path, start_ms, end_ms, volume).await
+    // Extrait reçu d'un pote : son son part aussi dans Discord, comme un son
+    // du salon, pour que tout le monde l'entende. L'aperçu reste au casque.
+    let discord = state.clips.pending.lock().unwrap().as_ref().is_some_and(|c| !c.preview && c.direct);
+    play_audio(app.clone(), path, start_ms, end_ms, volume, discord).await
 }
 
-async fn play_audio(app: AppHandle, path: PathBuf, start_ms: u64, end_ms: Option<u64>, volume: f32) -> Result<(), String> {
+/// Son d'un extrait reçu, joué dans le casque et dans Discord.
+const CLIP_SOUND_ID: &str = "extrait-recu";
+
+async fn play_audio(app: AppHandle, path: PathBuf, start_ms: u64, end_ms: Option<u64>, volume: f32, discord: bool) -> Result<(), String> {
     let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app2.state::<AppState>();
@@ -664,6 +676,13 @@ async fn play_audio(app: AppHandle, path: PathBuf, start_ms: u64, end_ms: Option
         sound.start_ms = start_ms;
         sound.end_ms = Some(end.min(analysis.duration_ms));
         sound.volume = volume.clamp(0.0, 2.0);
+        if discord {
+            sound.id = CLIP_SOUND_ID.into();
+            state.audio.stop(CLIP_SOUND_ID);
+            state.audio.toggle_detached(play_request(&state, &sound));
+            state.clips.audio_discord.store(true, Ordering::SeqCst);
+            return Ok(());
+        }
         let req = play_request(&state, &sound);
         state.audio.preview(req)?;
         state.clips.audio_on.store(true, Ordering::SeqCst);
@@ -724,6 +743,7 @@ pub async fn clip_preview(
         from_id: String::new(),
         ask: false,
         preview: true,
+        direct: false,
     };
     show_window(&app, show)
 }
@@ -801,6 +821,9 @@ pub fn close(app: &AppHandle) {
         state.clips.window.lock().unwrap().take();
         if state.clips.audio_on.swap(false, Ordering::SeqCst) {
             state.audio.stop_preview();
+        }
+        if state.clips.audio_discord.swap(false, Ordering::SeqCst) {
+            state.audio.stop(CLIP_SOUND_ID);
         }
     }
     for (label, w) in app.webview_windows() {
