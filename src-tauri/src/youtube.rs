@@ -291,15 +291,21 @@ pub fn parse_found(out: &str) -> Vec<Found> {
         .collect()
 }
 
-/// Cherche des vidéos YouTube par mots-clés (sans rien télécharger).
-pub fn search(exe: &Path, query: &str, count: u32) -> Result<Vec<Found>, String> {
+/// Cherche des vidéos YouTube par mots-clés (sans rien télécharger) :
+/// `count` résultats à partir du n° `start` (1 pour la première page).
+pub fn search(exe: &Path, query: &str, start: u32, count: u32) -> Result<Vec<Found>, String> {
     let q: String = query.trim().chars().filter(|c| !c.is_control()).take(100).collect();
     if q.is_empty() {
         return Err("tape quelques mots".into());
     }
+    let start = start.clamp(1, 100);
+    let end = start + count.clamp(1, 24) - 1;
     let output = command(exe)
-        .args(["--flat-playlist", "--no-warnings", "--ignore-errors", "--print", "%(id)s\t%(duration)s\t%(title)s", "--"])
-        .arg(format!("ytsearch{count}:{q}"))
+        .args(["--flat-playlist", "--no-warnings", "--ignore-errors", "--print", "%(id)s\t%(duration)s\t%(title)s"])
+        .arg("-I")
+        .arg(format!("{start}:{end}"))
+        .arg("--")
+        .arg(format!("ytsearch{end}:{q}"))
         .output()
         .map_err(|e| format!("yt-dlp n'a pas pu démarrer : {e}"))?;
     let found = parse_found(&String::from_utf8_lossy(&output.stdout));

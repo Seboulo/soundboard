@@ -22,6 +22,8 @@ pub enum Request {
     Target(Option<String>),
     /// Extraits : chercher des GIF.
     Gifs(String),
+    /// Extraits : chercher des vidéos YouTube (mots-clés, n° du premier résultat).
+    Videos(String, u32),
     /// Extraits : préparer un GIF, une vidéo par lien, ou un fichier envoyé.
     ClipGif(String),
     ClipLink(String),
@@ -126,6 +128,10 @@ pub fn route(method: &Method, url: &str, token: &str) -> Result<Option<Option<Re
         (Method::Post, "/api/target") => {
             Some(Some(Request::Target(param(&params, "id").map(percent_decode).filter(|c| !c.is_empty()))))
         }
+        (Method::Get, "/api/videos") => param(&params, "q").map(|q| {
+            let start = param(&params, "start").and_then(|s| s.parse().ok()).unwrap_or(1);
+            Some(Request::Videos(percent_decode(q), start))
+        }),
         (Method::Get, "/api/gifs") => param(&params, "q").map(|q| Some(Request::Gifs(percent_decode(q)))),
         (Method::Post, "/api/clip/gif") => param(&params, "url").map(|u| Some(Request::ClipGif(percent_decode(u)))),
         (Method::Post, "/api/clip/link") => param(&params, "url").map(|u| Some(Request::ClipLink(percent_decode(u)))),

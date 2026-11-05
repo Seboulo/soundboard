@@ -245,14 +245,14 @@ pub async fn clip_from_gif(app: AppHandle, url: String) -> Result<ClipPick, Stri
 
 /// Vidéos YouTube trouvées par mots-clés, pour l'onglet « Lien vidéo ».
 #[tauri::command]
-pub async fn clip_search_videos(app: AppHandle, query: String) -> Result<Vec<youtube::Found>, String> {
+pub async fn clip_search_videos(app: AppHandle, query: String, start: Option<u32>) -> Result<Vec<youtube::Found>, String> {
     let state = app.state::<AppState>();
     let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
     let status = |msg: &str| {
         let _ = app.emit("youtube-status", msg);
     };
     let exe = youtube::ensure(&data_dir.join("tools"), status).await?;
-    tauri::async_runtime::spawn_blocking(move || youtube::search(&exe, &query, 12))
+    tauri::async_runtime::spawn_blocking(move || youtube::search(&exe, &query, start.unwrap_or(1), 12))
         .await
         .map_err(|e| e.to_string())?
 }
