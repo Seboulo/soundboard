@@ -246,6 +246,12 @@ pub async fn clip_from_link(app: AppHandle, url: String) -> Result<ClipPick, Str
     res
 }
 
+/// Fin du passage choisi (15 s au plus après le début) ; `None` = jusqu'au bout.
+fn video_end(start_ms: u64, end_s: Option<f64>) -> Option<u64> {
+    let end_ms = (end_s?.clamp(0.0, 36_015.0) * 1000.0) as u64;
+    (end_ms > start_ms).then(|| end_ms.min(start_ms + 15_000))
+}
+
 /// Le son d'une vidéo prête à l'envoi : à part (« <nom>-son.m4a ») ou dans la vidéo.
 fn video_sound(dir: &Path, media: &Path) -> PathBuf {
     let stem = media.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
@@ -255,7 +261,14 @@ fn video_sound(dir: &Path, media: &Path) -> PathBuf {
 /// « Écouter » avant d'envoyer : joue chez soi (casque) le son tel que le pote
 /// l'entendra (même passage, même volume, même réglage du niveau).
 #[tauri::command]
-pub async fn clip_listen(app: AppHandle, media: String, sound_id: Option<String>, start_s: Option<f64>, volume: Option<f32>) -> Result<(), String> {
+pub async fn clip_listen(
+    app: AppHandle,
+    media: String,
+    sound_id: Option<String>,
+    start_s: Option<f64>,
+    end_s: Option<f64>,
+    volume: Option<f32>,
+) -> Result<(), String> {
     let state = app.state::<AppState>();
     let media = PathBuf::from(media);
     let dir = clips_dir(&state).join("envoi");
@@ -270,7 +283,7 @@ pub async fn clip_listen(app: AppHandle, media: String, sound_id: Option<String>
         }
         None if kind_of(&ext) == Some("video") => {
             let start_ms = (start_s.unwrap_or(0.0).clamp(0.0, 36_000.0) * 1000.0) as u64;
-            (video_sound(&dir, &media), start_ms, None, volume.unwrap_or(1.0))
+            (video_sound(&dir, &media), start_ms, video_end(start_ms, end_s), volume.unwrap_or(1.0))
         }
         None => return Err("pas de son à écouter".into()),
     };
@@ -286,6 +299,7 @@ pub async fn send_clip(
     title: String,
     to: Option<String>,
     start_s: Option<f64>,
+    end_s: Option<f64>,
     volume: Option<f32>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
@@ -320,16 +334,17 @@ pub async fn send_clip(
             // peut être à part (« <nom>-son.m4a », Shorts YouTube).
             let start_ms = (start_s.unwrap_or(0.0).clamp(0.0, 36_000.0) * 1000.0) as u64;
             let video_volume = volume.unwrap_or(1.0).clamp(0.0, 2.0);
+            let end_ms = video_end(start_ms, end_s);
             let stem = media.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
             let side = ["m4a", "mp3", "aac"].iter().map(|e| dir.join(format!("{stem}-son.{e}"))).find(|p| p.exists());
             match side.filter(|_| kind_of(&media_ext) == Some("video")) {
                 Some(p) => {
                     let data = fs::read(&p).map_err(|e| e.to_string())?;
                     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("m4a").to_string();
-                    let h = Header { sound_ext: ext, sound_len: data.len() as u64, start_ms, volume: video_volume, ..Default::default() };
+                    let h = Header { sound_ext: ext, sound_len: data.len() as u64, start_ms, volume: video_volume, end_ms, ..Default::default() };
                     (data, h)
                 }
-                None => (Vec::new(), Header { volume: video_volume, start_ms, ..Default::default() }),
+                None => (Vec::new(), Header { volume: video_volume, start_ms, end_ms, ..Default::default() }),
             }
         }
     };
@@ -553,6 +568,14 @@ pub fn is_clip_window(label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn video_end_keeps_15_seconds_at_most() {
+        assert_eq!(video_end(42_000, Some(52.0)), Some(52_000));
+        assert_eq!(video_end(0, Some(40.0)), Some(15_000));
+        assert_eq!(video_end(10_000, Some(5.0)), None);
+        assert_eq!(video_end(0, None), None);
+    }
 
     #[test]
     fn clips_are_packed_and_unpacked() {

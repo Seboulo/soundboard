@@ -632,9 +632,15 @@
       <label class="set-field">Texte en gros sur l'extrait <small>(facultatif)</small>
         <input name="title" maxlength="60" autocomplete="off" placeholder="Ex. : QUAND KEVIN RATE SON TIR">
       </label>
-      <label class="set-field" data-for-video hidden>Commencer à (secondes)
-        <input name="start" type="number" min="0" step="1" value="0">
-      </label>
+      <div class="set-field clip-trim" data-for-video hidden>
+        <span>Passage à montrer <span class="value" data-trim-label></span></span>
+        <div class="clip-range">
+          <div class="clip-range-sel"></div>
+          <input name="start" type="range" min="0" max="15" step="0.1" value="0" aria-label="Début du passage">
+          <input name="end" type="range" min="0" max="15" step="0.1" value="15" aria-label="Fin du passage">
+        </div>
+        <small class="hint">Glisse les deux poignées (15 secondes au plus). ← → pour affiner après un clic.</small>
+      </div>
       <label class="set-field" data-for-image>Son avec l'image
         <select name="sound"></select>
       </label>

@@ -218,7 +218,7 @@ fn phone_request(app: &AppHandle, req: phone::Request) -> Result<serde_json::Val
             Ok(serde_json::to_value(pick).map_err(|e| e.to_string())?)
         }
         phone::Request::ClipSend { media, title, to, start, sound } => {
-            tauri::async_runtime::block_on(clip::send_clip(app.clone(), media, sound, title, to, start, None))?;
+            tauri::async_runtime::block_on(clip::send_clip(app.clone(), media, sound, title, to, start, None, None))?;
             Ok(serde_json::json!({ "ok": true }))
         }
         phone::Request::Stop => {

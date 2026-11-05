@@ -87,7 +87,8 @@ function play(c) {
     video.onloadedmetadata = () => {
       if (current !== c) return;
       if (from && from < video.duration) video.currentTime = from;
-      const d = Math.max(2000, Math.min(MAX_MS, ((video.duration || 15) - (from < video.duration ? from : 0)) * 1000));
+      const until = Math.min(video.duration || 15, c.end_ms ? c.end_ms / 1000 : Infinity);
+      const d = Math.max(2000, Math.min(MAX_MS, (until - (from < video.duration ? from : 0)) * 1000));
       bar($("#show .bar"), d);
       clearTimeout(timer);
       timer = setTimeout(close, d + 300);
@@ -103,9 +104,9 @@ function play(c) {
         a.addEventListener("loadedmetadata", () => {
           if (audio === a) a.currentTime = video.currentTime;
         }, { once: true });
-        playSound(c, c.sound, video.currentTime * 1000, null, a);
+        playSound(c, c.sound, video.currentTime * 1000, c.end_ms, a);
       } else {
-        playSound(c, c.media, video.currentTime * 1000, null, video);
+        playSound(c, c.media, video.currentTime * 1000, c.end_ms, video);
       }
     };
     video.play().catch(() => {});
