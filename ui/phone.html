@@ -107,7 +107,7 @@
     .gifs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
     .gifs img { width: 100%; height: 84px; object-fit: cover; border-radius: 8px; border: 2px solid transparent; }
     .gifs img.on { border-color: var(--accent); }
-    .ready { position: relative; border-radius: 12px; overflow: hidden; background: #000; color: #fff; min-height: 60px; display: grid; place-items: center; }
+    .ready { position: relative; border-radius: 12px; overflow: hidden; background: #000; color: #fff; min-height: 96px; display: grid; place-items: start center; }
     .ready img { max-width: 100%; max-height: 200px; display: block; }
     .ready .msg { padding: 14px; font-size: 14px; }
     .meme { position: absolute; left: 6px; right: 6px; bottom: 8px; text-align: center; text-transform: uppercase;
@@ -261,8 +261,13 @@
       $("room").hidden = !state.in_room;
       $("clip").hidden = !state.in_room;
       const sel = $("target");
-      sel.replaceChildren(new Option("chez moi", ""), ...room.members.map((m) => new Option(`chez ${m.name}`, m.id)));
-      sel.value = room.target || "";
+      // Ne pas reconstruire la liste pendant qu'on la consulte (toutes les 1,5 s).
+      const key = room.members.map((m) => m.id + m.name).join("|");
+      if (sel.dataset.key !== key) {
+        sel.dataset.key = key;
+        sel.replaceChildren(new Option("chez moi", ""), ...room.members.map((m) => new Option(`chez ${m.name}`, m.id)));
+      }
+      if (document.activeElement !== sel) sel.value = room.target || "";
       $("room").classList.toggle("away", !!room.target);
     }
     $("target").onchange = (e) => api("/api/target", { id: e.target.value }, "POST").then(refresh, (err) => showError(err.message));

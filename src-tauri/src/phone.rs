@@ -50,8 +50,13 @@ impl PhoneServer {
         let thread = thread::Builder::new()
             .name("phone".into())
             .spawn(move || {
+                // Une requête par fil : récupérer une vidéo (jusqu'à une minute)
+                // ne doit pas bloquer « Tout arrêter » ni les sons.
                 for request in srv.incoming_requests() {
-                    respond(request, &token, &handler);
+                    let (token, handler) = (token.clone(), handler.clone());
+                    let _ = thread::Builder::new()
+                        .name("phone-req".into())
+                        .spawn(move || respond(request, &token, &handler));
                 }
             })
             .map_err(|e| e.to_string())?;
