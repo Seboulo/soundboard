@@ -98,6 +98,8 @@ struct Inner {
     members: HashMap<String, (String, Instant)>,
     target: Option<String>,
     last_hello: Option<Instant>,
+    /// Extrait envoyé « moi compris » : on affiche aussi le sien en retour.
+    echo_until: Option<Instant>,
 }
 
 /// Le salon, partagé dans l'app.
@@ -147,6 +149,12 @@ impl Room {
             inner.target = None;
         }
         RoomStatus { on: !inner.topic.is_empty(), connected: inner.connected, members, target: inner.target.clone() }
+    }
+
+    /// Le prochain extrait qu'on envoie nous revient aussi (pour tester),
+    /// s'il arrive dans les 2 minutes.
+    pub fn expect_echo(&self) {
+        self.inner.lock().unwrap().echo_until = Some(Instant::now() + Duration::from_secs(120));
     }
 
     pub fn my_id(&self) -> String {
@@ -258,6 +266,15 @@ impl Room {
     async fn receive(&self, incoming: Incoming, on_event: &impl Fn(Incoming), on_change: &impl Fn()) {
         let me = self.my_id();
         if incoming.msg.from() == me {
+            // Son propre extrait, envoyé « moi compris » : on le reçoit
+            // comme les potes, par le même chemin.
+            let echo = matches!(incoming.msg, Msg::Clip { .. }) && {
+                let mut inner = self.inner.lock().unwrap();
+                inner.echo_until.take().is_some_and(|t| Instant::now() < t)
+            };
+            if echo {
+                on_event(incoming);
+            }
             return;
         }
         match &incoming.msg {

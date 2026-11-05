@@ -3525,7 +3525,11 @@ function openClipDialog(to) {
   if (!state.config.settings.room_code) return toast("Rejoins d'abord un salon avec tes potes : Réglages → Potes", true);
   const sounds = [...state.config.sounds].sort((a, b) => a.name.localeCompare(b.name, "fr"));
   formClip.sound.replaceChildren(new Option("Pas de son", ""), ...sounds.map((s) => new Option(`${s.emoji ? s.emoji + " " : ""}${s.name}`, s.id)));
-  formClip.to.replaceChildren(new Option(`Tout le salon (${room.members.length} en ligne)`, ""), ...room.members.map((m) => new Option(m.name, m.id)));
+  formClip.to.replaceChildren(
+    new Option(`Tout le salon (${room.members.length} en ligne)`, ""),
+    new Option("Tout le salon et moi (pour vérifier que ça marche)", "*moi"),
+    ...room.members.map((m) => new Option(m.name, m.id)),
+  );
   formClip.to.value = to ?? room.target ?? "";
   setClipSource(clipSource);
   clipUi();
@@ -3911,7 +3915,7 @@ clipVideo.addEventListener("timeupdate", () => {
 $('[data-action="send"]', dlgClip).addEventListener("click", async (e) => {
   const btn = e.currentTarget;
   if (!clipMedia) return;
-  if (!room.members.length) return toast("Aucun pote en ligne dans le salon pour l'instant", true);
+  if (!room.members.length && formClip.to.value !== "*moi") return toast("Aucun pote en ligne dans le salon pour l'instant : choisis « Tout le salon et moi » pour tester seul", true);
   btn.disabled = true;
   btn.textContent = "Envoi…";
   const to = formClip.to.value || null;
@@ -3932,7 +3936,7 @@ $('[data-action="send"]', dlgClip).addEventListener("click", async (e) => {
     btn.disabled = !clipMedia;
   }
   const who = room.members.find((m) => m.id === to)?.name;
-  toast(`🎬 Extrait envoyé ${who ? `à ${who}` : "au salon"}`);
+  toast(to === "*moi" ? "🎬 Extrait envoyé : il va aussi s'afficher chez toi dans quelques secondes" : `🎬 Extrait envoyé ${who ? `à ${who}` : "au salon"}`);
   dlgClip.close();
 });
 $('[data-action="close"]', dlgClip).addEventListener("click", () => dlgClip.close());

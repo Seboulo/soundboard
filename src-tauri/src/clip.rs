@@ -408,6 +408,9 @@ pub async fn clip_listen(
     play_audio(app.clone(), path, start_ms, end_ms, vol).await
 }
 
+/// « Envoyer à » : tout le salon, et soi-même aussi pour tester.
+const ME_TOO: &str = "*moi";
+
 /// Envoie l'extrait à un pote (ou à tout le salon si `to` est vide).
 #[tauri::command]
 pub async fn send_clip(
@@ -472,13 +475,17 @@ pub async fn send_clip(
         return Err("l'extrait et son son font plus de 14 Mo ensemble : prends plus court".into());
     }
     let room = &state.extras.room;
-    let to = to.filter(|t| !t.is_empty()).unwrap_or_default();
+    let with_me = to.as_deref() == Some(ME_TOO);
+    let to = to.filter(|t| !t.is_empty() && t != ME_TOO).unwrap_or_default();
     if !to.is_empty() && !room.status().members.iter().any(|m| m.id == to) {
         return Err("ce pote n'est plus en ligne".into());
     }
     let title: String = title.trim().chars().take(60).collect();
     let msg_title = title.clone();
     let msg = Msg::Clip { from: room.my_id(), name: room.my_name(), to, title };
+    if with_me {
+        room.expect_echo();
+    }
     room.publish_file(&msg, "extrait.sbclip", data).await?;
     *state.extras.last_sent.lock().unwrap() = Some(Instant::now());
     let is_video = kind_of(&media.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase()) == Some("video");
