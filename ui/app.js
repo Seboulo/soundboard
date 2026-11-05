@@ -3524,6 +3524,13 @@ function openClipDialog(to) {
   dlgClip.showModal();
   renderClipRecents();
 }
+const tileObserver = new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    if (!e.isIntersecting) continue;
+    e.target.src = e.target.dataset.src;
+    tileObserver.unobserve(e.target);
+  }
+});
 // Vignette d'un extrait envoyé ou reçu : un clic le remet tel quel.
 function clipTile(r, caption) {
   const b = document.createElement("button");
@@ -3533,13 +3540,17 @@ function clipTile(r, caption) {
     const v = document.createElement("video");
     v.muted = true;
     v.preload = "metadata";
-    v.src = `${fileSrc(r.path)}#t=${(r.start_s || 0) + 0.5}`;
+    // L'image de la vidéo n'est lue que quand la vignette devient visible.
+    v.dataset.src = `${fileSrc(r.path)}#t=${(r.start_s || 0) + 0.5}`;
+    tileObserver.observe(v);
     const tag = document.createElement("span");
     tag.className = "tag";
     tag.textContent = "▶";
     b.append(v, tag);
   } else {
     const img = document.createElement("img");
+    img.loading = "lazy";
+    img.decoding = "async";
     img.src = fileSrc(r.path);
     img.alt = "";
     b.append(img);

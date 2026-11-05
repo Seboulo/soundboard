@@ -179,20 +179,31 @@ fn clips_dir(state: &AppState) -> PathBuf {
     state.sounds_dir.with_file_name("extraits")
 }
 
-/// Garde au plus `keep` fichiers dans un dossier.
+/// Place maximale d'un dossier d'extraits (envoyés ou reçus).
+const DIR_MAX_BYTES: u64 = 200 * 1024 * 1024;
+
+/// Garde au plus `keep` fichiers dans un dossier, et pas plus de
+/// `DIR_MAX_BYTES` en tout : les plus anciens partent d'abord.
 fn trim_dir(dir: &Path, keep: usize) {
     let Ok(entries) = fs::read_dir(dir) else { return };
-    let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = entries
         .flatten()
         .filter(|e| e.path().extension().is_none_or(|x| x != "json"))
-        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            Some((m.modified().ok()?, m.len(), e.path()))
+        })
         .collect();
-    if files.len() <= keep {
-        return;
-    }
     files.sort();
-    for (_, p) in files.iter().take(files.len() - keep) {
+    let mut total: u64 = files.iter().map(|f| f.1).sum();
+    let mut count = files.len();
+    for (_, len, p) in &files {
+        if count <= keep && total <= DIR_MAX_BYTES {
+            break;
+        }
         let _ = fs::remove_file(p);
+        count -= 1;
+        total -= len;
     }
 }
 
@@ -278,15 +289,35 @@ pub async fn clip_from_gif(app: AppHandle, url: String) -> Result<ClipPick, Stri
 /// Vidéos YouTube trouvées par mots-clés, pour l'onglet « Lien vidéo ».
 #[tauri::command]
 pub async fn clip_search_videos(app: AppHandle, query: String, start: Option<u32>) -> Result<Vec<youtube::Found>, String> {
+    // Même recherche refaite (fenêtre rouverte, téléphone) : réponse tout de
+    // suite plutôt que de relancer yt-dlp, pendant 10 minutes.
+    static CACHE: Mutex<Vec<(String, u32, Instant, Vec<youtube::Found>)>> = Mutex::new(Vec::new());
+    let key = query.trim().to_lowercase();
+    let start = start.unwrap_or(1);
+    {
+        let mut cache = CACHE.lock().unwrap();
+        cache.retain(|c| c.2.elapsed() < Duration::from_secs(600));
+        if let Some(c) = cache.iter().find(|c| c.0 == key && c.1 == start) {
+            return Ok(c.3.clone());
+        }
+    }
     let state = app.state::<AppState>();
     let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
     let status = |msg: &str| {
         let _ = app.emit("youtube-status", msg);
     };
     let exe = youtube::ensure(&data_dir.join("tools"), status).await?;
-    tauri::async_runtime::spawn_blocking(move || youtube::search(&exe, &query, start.unwrap_or(1), 12))
+    let found = tauri::async_runtime::spawn_blocking(move || youtube::search(&exe, &query, start, 12))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())??;
+    if !found.is_empty() {
+        let mut cache = CACHE.lock().unwrap();
+        if cache.len() >= 30 {
+            cache.remove(0);
+        }
+        cache.push((key, start, Instant::now(), found.clone()));
+    }
+    Ok(found)
 }
 
 /// Vidéo d'un lien (YouTube, TikTok, X, Reddit…), avec yt-dlp.
@@ -791,6 +822,23 @@ mod tests {
         assert_eq!(video_end(0, Some(40.0)), Some(30_000));
         assert_eq!(video_end(10_000, Some(5.0)), None);
         assert_eq!(video_end(0, None), None);
+    }
+
+    #[test]
+    fn trims_oldest_files_but_keeps_json() {
+        let dir = std::env::temp_dir().join(format!("sb-trim-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("index.json"), b"[]").unwrap();
+        for i in 0..5 {
+            fs::write(dir.join(format!("{i}.png")), b"x").unwrap();
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        trim_dir(&dir, 3);
+        let mut left: Vec<String> = fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["2.png", "3.png", "4.png", "index.json"]);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
