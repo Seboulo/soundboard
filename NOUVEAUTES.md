@@ -1,6 +1,16 @@
 Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
 Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
+Nouveautés de la 2.0 :
+- Salon entre potes (Réglages → Potes, même code pour tout le monde) : avec le bouton « 👥 », joue tes sons chez un pote (ils partent dans Discord par son micro).
+- Extrait sur l'écran d'un pote : « ⋯ » → « Envoyer un extrait ». Une image, un GIF ou une vidéo (avec un de tes sons si tu veux) s'affiche dans un coin de son écran, 15 s au plus, sans le sortir de son jeu. Chacun choisit : me demander, afficher direct ou refuser. Ne se voit pas par-dessus un jeu en plein écran exclusif.
+- Rejouer les 30 dernières secondes : un raccourci fait un son de ce qui vient de se dire (ta voix, tes sons et tes potes dans Discord).
+- Enregistrer un son au micro, directement dans l'app (1 min max, blancs coupés).
+- Texte → voix avec les voix de Windows : le dire tout de suite dans Discord ou en faire un pad.
+- Packs partagés par lien (OneDrive, Dropbox, Google Drive) : tes potes suivent ton onglet et reçoivent tes nouveaux sons tout seuls.
+- Baisse auto des sons quand un pote parle dans Discord (option, désactivée au départ).
+- Onglets : clic droit sur le fond pour créer un onglet, clic droit sur un onglet pour le renommer ou le supprimer, glisse les onglets pour les remettre dans l'ordre.
+
 Nouveautés de la 1.7 :
 - Nouvel onglet « Top » : tes 20 sons les plus joués, du plus joué au moins joué.
 - Affichage plus net : les barres du haut tiennent sur une ligne, et la barre du haut (avec Stop) ne disparaît plus quand tu fais défiler. Les onglets et le nom du groupe restent visibles en défilant.

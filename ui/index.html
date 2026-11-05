@@ -25,6 +25,7 @@
       <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></symbol>
       <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></symbol>
       <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13M10 11v5M14 11v5"/></symbol>
       <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4zM13 7l4 4"/></symbol>
       <symbol id="i-check" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="m8 12.5 3 3 5-6"/></symbol>
       <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></symbol>
@@ -42,6 +43,10 @@
     <div class="brand"><span class="logo"><svg class="ico"><use href="#i-logo"/></svg></span><h1>Soundboard</h1></div>
     <button id="cable-status" class="pill" type="button" title="État du câble virtuel"></button>
     <button id="mic-toggle" class="pill" type="button" hidden></button>
+    <div class="room-wrap" hidden>
+      <button id="room-pill" class="pill" type="button" aria-haspopup="menu" aria-expanded="false" title="Salon entre potes : choisis chez qui tes sons sont joués"></button>
+      <div id="room-menu" class="menu" role="menu" hidden></div>
+    </div>
     <div class="spacer"></div>
     <label class="search-box"><svg class="ico"><use href="#i-search"/></svg><input id="search" type="search" placeholder="Rechercher un son… (tape n'importe où)" autocomplete="off"></label>
     <button id="btn-online" type="button" title="Chercher des sons sur internet"><svg class="ico"><use href="#i-globe"/></svg><span class="lbl">En ligne</span></button>
@@ -86,6 +91,14 @@
         <button id="btn-select" type="button" role="menuitem" title="Sélectionner plusieurs sons pour les ranger d'un coup (ou Ctrl + clic sur un son)"><svg class="ico"><use href="#i-check"/></svg>Sélectionner plusieurs sons</button>
         <button id="btn-export" type="button" role="menuitem" title="Exporter : enregistrer les sons de cet onglet dans un .zip à partager"><svg class="ico"><use href="#i-upload"/></svg>Exporter en .zip</button>
         <button id="btn-import" type="button" role="menuitem" title="Importer : ajouter les sons d'un pack .zip"><svg class="ico"><use href="#i-download"/></svg>Importer un pack .zip</button>
+        <hr>
+        <button id="btn-replay" type="button" role="menuitem" title="Fait un son de ce qui s'est dit dans Discord ces 30 dernières secondes (raccourci dans Réglages)"><span class="emo" aria-hidden="true">⏪</span>Rejouer les 30 dernières secondes</button>
+        <button id="btn-record" type="button" role="menuitem" title="Enregistre un son avec ton micro"><span class="emo" aria-hidden="true">🎙️</span>Enregistrer au micro</button>
+        <button id="btn-tts" type="button" role="menuitem" title="Une voix de Windows lit ce que tu écris"><span class="emo" aria-hidden="true">🗣️</span>Texte → voix</button>
+        <button id="btn-clip" type="button" role="menuitem" title="Une image, un GIF ou une vidéo qui s'affiche sur l'écran d'un pote du salon"><span class="emo" aria-hidden="true">🎬</span>Envoyer un extrait à un pote</button>
+        <hr>
+        <button id="btn-publish" type="button" role="menuitem" title="Tes potes reçoivent les sons de cet onglet, et ceux que tu y ajoutes ensuite"><span class="emo" aria-hidden="true">🔗</span>Partager cet onglet par lien</button>
+        <button id="btn-follow" type="button" role="menuitem" title="Colle le lien du pack d'un pote : ses nouveaux sons arrivent tout seuls"><span class="emo" aria-hidden="true">📥</span>Suivre le pack d'un pote</button>
       </div>
     </div>
   </nav>
@@ -112,6 +125,10 @@
     <div id="recent-empty" class="empty" hidden>
       <p class="big">Aucun son joué pour l'instant</p>
       <p>Les 12 derniers sons que tu joues apparaîtront ici.</p>
+    </div>
+    <div id="tab-empty" class="empty" hidden>
+      <p class="big">Cet onglet est vide</p>
+      <p>Glisse des sons sur son nom dans la barre des onglets, ou ajoute-en avec « Ajouter ».</p>
     </div>
     <div id="empty" class="empty" hidden>
       <div class="empty-icon">🎧</div>
@@ -259,6 +276,7 @@
           <button type="button" data-tab="sound" class="on"><svg class="ico"><use href="#i-volume"/></svg> Sons</button>
           <button type="button" data-tab="mic"><svg class="ico"><use href="#i-mic"/></svg> Micro</button>
           <button type="button" data-tab="keys"><svg class="ico"><use href="#i-keyboard"/></svg> Raccourcis</button>
+          <button type="button" data-tab="friends"><span class="emo" aria-hidden="true">👥</span> Potes</button>
           <button type="button" data-tab="remote"><svg class="ico"><use href="#i-phone"/></svg> Téléphone</button>
           <button type="button" data-tab="general"><svg class="ico"><use href="#i-gear"/></svg> Général</button>
           <label class="adv-toggle" title="Montre les réglages techniques (filtres du micro, normalisation, clés…)"><input type="checkbox" class="switch" data-action="advanced"> Réglages avancés</label>
@@ -294,6 +312,19 @@
             </select>
           </label>
           <label class="set-row"><span class="txt"><b>Un nouveau son coupe ceux en cours</b></span><input name="stop_previous" type="checkbox" class="switch"></label>
+          </div>
+          <h3>Pendant que tes potes parlent</h3>
+          <div class="set-card">
+          <label class="set-row"><span class="txt"><b>Baisser les sons quand un pote parle</b><small>Tes sons se font discrets le temps qu'il parle, puis remontent tout seuls.</small></span><input name="duck_enabled" type="checkbox" class="switch"></label>
+          <label class="set-row" data-duck-row><span class="txt"><b>Baisser de</b></span>
+            <select name="duck_level">
+              <option value="0.6">Un peu</option>
+              <option value="0.35">Moyen</option>
+              <option value="0.15">Beaucoup</option>
+            </select>
+          </label>
+          <label class="set-row"><span class="txt"><b>Garder les 30 dernières secondes</b><small>Pour « Rejouer » : fait un son de ce qui vient de se dire (ta voix, tes sons et tes potes). Rien n'est enregistré tant que tu ne le demandes pas.</small></span><input name="replay_enabled" type="checkbox" class="switch"></label>
+          <p class="hint" id="discord-status"></p>
           </div>
         </section>
         <section data-pane="mic" hidden>
@@ -360,8 +391,40 @@
           <label class="set-row"><span class="txt"><b>Tout arrêter</b></span><input name="stop_hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche"></label>
           <label class="set-row"><span class="txt"><b>Couper / rallumer mon micro</b><small>Les sons passent toujours.</small></span><input name="mute_hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche"></label>
           <label class="set-row"><span class="txt"><b>Son au hasard</b></span><input name="random_hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche"></label>
+          <label class="set-row"><span class="txt"><b>Rejouer les 30 dernières secondes</b><small>Crée un son de ce qui vient de se dire.</small></span><input name="replay_hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche"></label>
           </div>
           <p class="hint">Les raccourcis de chaque son se règlent dans sa fiche (clic droit ou ✎ sur le son). Retour arrière efface un raccourci.</p>
+        </section>
+        <section data-pane="friends" hidden>
+          <h3>Salon entre potes</h3>
+          <div class="set-card">
+            <p class="hint">Avec le même code, tes potes peuvent jouer un de leurs sons chez toi (il part dans Discord par ton micro), et toi chez eux. Choisis chez qui jouer avec le bouton « 👥 » en haut.</p>
+            <label class="set-field">Code du salon
+              <span class="room-code-row"><input name="room_code" autocomplete="off" spellcheck="false" placeholder="Vide : pas de salon"><button type="button" data-action="room-new">Créer un code</button><button type="button" data-action="room-copy">Copier</button></span>
+            </label>
+            <label class="set-field">Ton nom dans le salon
+              <input name="room_name" maxlength="32" autocomplete="off" placeholder="Ton pseudo">
+            </label>
+            <label class="set-row"><span class="txt"><b>Mes potes peuvent jouer des sons chez moi</b><small>30 secondes au plus par son. « Tout arrêter » les coupe aussi.</small></span><input name="room_accept" type="checkbox" class="switch"></label>
+            <label class="set-row"><span class="txt"><b>Extraits des potes sur mon écran</b><small>Image, GIF ou vidéo dans un coin de l'écran, 15 secondes au plus, sans quitter le jeu. Ferme-le avec ✕ ou « Tout arrêter ».</small></span>
+              <select name="clips_mode">
+                <option value="ask">Me demander</option>
+                <option value="auto">Afficher direct</option>
+                <option value="off">Refuser</option>
+              </select>
+            </label>
+            <p class="hint" id="room-state"></p>
+          </div>
+          <h3>Packs que je suis</h3>
+          <div class="set-card">
+            <div id="subs-list" class="link-list"></div>
+            <div class="set-row"><span class="txt"><b>Suivre un nouveau pack</b><small>Les sons du pote arrivent dans un onglet, puis se mettent à jour tout seuls.</small></span><button type="button" data-action="follow">Suivre…</button><button type="button" data-action="sync" class="ghost">Vérifier</button></div>
+          </div>
+          <h3>Onglets que je partage</h3>
+          <div class="set-card">
+            <div id="pubs-list" class="link-list"></div>
+            <p class="hint">Pour partager un onglet : ouvre-le, puis « ⋯ » → « Partager cet onglet par lien ».</p>
+          </div>
         </section>
         <section data-pane="remote" hidden>
           <h3>Téléphone</h3>
@@ -497,6 +560,130 @@
       </div>
     </form>
   </dialog>
+
+  <!-- Enregistrer au micro -->
+  <dialog id="dlg-record">
+    <div class="form">
+      <h2>🎙️ Enregistrer au micro</h2>
+      <p class="hint">Ta voix est enregistrée telle que tes potes l'entendent (bruits filtrés). Une minute au plus.</p>
+      <div class="rec-box">
+        <button type="button" class="rec-btn" data-action="rec" aria-label="Commencer l'enregistrement"><span></span></button>
+        <div class="rec-time" aria-live="off">0:00</div>
+        <small class="muted" data-rec-state>Appuie sur le bouton rouge pour commencer.</small>
+      </div>
+      <div class="actions">
+        <div class="spacer"></div>
+        <button type="button" data-action="close">Fermer</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Texte → voix -->
+  <dialog id="dlg-tts">
+    <form class="form" method="dialog">
+      <h2>🗣️ Texte → voix</h2>
+      <textarea name="text" rows="3" maxlength="1000" placeholder="Écris ce que la voix doit dire…"></textarea>
+      <label class="set-field">Voix
+        <select name="voice"></select>
+      </label>
+      <label class="set-field">Vitesse <span class="value" data-for="rate"></span>
+        <input name="rate" type="range" min="0.5" max="2" step="0.1" value="1">
+      </label>
+      <p class="hint">Les voix sont celles installées dans Windows (Paramètres → Heure et langue → Voix pour en ajouter).</p>
+      <div class="actions">
+        <button type="button" data-action="close">Fermer</button>
+        <div class="spacer"></div>
+        <button type="button" data-action="say">▶ Dire dans Discord</button>
+        <button type="button" class="primary" data-action="create">Créer un pad</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Extrait sur l'écran d'un pote -->
+  <dialog id="dlg-clip">
+    <form class="form" method="dialog">
+      <h2>🎬 Envoyer un extrait</h2>
+      <button type="button" class="clip-drop" data-action="pick">
+        <span class="clip-empty"><span class="emo" aria-hidden="true">🖼️</span><b>Choisir une image, un GIF ou une vidéo</b><small>PNG, JPG, GIF, WebP, MP4 ou WebM · 8 Mo au plus</small></span>
+        <img class="clip-preview" alt="" hidden>
+        <video class="clip-preview" muted loop playsinline hidden></video>
+      </button>
+      <label class="set-field">Titre <small>(facultatif)</small>
+        <input name="title" maxlength="60" autocomplete="off" placeholder="Ex. : la tête de Kevin">
+      </label>
+      <label class="set-field" data-for-image>Son avec l'image
+        <select name="sound"></select>
+      </label>
+      <label class="set-field">Envoyer à
+        <select name="to"></select>
+      </label>
+      <p class="hint">L'extrait s'affiche dans un coin de son écran, 15 secondes au plus, sans le sortir de son jeu. Ton pote peut le refuser ou le fermer, et choisit dans ses réglages s'il veut être prévenu avant.</p>
+      <div class="actions">
+        <button type="button" data-action="close">Fermer</button>
+        <div class="spacer"></div>
+        <button type="button" class="primary" data-action="send" disabled>Envoyer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Suivre le pack d'un pote -->
+  <dialog id="dlg-follow">
+    <form class="form" method="dialog">
+      <h2>📥 Suivre le pack d'un pote</h2>
+      <p class="hint">Colle le lien que ton pote t'a donné (OneDrive, Dropbox, Google Drive…). Ses sons arrivent dans un onglet, et ceux qu'il ajoute ensuite aussi.</p>
+      <label class="set-field">Lien du pack
+        <input name="url" type="url" required autocomplete="off" placeholder="https://…">
+      </label>
+      <label class="set-field">Ranger dans l'onglet <small class="muted">(facultatif)</small>
+        <input name="name" maxlength="30" autocomplete="off" placeholder="Le nom choisi par ton pote">
+      </label>
+      <div class="actions">
+        <div class="spacer"></div>
+        <button type="button" data-action="close">Annuler</button>
+        <button type="submit" class="primary" value="follow">Suivre</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Partager un onglet par lien -->
+  <dialog id="dlg-publish">
+    <div class="form">
+      <h2>🔗 Partager l'onglet « <span data-tab-name></span> »</h2>
+      <div data-step="pick">
+        <p class="hint">L'app range le pack dans un dossier synchronisé et le tient à jour. Tu crées ensuite un lien de partage vers ce fichier, une seule fois.</p>
+        <div id="cloud-list" class="cloud-list"></div>
+        <button type="button" data-action="other">Autre dossier…</button>
+      </div>
+      <div data-step="done" hidden>
+        <p>✓ Le pack est prêt : <code data-path></code></p>
+        <ol class="publish-steps">
+          <li>Clique sur « Ouvrir le dossier ».</li>
+          <li>Clic droit sur le fichier → <b>Partager</b> (ou « Copier le lien »), avec l'accès <b>« Tout le monde ayant le lien »</b>.</li>
+          <li>Envoie le lien à tes potes : dans l'app, ils font « ⋯ » → « Suivre le pack d'un pote ».</li>
+        </ol>
+        <p class="hint">Les sons que tu ajoutes ou retires de cet onglet arrivent chez eux tout seuls (ils vérifient toutes les 2 heures et à chaque lancement).</p>
+        <button type="button" data-action="reveal">Ouvrir le dossier</button>
+      </div>
+      <div class="actions">
+        <div class="spacer"></div>
+        <button type="button" data-action="close">Fermer</button>
+      </div>
+    </div>
+  </dialog>
+  <!-- Créer, renommer ou supprimer un onglet (clic droit) -->
+  <dialog id="dlg-tab">
+    <form class="form" method="dialog">
+      <h2>Nouvel onglet</h2>
+      <label>Nom<input name="tab_name" maxlength="30" autocomplete="off" placeholder="Ex. : Mèmes, Musique, Réactions"></label>
+      <p class="hint" id="tab-hint"></p>
+      <div class="actions">
+        <div class="spacer"></div>
+        <button type="button" data-action="cancel">Annuler</button>
+        <button type="submit" class="primary" value="save">Créer</button>
+      </div>
+    </form>
+  </dialog>
+  <div id="ctx-menu" class="menu ctx-menu" role="menu" hidden></div>
 
   <!-- Statistiques -->
   <dialog id="dlg-stats" class="wide">

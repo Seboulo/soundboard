@@ -43,6 +43,13 @@ Les bruits de clavier, de souris et de fond sont filtrés par l'app elle-même, 
 - **📱 Téléphone** : coche l'option dans les réglages, enregistre, rouvre les réglages et scanne le QR code (téléphone sur le même Wi-Fi). Autorise l'app sur les « réseaux privés » quand Windows le demande.
 - **Réorganiser** : glisse un pad sur un autre.
 - **Tout arrêter** : bouton « Stop » ou touche **Pause** par défaut.
+- **⏪ Rejouer les 30 dernières secondes** : « ⋯ » ou un raccourci (réglages → Raccourcis) crée un son de ce qui vient de se dire : ta voix, tes sons et la voix de tes potes dans Discord (Windows 10 de mai 2020 ou plus récent). Rien n'est enregistré sur le disque tant que tu ne le demandes pas.
+- **🎙️ Enregistrer au micro** : « ⋯ » → enregistre ta voix (une minute au plus), puis découpe-la.
+- **🗣️ Texte → voix** : « ⋯ » → une voix de Windows lit ta phrase, tout de suite dans Discord ou en pad.
+- **🔗 Packs partagés par lien** : ouvre un onglet puis « ⋯ » → « Partager cet onglet par lien » : l'app range le pack dans ton OneDrive, Dropbox ou Google Drive et le tient à jour. Partage ce fichier (« Tout le monde ayant le lien ») ; tes potes font « ⋯ » → « Suivre le pack d'un pote » et reçoivent tes nouveaux sons tout seuls.
+- **👥 Salon entre potes** : réglages → Potes, même code pour tout le monde. Le bouton « 👥 » en haut choisit chez qui tes sons sont joués : chez un pote, ils partent dans Discord par son micro.
+- **🎬 Extrait sur l'écran d'un pote** : « ⋯ » → « Envoyer un extrait » (ou depuis « 👥 ») : une image, un GIF ou une vidéo (8 Mo, 15 s au plus), avec un de tes sons si tu veux, s'affiche dans un coin de l'écran du pote sans le sortir de son jeu. Chacun choisit dans Réglages → Potes : me demander, afficher direct ou refuser. « Tout arrêter » ferme l'extrait. Ne se voit pas par-dessus un jeu en plein écran exclusif (plein écran fenêtré : oui).
+- **Baisser les sons quand un pote parle** (réglages → Sons, désactivé par défaut) : tes sons se font discrets le temps qu'il parle.
 
 Dans les réglages :
 
@@ -117,6 +124,9 @@ Only when the user acts:
 - Searching MyInstants or Freesound: the search words are sent to those sites.
 - Adding a sound from a YouTube link: yt-dlp is downloaded from its official GitHub releases on first use, then contacts YouTube.
 - Phone control, when enabled: a page served on the local network only, protected by a secret code.
+- Friends room, when a room code is set: short messages (a random app id, the chosen nickname, which sound to play) and, when a friend lacks a sound, the sound file itself go through the public relay ntfy.sh, on a channel named after a hash of the code. ntfy.sh keeps attachments for 3 hours at most.
+- Following a friend's pack: the app downloads the link the user pasted (every 2 hours and at startup).
+- "Replay the last 30 seconds" and auto ducking listen to Discord's audio output in memory only; nothing is written to disk unless the user asks for a replay.
 
 No account, analytics or telemetry. Settings and sounds stay on the user's computer.
 

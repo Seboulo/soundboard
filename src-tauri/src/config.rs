@@ -61,6 +61,12 @@ pub struct Sound {
     /// mesuré en arrière-plan. Ignoré s'il ne correspond plus à la découpe.
     #[serde(default)]
     pub segment: Option<SegmentLevel>,
+    /// Son venu d'un pack partagé par lien (le lien), mis à jour avec lui.
+    #[serde(default)]
+    pub pack_link: Option<String>,
+    /// Empreinte du fichier, pour le reconnaître dans le pack.
+    #[serde(default)]
+    pub pack_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -266,6 +272,52 @@ pub struct Settings {
     /// Mode Surprise : attente entre deux sons, en minutes (tirée au hasard entre les deux).
     pub surprise_min_minutes: u32,
     pub surprise_max_minutes: u32,
+    /// Garder les 30 dernières secondes pour « Rejouer ».
+    pub replay_enabled: bool,
+    /// Raccourci qui fait un son des 30 dernières secondes.
+    pub replay_hotkey: Option<String>,
+    /// Baisser les sons quand un pote parle dans Discord.
+    pub duck_enabled: bool,
+    /// Volume des sons pendant qu'un pote parle (0,1–0,8).
+    pub duck_level: f32,
+    /// Code du salon entre potes (vide : pas de salon).
+    pub room_code: String,
+    /// Ton nom dans le salon.
+    pub room_name: String,
+    /// Identifiant de cette app dans les salons (fixe).
+    pub room_id: String,
+    /// Les potes du salon peuvent jouer des sons chez toi.
+    pub room_accept: bool,
+    /// Extraits des potes sur mon écran : "off", "ask" (demander) ou "auto".
+    pub clips_mode: String,
+    /// Packs de potes suivis par lien.
+    pub subscriptions: Vec<Subscription>,
+    /// Onglets que tu partages par lien.
+    pub published: Vec<Published>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Subscription {
+    pub url: String,
+    /// Onglet où arrivent les sons.
+    pub name: String,
+    /// Empreinte du dernier pack lu (rien à faire s'il n'a pas changé).
+    pub last_hash: String,
+    /// Dernière vérification (secondes depuis 1970).
+    pub last_check: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Published {
+    pub category: String,
+    /// Fichier .zip tenu à jour, dans un dossier synchronisé.
+    pub path: PathBuf,
+    /// Empreinte du contenu écrit la dernière fois.
+    pub signature: String,
+    pub error: Option<String>,
 }
 
 impl Default for Settings {
@@ -304,6 +356,17 @@ impl Default for Settings {
             surprise_sounds: Vec::new(),
             surprise_min_minutes: 10,
             surprise_max_minutes: 60,
+            replay_enabled: true,
+            replay_hotkey: None,
+            duck_enabled: false,
+            duck_level: 0.35,
+            room_code: String::new(),
+            room_name: String::new(),
+            room_id: String::new(),
+            room_accept: true,
+            clips_mode: "ask".into(),
+            subscriptions: Vec::new(),
+            published: Vec::new(),
         }
     }
 }
@@ -313,6 +376,8 @@ impl Default for Settings {
 pub struct Config {
     pub sounds: Vec<Sound>,
     pub settings: Settings,
+    /// Ordre des onglets choisi à la main ; garde aussi les onglets encore vides.
+    pub categories: Vec<String>,
 }
 
 impl Config {

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Extrait</title>
+  <style>
+    :root { --text: #1c1e23; --muted: #5d6472; --accent: #4f46e5; --panel: #ffffff; --border: #e2e4e9; }
+    @media (prefers-color-scheme: dark) {
+      :root { --text: #ececf1; --muted: #a5aab6; --accent: #7c83f5; --panel: #202127; --border: #33353d; }
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
+      font: 14px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; color: var(--text); user-select: none; }
+    body { display: flex; align-items: flex-end; justify-content: flex-end; padding: 8px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+      box-shadow: 0 8px 24px rgba(16, 24, 40, .22); overflow: hidden; animation: pop .18s ease-out; }
+    @keyframes pop { from { transform: translateY(12px); opacity: 0; } }
+    .head { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 12px; }
+    .who { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .who small { color: var(--muted); }
+    button { font: inherit; border: 1px solid var(--border); background: var(--panel); color: var(--text);
+      border-radius: 8px; padding: 6px 14px; cursor: pointer; }
+    button:hover { filter: brightness(.96); }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .x { border: 0; padding: 2px 8px; font-size: 16px; color: var(--muted); background: transparent; }
+    #ask { width: 100%; }
+    #ask .row { display: flex; gap: 8px; padding: 0 12px 12px; }
+    #ask .row button { flex: 1; }
+    .bar { height: 3px; background: var(--accent); transform-origin: left; }
+    #show { width: 100%; height: 100%; display: flex; flex-direction: column; }
+    .stage { flex: 1; min-height: 0; background: #000; display: grid; place-items: center; }
+    .stage { position: relative; }
+    .stage img, .stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+  </style>
+</head>
+<body>
+  <div id="ask" class="card" hidden>
+    <div class="head"><span class="emo" aria-hidden="true">🎬</span><span class="who"><b data-from></b> t'envoie un extrait<br><small data-title></small></span></div>
+    <div class="row">
+      <button type="button" data-action="refuse">Refuser</button>
+      <button type="button" class="primary" data-action="accept">Afficher</button>
+    </div>
+    <div class="bar"></div>
+  </div>
+  <div id="show" class="card" hidden>
+    <div class="head"><span class="emo" aria-hidden="true">🎬</span><span class="who"><b data-from></b> <small data-title></small></span><button type="button" class="x" data-action="close" title="Fermer">✕</button></div>
+    <div class="stage"><img alt=""><video playsinline></video></div>
+    <div class="bar"></div>
+  </div>
+  <script src="clip.js"></script>
+</body>
+</html>

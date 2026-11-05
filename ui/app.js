@@ -35,9 +35,23 @@ function toast(message, isError = false, action = null) {
   toast.timer = setTimeout(() => (el.hidden = true), action ? 8000 : isError ? 6000 : 2500);
 }
 
+// Un son ajouté pendant qu'un onglet est ouvert y est rangé directement.
+const ADD_CMDS = new Set(["pick_sounds", "add_sounds", "add_online", "add_from_url", "add_from_youtube"]);
+
 async function call(cmd, args) {
   try {
-    const res = await invoke(cmd, args);
+    const tab = ADD_CMDS.has(cmd) ? tabCategory() : null;
+    const before = tab && new Set(state.config.sounds.map((s) => s.id));
+    let res = await invoke(cmd, args);
+    if (tab && res) {
+      const snap = res.config ? res : res.snapshot;
+      const ids = (snap?.config.sounds ?? []).filter((s) => !before.has(s.id) && !s.category).map((s) => s.id);
+      if (ids.length) {
+        const placed = await invoke("set_category", { ids, category: tab });
+        if (res.config) res = placed;
+        else res.snapshot = placed;
+      }
+    }
     if (res && res.config) render(res);
     return res;
   } catch (e) {
@@ -78,7 +92,7 @@ function hotkeyFromEvent(e) {
 const TYPING_KEY = /^(Key|Digit)|^(Space|Enter|Backspace|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash|IntlBackslash)$/;
 
 const TYPING_MSG = "Ajoute Ctrl ou Alt : une touche d'écriture seule serait bloquée dans toutes tes applis (pavé numérique et F1 à F12 OK).";
-const SETTING_LABELS = { stop_hotkey: "Tout arrêter", mute_hotkey: "Couper le micro", random_hotkey: "Son au hasard" };
+const SETTING_LABELS = { stop_hotkey: "Tout arrêter", mute_hotkey: "Couper le micro", random_hotkey: "Son au hasard", replay_hotkey: "Rejouer 30 s" };
 
 function blocksTyping(e, quiet = false) {
   if (e.ctrlKey || e.altKey || e.metaKey || !TYPING_KEY.test(e.code)) return false;
@@ -194,6 +208,7 @@ function render(snapshot) {
   renderStatus();
   renderMic();
   renderSurprise();
+  renderRoom();
   renderWarnings();
   renderTabs();
   renderGrid();
@@ -220,9 +235,13 @@ try {
   currentTab = localStorage.getItem(TAB_KEY) || null;
 } catch {}
 
+/** Onglets dans l'ordre choisi (glisser-déposer), y compris ceux encore vides ;
+ *  ceux qui n'ont pas encore de place viennent après, par ordre alphabétique. */
 function categories() {
-  const set = new Set(state.config.sounds.map((s) => s.category).filter(Boolean));
-  return [...set].sort((a, b) => a.localeCompare(b, "fr"));
+  const mine = (state.config.categories || []).filter(Boolean);
+  const used = new Set(state.config.sounds.map((s) => s.category).filter(Boolean));
+  const extra = [...used].filter((c) => !mine.includes(c)).sort((a, b) => a.localeCompare(b, "fr"));
+  return [...mine, ...extra];
 }
 
 // Onglet spécial des derniers sons joués (aucun nom d'onglet ne commence par \u0000).
@@ -275,8 +294,13 @@ function renderTabs() {
     if (iconName) b.append(svgIcon(iconName));
     b.append(label);
     // Un son glissé sur l'onglet y est rangé.
-    if (value && !isSpecialTab(value)) b.dataset.cat = value;
+    if (value && !isSpecialTab(value)) {
+      b.dataset.cat = value;
+      b.title = "Glisse pour changer l'ordre · clic droit : renommer, supprimer";
+      b.addEventListener("pointerdown", (e) => startTabDrag(e, b, value));
+    }
     b.addEventListener("click", () => {
+      if (reorder.justDropped) return;
       currentTab = value;
       try {
         if (value) localStorage.setItem(TAB_KEY, value);
@@ -398,13 +422,14 @@ function renderGrid() {
   const pads = [];
   // En liste, une ligne d'en-tête comme une playlist.
   if (viewMode === "list" && sounds.length) pads.push(listHeader());
-  const groups = !currentTab && categories().length ? soundGroups(sounds) : null;
+  const groups = !currentTab && categories().length ? soundGroups(sounds, !q) : null;
   if (groups) {
     let n = 0;
     for (const g of groups) {
       // Une recherche montre tout, même les groupes repliés.
       const open = !!q || !closedGroups.has(g.key);
       pads.push(groupHeader(g, open));
+      if (open && !g.sounds.length) pads.push(emptyGroup(g.key));
       if (open) pads.push(...g.sounds.map((s) => padElement(s, n++)));
       else n += g.sounds.length;
     }
@@ -418,6 +443,7 @@ function renderGrid() {
   $("#empty").hidden = state.config.sounds.length > 0;
   renderStartSteps();
   $("#top-empty").hidden = !(currentTab === TOP_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
+  $("#tab-empty").hidden = !(currentTab && !isSpecialTab(currentTab) && sounds.length === 0 && !q);
   $("#recent-empty").hidden = !(currentTab === RECENT_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
   $("#search-empty").hidden = !(q && sounds.length === 0 && state.config.sounds.length > 0);
   $('#search-empty [data-action="search-online"] span').textContent = `Chercher « ${$("#search").value.trim()} » en ligne`;
@@ -435,12 +461,13 @@ try {
   closedGroups = new Set(JSON.parse(localStorage.getItem(GROUPS_KEY) || "[]"));
 } catch {}
 
-function soundGroups(sounds) {
+function soundGroups(sounds, showEmpty) {
   const groups = [];
-  const add = (key, label, list) => list.length && groups.push({ key, label, sounds: list });
+  const add = (key, label, list, keepEmpty) => (list.length || keepEmpty) && groups.push({ key, label, sounds: list });
   add(FAV_GROUP, "Favoris", sounds.filter((s) => s.favorite));
   const rest = sounds.filter((s) => !s.favorite);
-  for (const c of categories()) add(c, c, rest.filter((s) => s.category === c));
+  // Un onglet tout juste créé reste visible pour qu'on puisse y glisser des sons.
+  for (const c of categories()) add(c, c, rest.filter((s) => s.category === c), showEmpty);
   add(NO_TAB_GROUP, "Sans onglet", rest.filter((s) => !s.category));
   return groups;
 }
@@ -465,6 +492,10 @@ function groupHeader(group, open) {
   count.textContent = group.sounds.length;
   head.append(chev, name, count);
   head.title = open ? "Replier" : "Déplier";
+  if (head.dataset.cat) {
+    head.title += " · glisser pour changer l'ordre des onglets · clic droit : renommer, supprimer";
+    head.addEventListener("pointerdown", (e) => startTabDrag(e, head, group.key));
+  }
   head.addEventListener("click", () => {
     if (reorder.justDropped) return;
     if (closedGroups.has(group.key)) closedGroups.delete(group.key);
@@ -476,6 +507,167 @@ function groupHeader(group, open) {
   });
   return head;
 }
+
+/** Onglet vide dans « Tous » : une zone où déposer des sons. */
+function emptyGroup(cat) {
+  const zone = document.createElement("div");
+  zone.className = "group-empty";
+  zone.dataset.cat = cat;
+  zone.textContent = "Onglet vide : glisse des sons ici";
+  return zone;
+}
+
+/** Glisser un onglet (ou un titre de groupe) sur un autre change leur ordre. */
+function startTabDrag(e, el, name) {
+  if (e.button !== 0) return;
+  const x0 = e.clientX;
+  const y0 = e.clientY;
+  let dragging = false;
+  let target = null;
+  const move = (ev) => {
+    if (!dragging && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 8) return;
+    dragging = true;
+    el.classList.add("dragging");
+    let over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".tab[data-cat], .group-head[data-cat]");
+    if (!over?.dataset.cat || over.dataset.cat === name) over = null;
+    if (target && target !== over) target.classList.remove("drag-over");
+    target = over;
+    target?.classList.add("drag-over");
+  };
+  const up = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    el.classList.remove("dragging");
+    target?.classList.remove("drag-over");
+    if (!dragging) return;
+    // Le clic qui suit le relâchement ne doit ni ouvrir ni replier.
+    reorder.justDropped = true;
+    setTimeout(() => (reorder.justDropped = false), 0);
+    if (!target) return;
+    const order = categories();
+    const to = order.indexOf(target.dataset.cat);
+    order.splice(order.indexOf(name), 1);
+    // Vers la droite : il se pose après la cible ; vers la gauche : avant.
+    order.splice(to, 0, name);
+    call("set_tabs", { names: order });
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+}
+
+// ---------- Créer, renommer, supprimer un onglet ----------
+
+const dlgTab = $("#dlg-tab");
+const formTab = $("form", dlgTab);
+let tabEdit = null; // { mode: "new" | "rename" | "delete", name }
+enterSaves(dlgTab);
+
+function openTabDialog(mode, name = "") {
+  tabEdit = { mode, name };
+  const n = state.config.sounds.filter((s) => s.category === name).length;
+  const pl = n > 1;
+  $("h2", dlgTab).textContent = { new: "Nouvel onglet", rename: `Renommer « ${name} »`, delete: `Supprimer « ${name} » ?` }[mode];
+  $("#tab-hint").textContent =
+    mode === "delete"
+      ? n
+        ? `${pl ? `Ses ${n} sons ne sont` : "Son son n'est"} pas supprimé${pl ? "s" : ""} : ${pl ? "ils passent" : "il passe"} dans « Sans onglet ».`
+        : "Il est vide : aucun son n'est touché."
+      : "Range ensuite tes sons dedans en les glissant sur son nom.";
+  formTab.tab_name.closest("label").hidden = mode === "delete";
+  formTab.tab_name.value = mode === "rename" ? name : "";
+  const ok = $('button[value="save"]', dlgTab);
+  ok.textContent = { new: "Créer", rename: "Renommer", delete: "Supprimer" }[mode];
+  ok.classList.toggle("danger", mode === "delete");
+  dlgTab.returnValue = "";
+  dlgTab.showModal();
+  if (mode === "delete") ok.focus();
+  else formTab.tab_name.select();
+}
+$('[data-action="cancel"]', dlgTab).addEventListener("click", () => dlgTab.close());
+dlgTab.addEventListener("close", async () => {
+  if (dlgTab.returnValue !== "save" || !tabEdit) return;
+  const { mode, name } = tabEdit;
+  tabEdit = null;
+  const value = formTab.tab_name.value.trim().slice(0, 30);
+  const cats = categories();
+  if (mode === "new") {
+    if (!value) return;
+    if (cats.includes(value)) return toast(`L'onglet « ${value} » existe déjà`, true);
+    if (await call("set_tabs", { names: [...cats, value] })) toast(`Onglet « ${value} » créé : glisse des sons dessus pour les y ranger`);
+  } else if (mode === "rename") {
+    if (!value || value === name) return;
+    if (currentTab === name) {
+      currentTab = value;
+      try {
+        localStorage.setItem(TAB_KEY, value);
+      } catch {}
+    }
+    // Un groupe replié le reste sous son nouveau nom.
+    if (closedGroups.delete(name)) {
+      closedGroups.add(value);
+      try {
+        localStorage.setItem(GROUPS_KEY, JSON.stringify([...closedGroups]));
+      } catch {}
+    }
+    const merged = cats.includes(value);
+    if (await call("rename_tab", { old: name, new: value })) {
+      toast(merged ? `« ${name} » regroupé avec « ${value} »` : `Onglet renommé en « ${value} »`);
+    }
+  } else if (await call("rename_tab", { old: name, new: null })) {
+    toast(`Onglet « ${name} » supprimé`);
+  }
+});
+
+// Clic droit sur le fond de la grille ou sur la barre des onglets.
+const ctxMenu = $("#ctx-menu");
+const closeCtxMenu = () => (ctxMenu.hidden = true);
+document.addEventListener("contextmenu", (e) => {
+  if (e.target.closest(".pad, dialog, input, textarea, .menu") || !e.target.closest("main, .tabbar")) return;
+  e.preventDefault();
+  const cat = e.target.closest("[data-cat]")?.dataset.cat || null;
+  const item = (icon, label, run, danger) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("role", "menuitem");
+    if (danger) b.className = "danger";
+    b.append(svgIcon(icon), label);
+    b.addEventListener("click", () => {
+      closeCtxMenu();
+      run();
+    });
+    return b;
+  };
+  const items = [item("plus", "Nouvel onglet", () => openTabDialog("new"))];
+  if (cat) {
+    items.push(
+      item("pencil", `Renommer « ${cat} »`, () => openTabDialog("rename", cat)),
+      item("trash", `Supprimer « ${cat} »`, () => openTabDialog("delete", cat), true),
+    );
+  }
+  ctxMenu.replaceChildren(...items);
+  ctxMenu.hidden = false;
+  // Le menu reste dans la fenêtre.
+  const { width, height } = ctxMenu.getBoundingClientRect();
+  ctxMenu.style.left = Math.max(8, Math.min(e.clientX, innerWidth - width - 8)) + "px";
+  ctxMenu.style.top = Math.max(8, Math.min(e.clientY, innerHeight - height - 8)) + "px";
+  $("button", ctxMenu).focus();
+});
+document.addEventListener("pointerdown", (e) => {
+  if (!ctxMenu.hidden && !ctxMenu.contains(e.target)) closeCtxMenu();
+});
+window.addEventListener("blur", closeCtxMenu);
+window.addEventListener("scroll", closeCtxMenu, true);
+ctxMenu.addEventListener("keydown", (e) => {
+  const items = $$("button", ctxMenu);
+  const i = items.indexOf(document.activeElement);
+  if (e.key === "Escape") {
+    e.stopPropagation();
+    closeCtxMenu();
+  } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
+  }
+});
 
 // ---------- Sélection de plusieurs sons ----------
 
@@ -1577,7 +1769,7 @@ dlgSound.addEventListener("keydown", (e) => {
 
 const dlgSettings = $("#dlg-settings");
 const formSettings = $("form", dlgSettings);
-const SETTINGS_HOTKEYS = ["stop_hotkey", "mute_hotkey", "random_hotkey"];
+const SETTINGS_HOTKEYS = ["stop_hotkey", "mute_hotkey", "random_hotkey", "replay_hotkey"];
 for (const k of SETTINGS_HOTKEYS) setupHotkeyInput(formSettings[k], () => ({ setting: k }));
 bindRangeLabels(formSettings);
 enterSaves(dlgSettings);
@@ -1626,6 +1818,7 @@ async function openSettings() {
   $("#calib").hidden = true;
   formSettings.freesound_key.value = s.freesound_key ?? "";
   formSettings.giphy_key.value = s.giphy_key ?? "";
+  fillFriendsSettings(s);
   updateNormalizeRow();
   dlgSettings.returnValue = "";
   dlgSettings.showModal();
@@ -1825,6 +2018,14 @@ dlgSettings.addEventListener("close", () => {
     voice_eq: f.voice_eq.value,
     freesound_key: f.freesound_key.value.trim() || null,
     giphy_key: f.giphy_key.value.trim() || null,
+    replay_hotkey: f.replay_hotkey.dataset.hotkey || null,
+    replay_enabled: f.replay_enabled.checked,
+    duck_enabled: f.duck_enabled.checked,
+    duck_level: Number(f.duck_level.value),
+    room_code: f.room_code.value.trim().toUpperCase(),
+    room_name: f.room_name.value.trim(),
+    room_accept: f.room_accept.checked,
+    clips_mode: f.clips_mode.value,
   });
 });
 
@@ -2889,6 +3090,464 @@ function stopOnlinePreview() {
   if (online.playingBtn) online.playingBtn.textContent = "▶";
   online.playingBtn = null;
 }
+
+
+// ---------- 2.0 : rejouer, enregistrer, texte → voix ----------
+
+/** Un son vient d'être créé : on le montre et on propose de le découper. */
+function offerTrim(id, message) {
+  const sound = state.config.sounds.find((s) => s.id === id);
+  if (!sound) return toast(message);
+  flash(id);
+  toast(message, false, { label: "Découper", run: () => openSoundDialog(sound) });
+}
+
+async function saveReplay() {
+  toast("Enregistrement des 30 dernières secondes…");
+  const res = await call("save_replay");
+  if (!res) return;
+  render(res.snapshot);
+  offerTrim(res.id, "Extrait ajouté : garde le passage qui t'intéresse");
+}
+$("#btn-replay").addEventListener("click", saveReplay);
+listen("replay-saved", ({ payload }) => offerTrim(payload, "Extrait des 30 dernières secondes ajouté"));
+listen("replay-error", ({ payload }) => toast(String(payload), true));
+
+const dlgRecord = $("#dlg-record");
+const rec = { on: false, started: 0, timer: 0 };
+function recUi() {
+  const btn = $('[data-action="rec"]', dlgRecord);
+  btn.classList.toggle("on", rec.on);
+  btn.setAttribute("aria-label", rec.on ? "Arrêter et garder" : "Commencer l'enregistrement");
+  $("[data-rec-state]", dlgRecord).textContent = rec.on
+    ? "Parle… Appuie sur le carré pour arrêter et garder le son."
+    : "Appuie sur le bouton rouge pour commencer.";
+  const secs = rec.on ? Math.floor((Date.now() - rec.started) / 1000) : 0;
+  $(".rec-time", dlgRecord).textContent = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+  // Une minute au plus : on s'arrête tout seul.
+  if (rec.on && secs >= 60) stopRecording(true);
+}
+async function stopRecording(keep) {
+  if (!rec.on) return;
+  rec.on = false;
+  clearInterval(rec.timer);
+  recUi();
+  const res = await call("mic_record_stop", { keep });
+  if (!keep || !res) return;
+  dlgRecord.close();
+  render(res.snapshot);
+  offerTrim(res.id, "Enregistrement ajouté");
+}
+$('[data-action="rec"]', dlgRecord).addEventListener("click", async () => {
+  if (rec.on) return stopRecording(true);
+  try {
+    await invoke("mic_record_start");
+  } catch (e) {
+    return toast(String(e), true);
+  }
+  rec.on = true;
+  rec.started = Date.now();
+  rec.timer = setInterval(recUi, 250);
+  recUi();
+});
+$('[data-action="close"]', dlgRecord).addEventListener("click", () => dlgRecord.close());
+dlgRecord.addEventListener("close", () => stopRecording(false));
+$("#btn-record").addEventListener("click", () => {
+  if (!state.config.settings.mic_enabled) return toast("Active d'abord « Envoyer ma voix dans Discord » dans les réglages (Micro)", true);
+  recUi();
+  dlgRecord.showModal();
+});
+
+const dlgTts = $("#dlg-tts");
+const formTts = $("form", dlgTts);
+bindRangeLabels(formTts);
+formTts.rate.update = () => ($('.value[data-for="rate"]', dlgTts).textContent = `× ${Number(formTts.rate.value).toFixed(1)}`);
+formTts.rate.addEventListener("input", formTts.rate.update);
+let ttsVoices = null;
+const ttsPrefs = () => {
+  try { return JSON.parse(localStorage.getItem("soundboard.tts") || "{}"); } catch { return {}; }
+};
+$("#btn-tts").addEventListener("click", async () => {
+  const prefs = ttsPrefs();
+  if (!ttsVoices) ttsVoices = (await call("tts_voices")) || [];
+  formTts.voice.replaceChildren(...ttsVoices.map((v) => new Option(`${v.name} (${v.language})`, v.id)));
+  if (!ttsVoices.length) formTts.voice.add(new Option("Voix par défaut de Windows", ""));
+  if (prefs.voice && ttsVoices.some((v) => v.id === prefs.voice)) formTts.voice.value = prefs.voice;
+  formTts.rate.value = prefs.rate ?? 1;
+  formTts.rate.update();
+  dlgTts.showModal();
+  formTts.text.focus();
+});
+function ttsArgs() {
+  const args = { text: formTts.text.value, voice: formTts.voice.value || null, rate: Number(formTts.rate.value) };
+  try { localStorage.setItem("soundboard.tts", JSON.stringify({ voice: args.voice, rate: args.rate })); } catch {}
+  return args;
+}
+$('[data-action="say"]', dlgTts).addEventListener("click", async (e) => {
+  e.currentTarget.disabled = true;
+  await call("tts_say", ttsArgs());
+  e.currentTarget.disabled = false;
+});
+$('[data-action="create"]', dlgTts).addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  const res = await call("tts_create", ttsArgs());
+  btn.disabled = false;
+  if (!res) return;
+  dlgTts.close();
+  formTts.text.value = "";
+  render(res.snapshot);
+  offerTrim(res.id, "Pad créé");
+});
+$('[data-action="close"]', dlgTts).addEventListener("click", () => dlgTts.close());
+formTts.text.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $('[data-action="say"]', dlgTts).click();
+});
+
+// ---------- 2.0 : packs partagés par lien ----------
+
+const dlgFollow = $("#dlg-follow");
+const formFollow = $("form", dlgFollow);
+function openFollow() {
+  formFollow.reset();
+  dlgFollow.returnValue = "";
+  dlgFollow.showModal();
+}
+$("#btn-follow").addEventListener("click", openFollow);
+$('[data-action="close"]', dlgFollow).addEventListener("click", () => dlgFollow.close());
+dlgFollow.addEventListener("close", async () => {
+  if (dlgFollow.returnValue !== "follow") return;
+  toast("Téléchargement du pack…");
+  const res = await call("subscribe_pack", { url: formFollow.url.value.trim(), name: formFollow.name.value.trim() || null });
+  if (!res) return;
+  render(res.snapshot);
+  const sub = state.config.settings.subscriptions.find((s) => s.url === formFollow.url.value.trim());
+  toast(`${res.added} son${res.added > 1 ? "s" : ""} ajouté${res.added > 1 ? "s" : ""} dans « ${sub?.name ?? "l'onglet du pack"} ». Les nouveaux arriveront tout seuls.`);
+});
+listen("packs-updated", ({ payload: [added, removed] }) => {
+  const parts = [];
+  if (added) parts.push(`${added} nouveau${added > 1 ? "x" : ""} son${added > 1 ? "s" : ""}`);
+  if (removed) parts.push(`${removed} retiré${removed > 1 ? "s" : ""}`);
+  toast(`Packs de tes potes : ${parts.join(", ")}`);
+});
+
+const dlgPublish = $("#dlg-publish");
+let publishTab = null;
+function showPublishDone(category) {
+  const pub = state.config.settings.published.find((p) => p.category === category);
+  $('[data-step="pick"]', dlgPublish).hidden = !!pub;
+  $('[data-step="done"]', dlgPublish).hidden = !pub;
+  if (pub) $("[data-path]", dlgPublish).textContent = pub.path;
+  if (pub?.error) toast(`Pack pas encore écrit : ${pub.error}`, true);
+}
+async function publish(folder) {
+  const res = await call("publish_tab", { category: publishTab, folder });
+  if (res) showPublishDone(publishTab);
+}
+$("#btn-publish").addEventListener("click", async () => {
+  publishTab = tabCategory();
+  if (!publishTab) return toast("Ouvre d'abord l'onglet à partager (pas « Tous »)", true);
+  $("[data-tab-name]", dlgPublish).textContent = publishTab;
+  const folders = (await call("cloud_folders")) || [];
+  const list = $("#cloud-list");
+  list.replaceChildren(
+    ...folders.map((f) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      const name = document.createElement("b");
+      name.textContent = f.name;
+      const path = document.createElement("small");
+      path.textContent = f.path;
+      b.append(name, path);
+      b.addEventListener("click", () => publish(f.path));
+      return b;
+    }),
+  );
+  if (!folders.length) list.textContent = "Aucun OneDrive, Dropbox ou Google Drive trouvé sur ce PC : choisis un dossier synchronisé.";
+  showPublishDone(publishTab);
+  dlgPublish.showModal();
+});
+$('[data-action="other"]', dlgPublish).addEventListener("click", () => publish(null));
+$('[data-action="reveal"]', dlgPublish).addEventListener("click", () => call("reveal_published", { category: publishTab }));
+$('[data-action="close"]', dlgPublish).addEventListener("click", () => dlgPublish.close());
+
+function linkItem(title, sub, isError, buttons) {
+  const row = document.createElement("div");
+  row.className = "link-item";
+  const txt = document.createElement("span");
+  txt.className = "txt";
+  const b = document.createElement("b");
+  b.textContent = title;
+  const small = document.createElement("small");
+  small.textContent = sub;
+  small.title = sub;
+  small.classList.toggle("err", isError);
+  txt.append(b, small);
+  row.append(txt);
+  for (const [label, run] of buttons) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = label;
+    btn.addEventListener("click", run);
+    row.append(btn);
+  }
+  return row;
+}
+
+function ago(secs) {
+  if (!secs) return "jamais vérifié";
+  const min = Math.round((Date.now() / 1000 - secs) / 60);
+  return min < 1 ? "vérifié à l'instant" : min < 60 ? `vérifié il y a ${min} min` : `vérifié il y a ${Math.round(min / 60)} h`;
+}
+
+function renderLinkLists() {
+  const s = state.config.settings;
+  $("#subs-list").replaceChildren(
+    ...s.subscriptions.map((sub) =>
+      linkItem(sub.name || "Pack de potes", sub.error ? `⚠ ${sub.error}` : `${ago(sub.last_check)} · ${sub.url}`, !!sub.error, [
+        ["Ne plus suivre", async () => {
+          const remove = confirm(`Ne plus suivre « ${sub.name} ».\n\nSupprimer aussi ses sons ? (OK : supprimer, Annuler : les garder)`);
+          await call("unsubscribe_pack", { url: sub.url, removeSounds: remove });
+          renderLinkLists();
+        }],
+      ]),
+    ),
+  );
+  $("#pubs-list").replaceChildren(
+    ...s.published.map((p) =>
+      linkItem(p.category, p.error ? `⚠ ${p.error}` : p.path, !!p.error, [
+        ["Ouvrir le dossier", () => call("reveal_published", { category: p.category })],
+        ["Arrêter", async () => {
+          await call("unpublish_tab", { category: p.category });
+          renderLinkLists();
+        }],
+      ]),
+    ),
+  );
+}
+$('[data-action="follow"]', dlgSettings).addEventListener("click", openFollow);
+$('[data-action="sync"]', dlgSettings).addEventListener("click", async () => {
+  const res = await call("sync_packs");
+  if (!res) return;
+  renderLinkLists();
+  if (res.errors.length) toast(res.errors.join("\n"), true);
+  else toast(res.added + res.removed ? `${res.added} ajouté(s), ${res.removed} retiré(s)` : "Tout est à jour");
+});
+
+// ---------- 2.0 : salon entre potes ----------
+
+let room = { on: false, connected: false, members: [], target: null };
+const roomPill = $("#room-pill");
+const roomMenu = $("#room-menu");
+
+function renderRoom() {
+  const wrap = $(".room-wrap");
+  wrap.hidden = !state.config.settings.room_code;
+  const target = room.members.find((m) => m.id === room.target);
+  roomPill.className = "pill" + (target ? " away" : "") + (room.connected ? "" : " offline");
+  roomPill.textContent = target ? `👥 Joue chez ${target.name}` : room.connected ? `👥 Salon · ${room.members.length}` : "👥 Salon…";
+  roomPill.title = target
+    ? `Tes sons partent chez ${target.name} (dans Discord par son micro). Clique pour revenir chez toi.`
+    : room.connected
+      ? "Salon entre potes : choisis chez qui jouer tes sons"
+      : "Connexion au salon…";
+  const st = $("#room-state");
+  if (st) {
+    st.textContent = !state.config.settings.room_code
+      ? ""
+      : room.connected
+        ? room.members.length
+          ? `Connecté · en ligne : ${room.members.map((m) => m.name).join(", ")}`
+          : "Connecté · aucun pote en ligne pour l'instant"
+        : "Connexion au salon…";
+  }
+}
+
+function setRoomMenu(open) {
+  roomMenu.hidden = !open;
+  roomPill.setAttribute("aria-expanded", String(open));
+  if (!open) return;
+  const item = (label, id) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("role", "menuitemradio");
+    b.setAttribute("aria-checked", String(room.target === id));
+    b.classList.toggle("on", room.target === id);
+    b.textContent = (room.target === id ? "✓ " : "") + label;
+    b.addEventListener("click", async () => {
+      setRoomMenu(false);
+      room = (await call("set_room_target", { target: id })) || room;
+      renderRoom();
+      const t = room.members.find((m) => m.id === room.target);
+      toast(t ? `Tes sons partent maintenant chez ${t.name}` : "Tes sons sont de nouveau joués chez toi");
+    });
+    return b;
+  };
+  const title = document.createElement("div");
+  title.className = "room-menu-title";
+  title.textContent = "Jouer mes sons…";
+  const items = [title, item("Chez moi", null), ...room.members.map((m) => item(`Chez ${m.name}`, m.id))];
+  if (!room.members.length) {
+    const note = document.createElement("div");
+    note.className = "empty-note";
+    note.textContent = room.connected
+      ? "Aucun pote en ligne : ils doivent mettre le même code dans Réglages → Potes."
+      : "Connexion au salon…";
+    items.push(note);
+  }
+  const clipBtn = document.createElement("button");
+  clipBtn.type = "button";
+  clipBtn.setAttribute("role", "menuitem");
+  clipBtn.className = "room-clip";
+  clipBtn.textContent = "🎬 Envoyer un extrait…";
+  clipBtn.addEventListener("click", () => {
+    setRoomMenu(false);
+    openClipDialog();
+  });
+  items.push(clipBtn);
+  roomMenu.replaceChildren(...items);
+}
+roomPill.addEventListener("click", () => setRoomMenu(roomMenu.hidden));
+document.addEventListener("pointerdown", (e) => {
+  if (!roomMenu.hidden && !e.target.closest(".room-wrap")) setRoomMenu(false);
+});
+roomMenu.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    e.stopPropagation();
+    setRoomMenu(false);
+    roomPill.focus();
+  }
+});
+listen("room", ({ payload }) => {
+  room = payload;
+  renderRoom();
+  if (!roomMenu.hidden) setRoomMenu(true);
+});
+listen("room-played", ({ payload: [who, title] }) => toast(`${who} a joué « ${title} » chez toi`));
+listen("room-sent", ({ payload }) => {
+  const t = room.members.find((m) => m.id === room.target);
+  toast(`« ${payload} » envoyé chez ${t?.name ?? "ton pote"}`);
+});
+listen("room-error", ({ payload }) => toast(String(payload), true));
+listen("clip-received", ({ payload: [who, title] }) => toast(`🎬 ${who} t'envoie un extrait${title ? ` : « ${title} »` : ""}`));
+
+// ---------- 2.0 : extrait sur l'écran d'un pote ----------
+
+const dlgClip = $("#dlg-clip");
+const formClip = $("form", dlgClip);
+const clipImg = $("img.clip-preview", dlgClip);
+const clipVideo = $("video.clip-preview", dlgClip);
+let clipMedia = null;
+
+function clipUi() {
+  $(".clip-empty", dlgClip).hidden = !!clipMedia;
+  clipImg.hidden = clipMedia?.kind !== "image";
+  clipVideo.hidden = clipMedia?.kind !== "video";
+  // Une vidéo garde son propre son.
+  $("[data-for-image]", dlgClip).hidden = clipMedia?.kind === "video";
+  $('[data-action="send"]', dlgClip).disabled = !clipMedia;
+}
+function openClipDialog(to) {
+  if (!state.config.settings.room_code) return toast("Rejoins d'abord un salon avec tes potes : Réglages → Potes", true);
+  const sounds = [...state.config.sounds].sort((a, b) => a.name.localeCompare(b.name, "fr"));
+  formClip.sound.replaceChildren(new Option("Pas de son", ""), ...sounds.map((s) => new Option(`${s.emoji ? s.emoji + " " : ""}${s.name}`, s.id)));
+  formClip.to.replaceChildren(new Option(`Tout le salon (${room.members.length} en ligne)`, ""), ...room.members.map((m) => new Option(m.name, m.id)));
+  formClip.to.value = to ?? room.target ?? "";
+  clipUi();
+  dlgClip.showModal();
+}
+$("#btn-clip").addEventListener("click", () => openClipDialog());
+$('[data-action="pick"]', dlgClip).addEventListener("click", async () => {
+  const picked = await call("pick_clip_media");
+  if (!picked) return;
+  clipMedia = picked;
+  const src = fileSrc(picked.path);
+  if (picked.kind === "video") {
+    clipImg.removeAttribute("src");
+    clipVideo.src = src;
+    clipVideo.play().catch(() => {});
+  } else {
+    clipVideo.removeAttribute("src");
+    clipImg.src = src;
+  }
+  clipUi();
+});
+clipVideo.addEventListener("loadedmetadata", () => {
+  if (clipVideo.duration > 15.5) toast("Vidéo de plus de 15 s : seules les 15 premières secondes seront montrées");
+});
+$('[data-action="send"]', dlgClip).addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  if (!clipMedia) return;
+  if (!room.members.length) return toast("Aucun pote en ligne dans le salon pour l'instant", true);
+  btn.disabled = true;
+  btn.textContent = "Envoi…";
+  const to = formClip.to.value || null;
+  try {
+    await invoke("send_clip", {
+      media: clipMedia.path,
+      soundId: clipMedia.kind === "image" ? formClip.sound.value || null : null,
+      title: formClip.title.value,
+      to,
+    });
+  } catch (err) {
+    return toast(String(err), true);
+  } finally {
+    btn.textContent = "Envoyer";
+    btn.disabled = !clipMedia;
+  }
+  const who = room.members.find((m) => m.id === to)?.name;
+  toast(`🎬 Extrait envoyé ${who ? `à ${who}` : "au salon"}`);
+  dlgClip.close();
+});
+$('[data-action="close"]', dlgClip).addEventListener("click", () => dlgClip.close());
+dlgClip.addEventListener("close", () => {
+  clipVideo.pause();
+  clipVideo.removeAttribute("src");
+  clipImg.removeAttribute("src");
+  clipMedia = null;
+  formClip.title.value = "";
+});
+invoke("room_status").then((r) => {
+  room = r;
+  if (state) renderRoom();
+}).catch(() => {});
+
+function fillFriendsSettings(s) {
+  const f = formSettings;
+  f.replay_enabled.checked = s.replay_enabled ?? true;
+  f.duck_enabled.checked = !!s.duck_enabled;
+  const levels = [0.6, 0.35, 0.15];
+  f.duck_level.value = String(levels.reduce((b, o) => (Math.abs(o - (s.duck_level ?? 0.35)) < Math.abs(b - (s.duck_level ?? 0.35)) ? o : b), 0.35));
+  updateDuckRow();
+  $("#discord-status").textContent = state.discord_heard
+    ? "✓ Discord est capté : la voix de tes potes compte pour « Rejouer » et la baisse auto."
+    : "Discord n'est pas capté pour l'instant (lancé ? Windows 10 de mai 2020 ou plus récent ?). « Rejouer » garde quand même ta voix et tes sons.";
+  f.room_code.value = s.room_code ?? "";
+  f.room_name.value = s.room_name ?? "";
+  f.room_accept.checked = s.room_accept ?? true;
+  f.clips_mode.value = s.clips_mode || "ask";
+  renderRoom();
+  renderLinkLists();
+}
+function updateDuckRow() {
+  formSettings.duck_level.disabled = !formSettings.duck_enabled.checked;
+}
+formSettings.duck_enabled.addEventListener("change", updateDuckRow);
+$('[data-action="room-new"]', dlgSettings).addEventListener("click", async () => {
+  const code = await call("new_room_code");
+  if (code) formSettings.room_code.value = code;
+  toast("Code créé : copie-le et donne-le à tes potes, puis enregistre");
+});
+$('[data-action="room-copy"]', dlgSettings).addEventListener("click", async () => {
+  const code = formSettings.room_code.value.trim();
+  if (!code) return toast("Crée d'abord un code", true);
+  try {
+    await navigator.clipboard.writeText(code);
+    toast("Code copié");
+  } catch {
+    formSettings.room_code.select();
+  }
+});
 
 // ---------- Démarrage ----------
 
