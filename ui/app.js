@@ -3488,6 +3488,7 @@ function setClipSource(source) {
   dlgClip.querySelectorAll("#clip-source button").forEach((b) => b.classList.toggle("active", b.dataset.source === source));
   dlgClip.querySelectorAll("[data-pane]").forEach((p) => (p.hidden = p.dataset.pane !== source));
   if (source === "link") formClip.link.focus();
+  if (source === "history") renderClipHistory();
   if (source === "gif") {
     if (!state.config.settings.giphy_key) toast("Ajoute ta clé GIPHY gratuite dans les réglages (⚙ → Général) pour chercher des GIF", true);
     formClip.gifq.focus();
@@ -3523,40 +3524,64 @@ function openClipDialog(to) {
   dlgClip.showModal();
   renderClipRecents();
 }
-// Les 5 derniers extraits envoyés : un clic les remet tels quels.
+// Vignette d'un extrait envoyé ou reçu : un clic le remet tel quel.
+function clipTile(r, caption) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.title = [caption, r.title ? `« ${r.title} »` : r.kind === "video" ? "Vidéo" : "Image"].filter(Boolean).join(" · ");
+  if (r.kind === "video") {
+    const v = document.createElement("video");
+    v.muted = true;
+    v.preload = "metadata";
+    v.src = `${fileSrc(r.path)}#t=${(r.start_s || 0) + 0.5}`;
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    tag.textContent = "▶";
+    b.append(v, tag);
+  } else {
+    const img = document.createElement("img");
+    img.src = fileSrc(r.path);
+    img.alt = "";
+    b.append(img);
+  }
+  if (caption) {
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = caption;
+    b.append(name);
+  }
+  b.addEventListener("click", () => {
+    clipTrimEnd = r.kind === "video" ? r.end_s ?? null : null;
+    showClipMedia({ path: r.path, kind: r.kind }, r.start_s || 0);
+    formClip.title.value = r.title || "";
+    formClip.cvol.value = String(r.volume ?? 1);
+    if (r.kind === "image") formClip.sound.value = r.sound_id || "";
+    clipUi();
+  });
+  return b;
+}
+const fmtWhen = (at) => (at ? new Date(at * 1000).toLocaleString("fr-FR", { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "");
+// Les 5 derniers extraits envoyés, en haut de la fenêtre.
 async function renderClipRecents() {
-  const recents = await invoke("clip_recents").catch(() => []);
+  const recents = (await invoke("clip_recents").catch(() => [])).slice(0, 5);
   const box = $(".clip-recents", dlgClip);
   box.hidden = !recents.length;
-  $(".clip-recents-list", dlgClip).replaceChildren(...recents.map((r) => {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.title = r.title ? `« ${r.title} »` : r.kind === "video" ? "Vidéo" : "Image";
-    if (r.kind === "video") {
-      const v = document.createElement("video");
-      v.muted = true;
-      v.preload = "metadata";
-      v.src = `${fileSrc(r.path)}#t=${(r.start_s || 0) + 0.5}`;
-      const tag = document.createElement("span");
-      tag.className = "tag";
-      tag.textContent = "▶";
-      b.append(v, tag);
-    } else {
-      const img = document.createElement("img");
-      img.src = fileSrc(r.path);
-      img.alt = "";
-      b.append(img);
+  $(".clip-recents-list", dlgClip).replaceChildren(...recents.map((r) => clipTile(r)));
+}
+// Onglet « Historique » : les 20 derniers envoyés et reçus.
+async function renderClipHistory() {
+  const h = await invoke("clip_history").catch(() => ({ sent: [], received: [] }));
+  for (const [key, list] of Object.entries(h)) {
+    const box = $(`[data-list="${key}"]`, dlgClip);
+    if (!list.length) {
+      const note = document.createElement("p");
+      note.className = "hint";
+      note.textContent = key === "sent" ? "Rien envoyé pour l'instant." : "Rien reçu pour l'instant.";
+      box.replaceChildren(note);
+      continue;
     }
-    b.addEventListener("click", () => {
-      clipTrimEnd = r.kind === "video" ? r.end_s ?? null : null;
-      showClipMedia({ path: r.path, kind: r.kind }, r.start_s || 0);
-      formClip.title.value = r.title || "";
-      formClip.cvol.value = String(r.volume ?? 1);
-      if (r.kind === "image") formClip.sound.value = r.sound_id || "";
-      clipUi();
-    });
-    return b;
-  }));
+    box.replaceChildren(...list.map((r) => clipTile(r, [r.from ? `de ${r.from}` : "", fmtWhen(r.at)].filter(Boolean).join(" · "))));
+  }
 }
 $('[data-action="preview"]', dlgClip).addEventListener("click", () => {
   if (!clipMedia) return;

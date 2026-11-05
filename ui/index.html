@@ -613,6 +613,7 @@
         <button type="button" data-source="file" class="active">📁 Fichier <small>image, GIF, vidéo</small></button>
         <button type="button" data-source="link">🔗 Vidéo <small>recherche ou lien</small></button>
         <button type="button" data-source="gif">🎞️ GIF <small>recherche GIPHY</small></button>
+        <button type="button" data-source="history">🕘 Historique <small>envoyés, reçus</small></button>
       </div>
       <div data-pane="link" hidden>
         <div class="search-row">
@@ -627,6 +628,13 @@
           <button type="button" class="primary" data-action="search-gif">Chercher</button>
         </div>
         <div class="clip-gifs" role="listbox" aria-label="GIF trouvés"></div>
+      </div>
+      <div data-pane="history" hidden>
+        <p class="label">Envoyés</p>
+        <div class="clip-gifs clip-history" data-list="sent"></div>
+        <p class="label">Reçus</p>
+        <div class="clip-gifs clip-history" data-list="received"></div>
+        <small class="hint">Les 20 derniers de chaque côté. Un clic le remet ici : tu peux le revoir (👁 Aperçu), l'écouter ou le renvoyer.</small>
       </div>
       <div class="clip-frame">
         <button type="button" class="clip-drop" data-action="pick">

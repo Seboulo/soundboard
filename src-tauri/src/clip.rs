@@ -66,33 +66,64 @@ pub struct Recent {
     pub end_s: Option<f64>,
     pub volume: Option<f32>,
     pub sound_id: Option<String>,
+    /// Reçu : nom du pote, et son à part (image + son).
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub sound: Option<String>,
+    /// Date (secondes depuis 1970).
+    #[serde(default)]
+    pub at: u64,
 }
 
-const RECENTS: usize = 5;
+/// Extraits gardés dans l'historique (envoyés, et reçus).
+const RECENTS: usize = 20;
+
+fn now_s() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+fn received_file(state: &AppState) -> PathBuf {
+    clips_dir(state).join("recus").join("index.json")
+}
 
 fn recents_file(state: &AppState) -> PathBuf {
     clips_dir(state).join("recents.json")
 }
 
-fn load_recents(state: &AppState) -> Vec<Recent> {
-    let list: Vec<Recent> = fs::read(recents_file(state)).ok().and_then(|d| serde_json::from_slice(&d).ok()).unwrap_or_default();
+fn load_list(file: &Path) -> Vec<Recent> {
+    let list: Vec<Recent> = fs::read(file).ok().and_then(|d| serde_json::from_slice(&d).ok()).unwrap_or_default();
     list.into_iter().filter(|r| Path::new(&r.path).exists()).take(RECENTS).collect()
 }
 
-fn add_recent(state: &AppState, recent: Recent) {
-    let mut list = load_recents(state);
+fn add_to_list(file: &Path, recent: Recent) {
+    let mut list = load_list(file);
     list.retain(|r| r.path != recent.path);
     list.insert(0, recent);
     list.truncate(RECENTS);
     if let Ok(data) = serde_json::to_vec(&list) {
-        let _ = fs::write(recents_file(state), data);
+        let _ = fs::write(file, data);
     }
+}
+
+fn load_recents(state: &AppState) -> Vec<Recent> {
+    load_list(&recents_file(state))
+}
+
+fn add_recent(state: &AppState, recent: Recent) {
+    add_to_list(&recents_file(state), recent);
 }
 
 /// Les derniers extraits envoyés (encore sur le disque).
 #[tauri::command]
 pub fn clip_recents(state: State<AppState>) -> Vec<Recent> {
     load_recents(&state)
+}
+
+/// Historique : extraits envoyés et reçus (encore sur le disque).
+#[tauri::command]
+pub fn clip_history(state: State<AppState>) -> serde_json::Value {
+    serde_json::json!({ "sent": load_recents(&state), "received": load_list(&received_file(&state)) })
 }
 
 #[derive(Default)]
@@ -153,6 +184,7 @@ fn trim_dir(dir: &Path, keep: usize) {
     let Ok(entries) = fs::read_dir(dir) else { return };
     let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
         .flatten()
+        .filter(|e| e.path().extension().is_none_or(|x| x != "json"))
         .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
         .collect();
     if files.len() <= keep {
@@ -214,7 +246,7 @@ fn keep_for_sending(
     let state = app.state::<AppState>();
     let dir = clips_dir(&state).join("envoi");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    trim_dir(&dir, 24);
+    trim_dir(&dir, 40);
     let id = uuid::Uuid::new_v4().simple().to_string();
     let copy = dir.join(format!("{id}.{ext}"));
     fs::write(&copy, data).map_err(|e| e.to_string())?;
@@ -427,6 +459,9 @@ pub async fn send_clip(
         end_s: end_s.filter(|_| is_video),
         volume: volume.filter(|_| is_video),
         sound_id: sound.map(|s| s.id),
+        from: None,
+        sound: None,
+        at: now_s(),
     });
     Ok(())
 }
@@ -454,7 +489,7 @@ pub async fn receive(app: &AppHandle, from: String, name: String, title: String,
     let (h, media, sound) = unpack(&data)?;
     let dir = clips_dir(&state).join("recus");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    trim_dir(&dir, 20);
+    trim_dir(&dir, 40);
     let id = uuid::Uuid::new_v4().simple().to_string();
     let media_path = dir.join(format!("{id}.{}", h.media_ext));
     fs::write(&media_path, media).map_err(|e| e.to_string())?;
@@ -480,6 +515,18 @@ pub async fn receive(app: &AppHandle, from: String, name: String, title: String,
         ask: mode != "auto",
         preview: false,
     };
+    add_to_list(&received_file(&state), Recent {
+        path: show.media.clone(),
+        kind: show.kind.into(),
+        title: show.title.clone(),
+        start_s: (show.kind == "video").then(|| show.start_ms as f64 / 1000.0),
+        end_s: show.end_ms.map(|e| e as f64 / 1000.0),
+        volume: Some(show.volume),
+        sound_id: None,
+        from: Some(show.from.clone()),
+        sound: show.sound.clone(),
+        at: now_s(),
+    });
     let _ = app.emit("clip-received", (&show.from, &show.title));
     show_window(app, show)
 }

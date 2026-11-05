@@ -1571,4 +1571,10 @@ body:has(.grid.list) .tabbar .size { display: none; }
 .clip-recents-list { display: flex; gap: 6px; overflow-x: auto; min-width: 0; }
 .clip-recents-list button { flex: 0 0 auto; padding: 0; width: 64px; height: 44px; border-radius: 8px; overflow: hidden; position: relative; background: #000; border: 1px solid var(--border); color: #fff; }
 .clip-recents-list img, .clip-recents-list video { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.clip-history { grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); }
+.clip-history button { position: relative; height: 84px; background: #000; color: #fff; }
+.clip-history button img, .clip-history button video { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.clip-history .tag { position: absolute; left: 4px; top: 3px; font-size: 11px; text-shadow: 0 1px 2px #000; }
+.clip-history .name { position: absolute; left: 0; right: 0; bottom: 0; padding: 2px 4px; font-size: 10.5px; background: rgba(0, 0, 0, .6); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+[data-pane="history"] > .label { margin: 8px 0 0; color: var(--muted); font-size: 13px; }
 .clip-recents-list .tag { position: absolute; left: 3px; bottom: 2px; font-size: 11px; text-shadow: 0 1px 2px #000; }
