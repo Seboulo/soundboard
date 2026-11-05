@@ -1,6 +1,14 @@
 Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
 Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
+Nouveautés de la 2.1 :
+- Extraits vidéo : choisis le passage avec deux poignées (15 s au plus), règle le volume du son et « ▶ Écouter » avant d'envoyer. « 👁 Aperçu » montre l'extrait dans le coin de ton écran comme ton pote le verra.
+- Le son des vidéos passe dans le casque du pote, Shorts YouTube compris, et les extraits peuvent faire jusqu'à 14 Mo.
+- Tes 5 derniers extraits envoyés se renvoient en un clic. « 💾 Garder » sur un extrait reçu en fait un pad chez toi.
+- Bloquer un pote (Réglages → Potes, ou « Bloquer » sur sa carte) : plus aucun son ni extrait de sa part.
+- « Tout arrêter » coupe aussi le son ou l'extrait que tu viens d'envoyer chez un pote.
+- Depuis le téléphone : jouer tes sons chez un pote du salon, et envoyer un extrait (lien, GIF ou fichier du téléphone).
+
 Nouveautés de la 2.0.1 :
 - Extrait sur l'écran d'un pote : vidéo depuis un lien (YouTube, TikTok, X, Reddit…) avec le moment où elle commence, recherche de GIF (GIPHY), et ton texte affiché en gros façon mème.
 - Les extraits s'affichent à chaque fois (avant, parfois seulement le premier).
