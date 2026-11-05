@@ -368,10 +368,12 @@ impl Room {
             .send()
             .await
             .map_err(|e| format!("relais injoignable ({e})"))?;
-        if !res.status().is_success() {
-            return Err(format!("envoi refusé par le relais (erreur {})", res.status().as_u16()));
+        match res.status().as_u16() {
+            200..=299 => Ok(()),
+            413 => Err("le relais refuse ce fichier : trop lourd, ou limite d'envois atteinte (environ 100 Mo toutes les 3 h). Réessaie plus tard, ou envoie un passage plus court ou une image".into()),
+            429 => Err("trop d'envois d'un coup pour le relais : réessaie dans quelques minutes".into()),
+            code => Err(format!("envoi refusé par le relais (erreur {code})")),
         }
-        Ok(())
     }
 }
 
