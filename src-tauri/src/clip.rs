@@ -646,12 +646,16 @@ async fn play_audio(app: AppHandle, path: PathBuf, start_ms: u64, end_ms: Option
     let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app2.state::<AppState>();
-        let analysis = analysis::analyze(&path)?;
+        // Seul le passage joué est décodé et mesuré (pas toute la vidéo,
+        // qui peut durer des minutes) : moins de calcul, pas d'à-coup.
+        let end = end_ms.unwrap_or(u64::MAX).min(start_ms + 30_500);
+        let key = crate::config::SegmentKey { start_ms, end_ms: Some(end), fx: Default::default() };
+        let mut analysis = analysis::analyze_segment(&path, &key)?;
+        analysis.duration_ms += start_ms;
         let mut sound = extras::store_like(&path, analysis);
         sound.id = audio::PREVIEW_ID.into();
         sound.start_ms = start_ms;
-        let total = analysis.duration_ms;
-        sound.end_ms = Some(end_ms.unwrap_or(total).min(total).min(start_ms + 15_500));
+        sound.end_ms = Some(end.min(analysis.duration_ms));
         sound.volume = volume.clamp(0.0, 2.0);
         let req = play_request(&state, &sound);
         state.audio.preview(req)?;

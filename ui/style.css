@@ -1521,7 +1521,14 @@ body:has(.grid.list) .tabbar .size { display: none; }
 .clip-gifs button { padding: 0; height: 72px; overflow: hidden; border-radius: 8px; background: var(--panel-2); border: 2px solid transparent; }
 .clip-gifs button img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .clip-gifs button.on { border-color: var(--accent); }
-.clip-gifs button.loading { opacity: .5; }
+.clip-gifs button { position: relative; }
+.clip-gifs button.loading > * { opacity: .35; }
+.clip-gifs button.loading::after {
+  content: "Récupération…"; position: absolute; inset: 0; display: grid; place-items: center;
+  font-size: 12px; font-weight: 600; color: #fff; background: rgba(0, 0, 0, .45);
+}
+/* Rien de choisi : on cache ce qui ne sert qu'avec un extrait. */
+#dlg-clip.no-media .clip-needs-media, #dlg-clip.no-media:not(.src-file) .clip-frame { display: none; }
 .clip-videos { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
 .clip-videos button { position: relative; height: auto; display: flex; flex-direction: column; text-align: left; }
 .clip-videos button img { aspect-ratio: 16 / 9; height: auto; }

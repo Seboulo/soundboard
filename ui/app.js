@@ -3465,6 +3465,7 @@ const clipVideo = $("video.clip-preview", dlgClip);
 const clipGifs = $(".clip-gifs", dlgClip);
 let clipMedia = null;
 let clipSource = "file";
+try { clipSource = localStorage.getItem("soundboard.clipSource") || "file"; } catch {}
 
 function clipUi() {
   $(".clip-empty", dlgClip).hidden = !!clipMedia;
@@ -3479,14 +3480,19 @@ function clipUi() {
     clipMedia?.kind === "video" ? "Son de la vidéo " : "Son avec l'image ",
     Object.assign(document.createElement("span"), { className: "value", textContent: clipMedia?.kind === "video" ? `${Math.round(Number(formClip.cvol.value) * 100)} %` : "" }),
   );
+  dlgClip.classList.toggle("no-media", !clipMedia);
   $('[data-action="send"]', dlgClip).disabled = !clipMedia;
+  $('[data-action="send"]', dlgClip).title = clipMedia ? "" : "Choisis d'abord une image, une vidéo ou un GIF";
   $('[data-action="preview"]', dlgClip).disabled = !clipMedia;
   $(".meme-text", dlgClip).textContent = clipMedia ? formClip.title.value.trim() : "";
 }
 function setClipSource(source) {
   clipSource = source;
+  try { localStorage.setItem("soundboard.clipSource", source); } catch {}
+  dlgClip.classList.toggle("src-file", source === "file");
   dlgClip.querySelectorAll("#clip-source button").forEach((b) => b.classList.toggle("active", b.dataset.source === source));
   dlgClip.querySelectorAll("[data-pane]").forEach((p) => (p.hidden = p.dataset.pane !== source));
+  clipUi();
   if (source === "link") formClip.link.focus();
   if (source === "history") renderClipHistory();
   if (source === "gif") {
@@ -3512,6 +3518,8 @@ function showClipMedia(picked, startS = 0) {
   clipTrimFrom = startS;
   formClip.start.value = String(startS);
   clipUi();
+  // L'aperçu peut être sous la liste : on le montre.
+  requestAnimationFrame(() => $(".clip-frame", dlgClip).scrollIntoView({ behavior: "smooth", block: "nearest" }));
 }
 function openClipDialog(to) {
   if (!state.config.settings.room_code) return toast("Rejoins d'abord un salon avec tes potes : Réglages → Potes", true);
