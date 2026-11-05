@@ -57,8 +57,9 @@ function ask(c) {
 
 // Le son part dans le casque choisi dans l'appli (moteur audio) ; si ça
 // échoue, l'élément joue le son lui-même (sortie par défaut de Windows).
+// Renvoie une promesse tenue quand le son est parti (ou a échoué).
 function playSound(c, path, startMs, endMs, el) {
-  invoke("clip_audio", { path, startMs: Math.round(startMs), endMs: endMs ?? null, volume: c.volume ?? 1 }).catch(() => {
+  return invoke("clip_audio", { path, startMs: Math.round(startMs), endMs: endMs ?? null, volume: c.volume ?? 1 }).catch(() => {
     if (current !== c) return;
     el.muted = false;
     if (el.paused && el !== video) el.play().catch(() => {});
@@ -90,30 +91,53 @@ function play(c) {
     if (from) video.currentTime = from;
     video.onended = close;
     video.onerror = close;
+    let showMs = MAX_MS;
+    const startTimer = () => {
+      bar($("#show .bar"), showMs);
+      clearTimeout(timer);
+      timer = setTimeout(close, showMs + 300);
+    };
     video.onloadedmetadata = () => {
       if (current !== c) return;
       if (from && from < video.duration) video.currentTime = from;
       const until = Math.min(video.duration || 15, c.end_ms ? c.end_ms / 1000 : Infinity);
-      const d = Math.max(2000, Math.min(MAX_MS, (until - (from < video.duration ? from : 0)) * 1000));
-      bar($("#show .bar"), d);
-      clearTimeout(timer);
-      timer = setTimeout(close, d + 300);
+      showMs = Math.max(2000, Math.min(MAX_MS, (until - (from < video.duration ? from : 0)) * 1000));
+      startTimer();
     };
     video.onplaying = () => {
       video.onplaying = null;
       if (current !== c) return;
+      // L'image attend que le son soit prêt (il est mesuré avant de partir) :
+      // sinon le son arrivait un peu en retard sur l'image.
+      video.pause();
+      const at = video.currentTime;
+      let el = video;
+      let path = c.media;
       if (c.sound) {
         // Son à part (Shorts) : même départ que l'image.
         const a = new Audio(convertFileSrc(c.sound));
         a.muted = true;
         audio = a;
         a.addEventListener("loadedmetadata", () => {
-          if (audio === a) a.currentTime = video.currentTime;
+          if (audio === a) a.currentTime = at;
         }, { once: true });
-        playSound(c, c.sound, video.currentTime * 1000, c.end_ms, a);
-      } else {
-        playSound(c, c.media, video.currentTime * 1000, c.end_ms, video);
+        el = a;
+        path = c.sound;
       }
+      let resumed = false;
+      const resume = () => {
+        if (resumed || current !== c) return;
+        resumed = true;
+        video.currentTime = at;
+        video.play().catch(() => {});
+        startTimer();
+      };
+      // Au pire, l'image repart sans attendre plus d'une seconde et demie.
+      const safety = setTimeout(resume, 1500);
+      playSound(c, path, at * 1000, c.end_ms, el).then(() => {
+        clearTimeout(safety);
+        resume();
+      });
     };
     video.play().catch(() => {});
     ms = MAX_MS;

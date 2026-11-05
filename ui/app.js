@@ -3804,6 +3804,8 @@ formClip.addEventListener("keydown", (e) => {
   e.preventDefault();
   if (e.target.name === "link") $('[data-action="fetch-link"]', dlgClip).click();
   else if (e.target.name === "gifq") $('[data-action="search-gif"]', dlgClip).click();
+  // Entrée après le texte : envoie (avant, il ne se passait rien).
+  else if (e.target.name === "title" && clipMedia) $('[data-action="send"]', dlgClip).click();
 });
 formClip.title.addEventListener("input", clipUi);
 formClip.sound.addEventListener("change", () => { stopClipListen(); clipUi(); });

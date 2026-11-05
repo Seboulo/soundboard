@@ -28,7 +28,16 @@ const HELLO_EVERY: Duration = Duration::from_secs(900);
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Msg {
     /// « Je suis là » ; `reply` : réponse à un nouveau venu (pas de nouvelle réponse).
-    Hi { from: String, name: String, #[serde(default)] reply: bool },
+    /// `caps` : ce que l'appli sait faire (voir `CAP_LINK`) ; 0 pour les
+    /// versions d'avant.
+    Hi {
+        from: String,
+        name: String,
+        #[serde(default)]
+        reply: bool,
+        #[serde(default)]
+        caps: u32,
+    },
     Bye { from: String },
     /// Joue ce son chez `to`.
     Play {
@@ -47,6 +56,10 @@ pub enum Msg {
         volume: f32,
         #[serde(default)]
         fx: crate::sound_fx::SoundFx,
+        /// Taille du fichier : le pote ne cherche le son que parmi ses
+        /// fichiers de cette taille (0 : inconnue).
+        #[serde(default, skip_serializing_if = "is_zero")]
+        size: u64,
     },
     /// « Je n'ai pas ce son, envoie-le. »
     Need { from: String, to: String, hash: String },
@@ -76,6 +89,22 @@ pub enum Msg {
 fn one() -> f32 {
     1.0
 }
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+/// L'appli sait recevoir une vidéo par son seul lien (et la télécharger).
+pub const CAP_LINK: u32 = 1;
+/// Ce que cette version sait faire.
+const MY_CAPS: u32 = CAP_LINK;
+/// Un fichier déjà envoyé au relais y reste 3 h : pendant 2 h 30, on renvoie
+/// son adresse au lieu de le renvoyer (ça ne compte pas dans la limite
+/// d'envois du relais, et ça part tout de suite).
+const REUSE_UPLOAD: Duration = Duration::from_secs(150 * 60);
+/// Après une coupure courte, on reprend le fil là où il s'était arrêté
+/// (les messages envoyés pendant la coupure ne sont pas perdus).
+const RESUME_WITHIN: Duration = Duration::from_secs(120);
 
 impl Msg {
     pub fn from(&self) -> &str {
@@ -112,11 +141,25 @@ struct Inner {
     my_id: String,
     my_name: String,
     connected: bool,
-    members: HashMap<String, (String, Instant)>,
+    /// id → (nom, vu à, ce que son appli sait faire).
+    members: HashMap<String, (String, Instant, u32)>,
     target: Option<String>,
     last_hello: Option<Instant>,
     /// Extrait envoyé « moi compris » : on affiche aussi le sien en retour.
     echo_until: Option<Instant>,
+    /// Dernier message reçu (id ntfy) : reprise après une coupure.
+    last_msg: Option<(String, Instant)>,
+}
+
+impl Inner {
+    /// Note qu'un pote est là (son nom peut avoir changé) sans oublier ce
+    /// que son appli sait faire.
+    fn seen(&mut self, from: &str, name: &str, caps: Option<u32>) -> bool {
+        let name: String = name.chars().take(32).collect();
+        let old_caps = self.members.get(from).map(|m| m.2);
+        let caps = caps.or(old_caps).unwrap_or(0);
+        self.members.insert(from.to_string(), (name, Instant::now(), caps)).is_none()
+    }
 }
 
 /// Le salon, partagé dans l'app.
@@ -125,6 +168,8 @@ pub struct Room {
     inner: Arc<Mutex<Inner>>,
     /// Change à chaque nouveau code : l'ancienne connexion s'arrête.
     gen: Arc<AtomicU64>,
+    /// Fichiers déjà envoyés au relais : empreinte → (adresse, envoyé à).
+    uploads: Arc<Mutex<HashMap<String, (String, Instant)>>>,
 }
 
 /// Canal ntfy d'un code de salon.
@@ -161,9 +206,9 @@ fn client(streaming: bool) -> Result<reqwest::Client, String> {
 impl Room {
     pub fn status(&self) -> RoomStatus {
         let mut inner = self.inner.lock().unwrap();
-        inner.members.retain(|_, (_, seen)| seen.elapsed() < MEMBER_TTL);
+        inner.members.retain(|_, (_, seen, _)| seen.elapsed() < MEMBER_TTL);
         let mut members: Vec<Member> =
-            inner.members.iter().map(|(id, (name, _))| Member { id: id.clone(), name: name.clone() }).collect();
+            inner.members.iter().map(|(id, (name, _, _))| Member { id: id.clone(), name: name.clone() }).collect();
         members.sort_by_key(|m| m.name.to_lowercase());
         if inner.target.as_ref().is_some_and(|t| !inner.members.contains_key(t)) {
             inner.target = None;
@@ -175,6 +220,18 @@ impl Room {
     /// s'il arrive dans les 2 minutes.
     pub fn expect_echo(&self) {
         self.inner.lock().unwrap().echo_until = Some(Instant::now() + Duration::from_secs(120));
+    }
+
+    /// Tous ceux qui vont recevoir (`to`, ou tout le salon si vide)
+    /// savent-ils télécharger une vidéo à partir de son lien ?
+    pub fn links_ok(&self, to: &str) -> bool {
+        let inner = self.inner.lock().unwrap();
+        let ok = |m: &(String, Instant, u32)| m.2 & CAP_LINK != 0;
+        if to.is_empty() {
+            inner.members.values().filter(|m| m.1.elapsed() < MEMBER_TTL).all(ok)
+        } else {
+            inner.members.get(to).is_some_and(ok)
+        }
     }
 
     pub fn my_id(&self) -> String {
@@ -245,9 +302,17 @@ impl Room {
         on_event: Arc<impl Fn(Incoming) + Send + Sync + 'static>,
         on_change: Arc<impl Fn() + Send + Sync + 'static>,
     ) -> Result<(), String> {
-        let topic = self.inner.lock().unwrap().topic.clone();
+        let (topic, since) = {
+            let inner = self.inner.lock().unwrap();
+            let since = inner.last_msg.as_ref().filter(|(_, t)| t.elapsed() < RESUME_WITHIN).map(|(id, _)| id.clone());
+            (inner.topic.clone(), since)
+        };
+        let mut url = reqwest::Url::parse(&format!("{SERVER}/{topic}/json")).map_err(|e| e.to_string())?;
+        if let Some(id) = since.filter(|id| id.chars().all(|c| c.is_ascii_alphanumeric())) {
+            url.query_pairs_mut().append_pair("since", &id);
+        }
         let mut res = client(true)?
-            .get(format!("{SERVER}/{topic}/json"))
+            .get(url)
             .send()
             .await
             .map_err(|e| e.to_string())?;
@@ -272,7 +337,10 @@ impl Room {
                 }
                 let text = String::from_utf8_lossy(&line).into_owned();
                 line.clear();
-                if let Some(incoming) = parse_line(&text) {
+                if let Some((id, incoming)) = parse_line(&text) {
+                    if !id.is_empty() {
+                        self.inner.lock().unwrap().last_msg = Some((id, Instant::now()));
+                    }
                     self.receive(incoming, &*on_event, &*on_change).await;
                 }
             }
@@ -298,12 +366,8 @@ impl Room {
             return;
         }
         match &incoming.msg {
-            Msg::Hi { from, name, reply } => {
-                let new = {
-                    let mut inner = self.inner.lock().unwrap();
-                    let name: String = name.chars().take(32).collect();
-                    inner.members.insert(from.clone(), (name, Instant::now())).is_none()
-                };
+            Msg::Hi { from, name, reply, caps } => {
+                let new = self.inner.lock().unwrap().seen(from, name, Some(*caps));
                 // Un nouveau venu ne connaît personne : on se présente.
                 if !reply && new {
                     self.hello(true).await;
@@ -315,19 +379,11 @@ impl Room {
                 on_change();
             }
             Msg::Play { to, from, name, .. } if *to == me => {
-                {
-                    let mut inner = self.inner.lock().unwrap();
-                    let name: String = name.chars().take(32).collect();
-                    inner.members.insert(from.clone(), (name, Instant::now()));
-                }
+                self.inner.lock().unwrap().seen(from, name, None);
                 on_event(incoming);
             }
             Msg::Clip { to, from, name, .. } if to.is_empty() || *to == me => {
-                {
-                    let mut inner = self.inner.lock().unwrap();
-                    let name: String = name.chars().take(32).collect();
-                    inner.members.insert(from.clone(), (name, Instant::now()));
-                }
+                self.inner.lock().unwrap().seen(from, name, None);
                 on_event(incoming);
             }
             Msg::Need { to, .. } if *to == me => on_event(incoming),
@@ -342,7 +398,7 @@ impl Room {
             inner.last_hello = Some(Instant::now());
             (inner.my_id.clone(), inner.my_name.clone())
         };
-        let _ = self.publish(&Msg::Hi { from, name, reply }).await;
+        let _ = self.publish(&Msg::Hi { from, name, reply, caps: MY_CAPS }).await;
     }
 
     pub async fn publish(&self, msg: &Msg) -> Result<(), String> {
@@ -367,8 +423,68 @@ impl Room {
         Ok(())
     }
 
-    /// Envoie le son en pièce jointe, avec le message qui dit quoi en faire.
-    pub async fn publish_file(&self, msg: &Msg, file_name: &str, data: Vec<u8>) -> Result<(), String> {
+    /// Envoie un fichier avec le message qui dit quoi en faire. Un fichier
+    /// (même `key`) déjà envoyé il y a moins de 2 h 30 n'est pas renvoyé : le
+    /// message pointe vers celui qui est encore sur le relais. `data` n'est lu
+    /// que s'il faut vraiment l'envoyer.
+    pub async fn send_file(
+        &self,
+        msg: &Msg,
+        key: &str,
+        file_name: &str,
+        data: impl FnOnce() -> Result<Vec<u8>, String>,
+    ) -> Result<(), String> {
+        let cached = {
+            let mut up = self.uploads.lock().unwrap();
+            up.retain(|_, (_, at)| at.elapsed() < REUSE_UPLOAD);
+            up.get(key).map(|(url, _)| url.clone())
+        };
+        if let Some(url) = cached {
+            match self.publish_attached(msg, &url, file_name).await {
+                Ok(()) => {
+                    crate::journal::write("Salon : fichier déjà sur le relais, renvoyé sans le réenvoyer");
+                    return Ok(());
+                }
+                Err(e) => {
+                    crate::journal::write(&format!("Salon : renvoi par adresse raté ({e}), envoi du fichier"));
+                    self.uploads.lock().unwrap().remove(key);
+                }
+            }
+        }
+        let url = self.publish_file(msg, file_name, data()?).await?;
+        if let Some(url) = url {
+            self.uploads.lock().unwrap().insert(key.to_string(), (url, Instant::now()));
+        }
+        Ok(())
+    }
+
+    /// Message avec, en pièce jointe, un fichier déjà sur le relais.
+    async fn publish_attached(&self, msg: &Msg, url: &str, file_name: &str) -> Result<(), String> {
+        let topic = self.inner.lock().unwrap().topic.clone();
+        if topic.is_empty() {
+            return Err("tu n'es dans aucun salon".into());
+        }
+        if !url.starts_with(SERVER) {
+            return Err("adresse non autorisée".into());
+        }
+        let body = serde_json::to_string(msg).map_err(|e| e.to_string())?;
+        let mut target = reqwest::Url::parse(&format!("{SERVER}/{topic}")).map_err(|e| e.to_string())?;
+        target.query_pairs_mut().append_pair("attach", url).append_pair("filename", file_name);
+        let res = client(false)?
+            .post(target)
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| format!("relais injoignable ({e})"))?;
+        if !res.status().is_success() {
+            return Err(format!("relais : erreur {}", res.status().as_u16()));
+        }
+        Ok(())
+    }
+
+    /// Envoie le fichier en pièce jointe, avec le message qui dit quoi en
+    /// faire. Renvoie l'adresse du fichier sur le relais (pour le réutiliser).
+    async fn publish_file(&self, msg: &Msg, file_name: &str, data: Vec<u8>) -> Result<Option<String>, String> {
         let topic = self.inner.lock().unwrap().topic.clone();
         if topic.is_empty() {
             return Err("tu n'es dans aucun salon".into());
@@ -386,7 +502,18 @@ impl Room {
             .await
             .map_err(|e| format!("relais injoignable ({e})"))?;
         match res.status().as_u16() {
-            200..=299 => Ok(()),
+            200..=299 => {
+                #[derive(Deserialize)]
+                struct Sent {
+                    attachment: Option<Att>,
+                }
+                #[derive(Deserialize)]
+                struct Att {
+                    url: String,
+                }
+                let sent: Option<Sent> = res.bytes().await.ok().and_then(|b| serde_json::from_slice(&b).ok());
+                Ok(sent.and_then(|s| s.attachment).map(|a| a.url).filter(|u| u.starts_with(SERVER)))
+            }
             413 => Err("le relais refuse ce fichier : trop lourd, ou limite d'envois atteinte (environ 100 Mo toutes les 3 h). Réessaie plus tard, ou envoie un passage plus court ou une image".into()),
             429 => Err("trop d'envois d'un coup pour le relais : réessaie dans quelques minutes".into()),
             code => Err(format!("envoi refusé par le relais (erreur {code})")),
@@ -394,10 +521,12 @@ impl Room {
     }
 }
 
-/// Une ligne du flux ntfy.
-fn parse_line(line: &str) -> Option<Incoming> {
+/// Une ligne du flux ntfy (et son id, pour reprendre après une coupure).
+fn parse_line(line: &str) -> Option<(String, Incoming)> {
     #[derive(Deserialize)]
     struct Line {
+        #[serde(default)]
+        id: String,
         event: String,
         #[serde(default)]
         message: String,
@@ -414,7 +543,7 @@ fn parse_line(line: &str) -> Option<Incoming> {
     }
     let msg: Msg = serde_json::from_str(&l.message).ok()?;
     let attachment = l.attachment.map(|a| a.url).filter(|u| u.starts_with(SERVER));
-    Some(Incoming { msg, attachment })
+    Some((l.id, Incoming { msg, attachment }))
 }
 
 /// Télécharge une pièce jointe (taille limitée).
@@ -468,13 +597,34 @@ mod tests {
             "attachment": {"name": "s.mp3", "url": "https://ntfy.sh/file/abc.mp3"}
         })
         .to_string();
-        let got = parse_line(&line).unwrap();
+        let (id, got) = parse_line(&line).unwrap();
+        assert_eq!(id, "x");
         assert_eq!(got.msg, msg);
         assert_eq!(got.attachment.as_deref(), Some("https://ntfy.sh/file/abc.mp3"));
         assert!(parse_line(r#"{"event":"keepalive"}"#).is_none());
         assert!(parse_line(r#"{"event":"message","message":"bonjour"}"#).is_none());
         // Une pièce jointe hébergée ailleurs est ignorée.
         let evil = line.replace("https://ntfy.sh/file", "https://ailleurs.fr");
-        assert!(parse_line(&evil).unwrap().attachment.is_none());
+        assert!(parse_line(&evil).unwrap().1.attachment.is_none());
+    }
+
+    #[test]
+    fn old_apps_cannot_take_links() {
+        let room = Room::default();
+        {
+            let mut inner = room.inner.lock().unwrap();
+            inner.seen("new", "Léa", Some(CAP_LINK));
+            inner.seen("old", "Tom", None);
+        }
+        assert!(room.links_ok("new"));
+        assert!(!room.links_ok("old"));
+        assert!(!room.links_ok(""));
+        assert!(!room.links_ok("absent"));
+        // Un son reçu ne fait pas oublier ce que l'appli sait faire.
+        room.inner.lock().unwrap().seen("new", "Léa", None);
+        assert!(room.links_ok("new"));
+        // Un ancien « Hi » (sans caps) se lit toujours.
+        let hi: Msg = serde_json::from_str(r#"{"t":"hi","from":"a","name":"b"}"#).unwrap();
+        assert_eq!(hi, Msg::Hi { from: "a".into(), name: "b".into(), reply: false, caps: 0 });
     }
 }

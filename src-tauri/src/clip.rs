@@ -161,6 +161,60 @@ pub struct Clips {
     audio_discord: AtomicBool,
     /// Fichier préparé → lien d'où il vient.
     links: Mutex<HashMap<String, String>>,
+    /// Dernier « Tout arrêter » de chaque pote : un extrait encore en train
+    /// d'arriver de sa part ne s'affiche plus.
+    stopped: Mutex<HashMap<String, Instant>>,
+    /// Niveau du passage écouté (fichier, début, fin) : « Écouter » et
+    /// « Aperçu » relancés partent tout de suite.
+    levels: Mutex<Vec<((PathBuf, u64, u64), crate::config::Analysis)>>,
+}
+
+/// Le fichier à envoyer, rangé dans le dossier d'envoi. Un extrait reçu
+/// (onglet « Historique ») y est d'abord copié, avec son son à part et son
+/// lien d'origine, pour pouvoir le renvoyer.
+fn sendable(state: &AppState, media: &str) -> Result<PathBuf, String> {
+    let media = PathBuf::from(media);
+    let dir = clips_dir(state).join("envoi");
+    let received = clips_dir(state).join("recus");
+    let from = media.parent();
+    if from == Some(dir.as_path()) {
+        return Ok(media);
+    }
+    if from != Some(received.as_path()) || !media.exists() {
+        return Err("choisis d'abord une image ou une vidéo".into());
+    }
+    let name = media.file_name().ok_or("fichier introuvable")?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let copy = dir.join(name);
+    if !copy.exists() {
+        fs::copy(&media, &copy).map_err(|e| e.to_string())?;
+    }
+    let side = video_sound(&received, &media);
+    if side != media {
+        if let Some(n) = side.file_name() {
+            let _ = fs::copy(&side, dir.join(n));
+        }
+    }
+    let key = media.to_string_lossy().into_owned();
+    if let Some(link) = load_list(&received_file(state)).into_iter().find(|r| r.path == key).and_then(|r| r.link) {
+        state.clips.links.lock().unwrap().insert(copy.to_string_lossy().into_owned(), link);
+    }
+    Ok(copy)
+}
+
+/// La vidéo de ce lien, si on l'a déjà (envoyée ou reçue) : pas besoin de
+/// la retélécharger. Renvoie le fichier et son son à part.
+fn already_have(state: &AppState, link: &str) -> Option<(PathBuf, Option<PathBuf>)> {
+    let from_session: Vec<String> =
+        state.clips.links.lock().unwrap().iter().filter(|(_, l)| *l == link).map(|(p, _)| p.clone()).collect();
+    let from_lists = load_recents(state).into_iter().chain(load_list(&received_file(state)));
+    let media = from_session
+        .into_iter()
+        .chain(from_lists.filter(|r| r.link.as_deref() == Some(link)).map(|r| r.path))
+        .map(PathBuf::from)
+        .find(|p| p.exists())?;
+    let side = video_sound(media.parent()?, &media);
+    Some((media.clone(), (side != media).then_some(side)))
 }
 
 fn kind_of(ext: &str) -> Option<&'static str> {
@@ -421,11 +475,8 @@ pub async fn clip_listen(
     volume: Option<f32>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let media = PathBuf::from(media);
+    let media = sendable(&state, &media)?;
     let dir = clips_dir(&state).join("envoi");
-    if media.parent() != Some(dir.as_path()) {
-        return Err("choisis d'abord une image ou une vidéo".into());
-    }
     let ext = media.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     let (path, start_ms, end_ms, vol) = match sound_id.filter(|s| !s.is_empty()) {
         Some(id) => {
@@ -457,18 +508,19 @@ pub async fn send_clip(
     volume: Option<f32>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let media = PathBuf::from(media);
+    let media = sendable(&state, &media)?;
     let dir = clips_dir(&state).join("envoi");
-    if media.parent() != Some(dir.as_path()) {
-        return Err("choisis d'abord une image ou une vidéo".into());
-    }
     let media_ext = media.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     kind_of(&media_ext).ok_or("format non pris en charge")?;
     let path_key = media.to_string_lossy().into_owned();
+    // Par lien seulement si tous ceux qui reçoivent ont une appli qui sait
+    // le faire : une version d'avant ne recevrait rien (envoi muet).
+    let receivers = to.as_deref().filter(|t| *t != ME_TOO).unwrap_or("");
     let link = (kind_of(&media_ext) == Some("video") && sound_id.as_deref().unwrap_or("").is_empty())
         .then(|| link_for(&state, &path_key))
         .flatten()
-        .filter(|l| youtube::is_shareable_link(l));
+        .filter(|l| youtube::is_shareable_link(l))
+        .filter(|_| state.extras.room.links_ok(receivers));
     if let Some(link) = link {
         // Vidéo d'un site : seul le lien et le passage partent.
         let room = &state.extras.room;
@@ -537,7 +589,8 @@ pub async fn send_clip(
             let end_ms = video_end(start_ms, end_s);
             let stem = media.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
             let side = ["m4a", "mp3", "aac"].iter().map(|e| dir.join(format!("{stem}-son.{e}"))).find(|p| p.exists());
-            match side.filter(|_| kind_of(&media_ext) == Some("video")) {
+            // Une image reçue avec son son (renvoyée depuis l'historique) le garde.
+            match side {
                 Some(p) => {
                     let data = fs::read(&p).map_err(|e| e.to_string())?;
                     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("m4a").to_string();
@@ -569,7 +622,10 @@ pub async fn send_clip(
     let mb = data.len() as f64 / 1_048_576.0;
     journal::write(&format!("Extrait : envoi de {mb:.1} Mo{}", if to_all { " au salon" } else { "" }));
     let sent = Instant::now();
-    if let Err(e) = room.publish_file(&msg, "extrait.sbclip", data).await {
+    // Le même extrait renvoyé (à un autre pote, ou depuis l'historique)
+    // ne repart pas : le relais l'a encore.
+    let key = format!("clip-{}", crate::share::key_of(&data));
+    if let Err(e) = room.send_file(&msg, &key, "extrait.sbclip", || Ok(data)).await {
         journal::write(&format!("Extrait : envoi raté après {} s ({e})", sent.elapsed().as_secs()));
         return Err(e);
     }
@@ -659,16 +715,38 @@ pub async fn receive(
     trim_dir(&dir, 40);
     let id = uuid::Uuid::new_v4().simple().to_string();
     let got = Instant::now();
+    let link_url = link.as_ref().map(|l| l.url.clone());
     let (kind, media_path, sound_path, start_ms, end_ms, volume) = match (link, url) {
         (Some(l), _) => {
-            let (media, sound) = match fetch_link(app, &l.url, &dir, &id).await {
-                Ok(f) => f,
-                Err(e) => {
-                    journal::write(&format!("Extrait de {name} : vidéo du lien pas récupérée ({e})"));
-                    return Err(e);
-                }
+            // Vidéo déjà là (son propre extrait « moi compris », ou déjà
+            // reçue) : copiée tout de suite au lieu d'être retéléchargée.
+            let have = already_have(&state, &l.url).and_then(|(media, sound)| {
+                let ext = |p: &Path| p.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_lowercase();
+                let m = dir.join(format!("{id}.{}", ext(&media)));
+                fs::copy(&media, &m).ok()?;
+                let s = match sound {
+                    Some(s) => {
+                        let p = dir.join(format!("{id}-son.{}", ext(&s)));
+                        fs::copy(&s, &p).ok()?;
+                        Some(p)
+                    }
+                    None => None,
+                };
+                Some((m, s))
+            });
+            let (media, sound) = match have {
+                Some(f) => f,
+                None => match fetch_link(app, &l.url, &dir, &id).await {
+                    Ok(f) => {
+                        journal::write(&format!("Extrait de {name} : vidéo téléchargée par lien en {} s", got.elapsed().as_secs()));
+                        f
+                    }
+                    Err(e) => {
+                        journal::write(&format!("Extrait de {name} : vidéo du lien pas récupérée ({e})"));
+                        return Err(e);
+                    }
+                },
             };
-            journal::write(&format!("Extrait de {name} : vidéo téléchargée par lien en {} s", got.elapsed().as_secs()));
             ("video", media, sound, l.start_ms, l.end_ms, l.volume)
         }
         (None, Some(url)) => {
@@ -694,6 +772,11 @@ pub async fn receive(
         }
         (None, None) => return Ok(()),
     };
+    // Arrêté par le pote (« Tout arrêter ») pendant que ça arrivait.
+    if state.clips.stopped.lock().unwrap().get(&from).is_some_and(|t| *t >= got) {
+        journal::write(&format!("Extrait de {name} : arrêté par lui avant d'arriver"));
+        return Ok(());
+    }
     let name: String = name.chars().take(32).collect();
     let title: String = title.chars().take(60).collect();
     let show = ClipShow {
@@ -721,7 +804,7 @@ pub async fn receive(
         from: Some(show.from.clone()),
         sound: show.sound.clone(),
         at: now_s(),
-        link: None,
+        link: link_url,
     });
     let _ = app.emit("clip-received", (&show.from, &show.title));
     show_window(app, show)
@@ -820,9 +903,22 @@ async fn play_audio(app: AppHandle, path: PathBuf, start_ms: u64, end_ms: Option
         // Seul le passage joué est décodé et mesuré (pas toute la vidéo,
         // qui peut durer des minutes) : moins de calcul, pas d'à-coup.
         let end = end_ms.unwrap_or(u64::MAX).min(start_ms + 30_500);
-        let key = crate::config::SegmentKey { start_ms, end_ms: Some(end), fx: Default::default() };
-        let mut analysis = analysis::analyze_segment(&path, &key)?;
-        analysis.duration_ms += start_ms;
+        let cache_key = (path.clone(), start_ms, end);
+        let known = state.clips.levels.lock().unwrap().iter().find(|(k, _)| *k == cache_key).map(|(_, a)| *a);
+        let analysis = match known {
+            Some(a) => a,
+            None => {
+                let key = crate::config::SegmentKey { start_ms, end_ms: Some(end), fx: Default::default() };
+                let mut a = analysis::analyze_segment(&path, &key)?;
+                a.duration_ms += start_ms;
+                let mut levels = state.clips.levels.lock().unwrap();
+                if levels.len() >= 16 {
+                    levels.remove(0);
+                }
+                levels.push((cache_key, a));
+                a
+            }
+        };
         let mut sound = extras::store_like(&path, analysis);
         sound.id = audio::PREVIEW_ID.into();
         sound.start_ms = start_ms;
@@ -857,9 +953,9 @@ pub async fn clip_preview(
     volume: Option<f32>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let media = PathBuf::from(media);
+    let media = sendable(&state, &media)?;
     let dir = clips_dir(&state).join("envoi");
-    if media.parent() != Some(dir.as_path()) || !media.exists() {
+    if !media.exists() {
         return Err("choisis d'abord une image ou une vidéo".into());
     }
     let ext = media.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
@@ -988,6 +1084,7 @@ pub fn close(app: &AppHandle) {
 /// Ferme l'extrait s'il vient de ce pote.
 pub fn close_from(app: &AppHandle, from: &str) {
     let state = app.state::<AppState>();
+    state.clips.stopped.lock().unwrap().insert(from.to_string(), Instant::now());
     let from_him = state.clips.pending.lock().unwrap().as_ref().is_some_and(|c| c.from_id == from);
     if from_him {
         close(app);
