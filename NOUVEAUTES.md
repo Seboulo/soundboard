@@ -1,6 +1,12 @@
 Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
 Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
+Nouveautés de la 2.0.1 :
+- Extrait sur l'écran d'un pote : vidéo depuis un lien (YouTube, TikTok, X, Reddit…) avec le moment où elle commence, recherche de GIF (GIPHY), et ton texte affiché en gros façon mème.
+- Les extraits s'affichent à chaque fois (avant, parfois seulement le premier).
+- Salon : un son renvoyé par un pote se rejoue depuis le début, et le son qu'il n'avait pas encore n'est plus perdu en route. Le rapport (Réglages → « Copier le rapport ») note chaque son envoyé ou reçu.
+- Fenêtre réduite : Réglages, thème et Stop restent toujours visibles.
+
 Nouveautés de la 2.0 :
 - Salon entre potes (Réglages → Potes, même code pour tout le monde) : avec le bouton « 👥 », joue tes sons chez un pote (ils partent dans Discord par son micro).
 - Extrait sur l'écran d'un pote : « ⋯ » → « Envoyer un extrait ». Une image, un GIF ou une vidéo (avec un de tes sons si tu veux) s'affiche dans un coin de son écran, 15 s au plus, sans le sortir de son jeu. Chacun choisit : me demander, afficher direct ou refuser. Ne se voit pas par-dessus un jeu en plein écran exclusif.
