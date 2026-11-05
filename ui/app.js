@@ -3480,6 +3480,7 @@ function clipUi() {
     Object.assign(document.createElement("span"), { className: "value", textContent: clipMedia?.kind === "video" ? `${Math.round(Number(formClip.cvol.value) * 100)} %` : "" }),
   );
   $('[data-action="send"]', dlgClip).disabled = !clipMedia;
+  $('[data-action="preview"]', dlgClip).disabled = !clipMedia;
   $(".meme-text", dlgClip).textContent = clipMedia ? formClip.title.value.trim() : "";
 }
 function setClipSource(source) {
@@ -3520,7 +3521,56 @@ function openClipDialog(to) {
   setClipSource(clipSource);
   clipUi();
   dlgClip.showModal();
+  renderClipRecents();
 }
+// Les 5 derniers extraits envoyés : un clic les remet tels quels.
+async function renderClipRecents() {
+  const recents = await invoke("clip_recents").catch(() => []);
+  const box = $(".clip-recents", dlgClip);
+  box.hidden = !recents.length;
+  $(".clip-recents-list", dlgClip).replaceChildren(...recents.map((r) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.title = r.title ? `« ${r.title} »` : r.kind === "video" ? "Vidéo" : "Image";
+    if (r.kind === "video") {
+      const v = document.createElement("video");
+      v.muted = true;
+      v.preload = "metadata";
+      v.src = `${fileSrc(r.path)}#t=${(r.start_s || 0) + 0.5}`;
+      const tag = document.createElement("span");
+      tag.className = "tag";
+      tag.textContent = "▶";
+      b.append(v, tag);
+    } else {
+      const img = document.createElement("img");
+      img.src = fileSrc(r.path);
+      img.alt = "";
+      b.append(img);
+    }
+    b.addEventListener("click", () => {
+      clipTrimEnd = r.kind === "video" ? r.end_s ?? null : null;
+      showClipMedia({ path: r.path, kind: r.kind }, r.start_s || 0);
+      formClip.title.value = r.title || "";
+      formClip.cvol.value = String(r.volume ?? 1);
+      if (r.kind === "image") formClip.sound.value = r.sound_id || "";
+      clipUi();
+    });
+    return b;
+  }));
+}
+$('[data-action="preview"]', dlgClip).addEventListener("click", () => {
+  if (!clipMedia) return;
+  stopClipListen();
+  const video = clipMedia.kind === "video";
+  invoke("clip_preview", {
+    media: clipMedia.path,
+    soundId: video ? null : formClip.sound.value || null,
+    title: formClip.title.value,
+    startS: video ? Number(formClip.start.value) || 0 : null,
+    endS: video ? Number(formClip.end.value) || null : null,
+    volume: video ? Number(formClip.cvol.value) : null,
+  }).catch((err) => toast(String(err), true));
+});
 $("#btn-clip").addEventListener("click", () => openClipDialog());
 $('[data-action="pick"]', dlgClip).addEventListener("click", async () => {
   const picked = await call("pick_clip_media");
@@ -3643,6 +3693,7 @@ listenBtn.addEventListener("click", () => (clipListening ? stopClipListen() : cl
 // ---------- Découpe de la vidéo : début et fin, 15 s au plus ----------
 const CLIP_MAX_S = 15;
 let clipTrimFrom = 0;
+let clipTrimEnd = null;
 const fmtS = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`;
 function trimUi() {
   const max = Number(formClip.start.max) || 1;
@@ -3688,7 +3739,9 @@ clipVideo.addEventListener("loadedmetadata", () => {
   for (const r of [formClip.start, formClip.end]) r.max = String(dur);
   const a = Math.min(clipTrimFrom, Math.max(0, dur - 0.5));
   formClip.start.value = String(a);
-  formClip.end.value = String(Math.min(dur, a + CLIP_MAX_S));
+  const wanted = clipTrimEnd != null && clipTrimEnd > a ? clipTrimEnd : a + CLIP_MAX_S;
+  clipTrimEnd = null;
+  formClip.end.value = String(Math.min(dur, wanted, a + CLIP_MAX_S));
   trimUi();
   clipVideo.currentTime = a;
 });

@@ -52,6 +52,47 @@ pub struct ClipShow {
     pub from_id: String,
     /// Demander avant d'afficher.
     pub ask: bool,
+    /// Aperçu de son propre extrait (pas de « Bloquer » ni « Garder »).
+    pub preview: bool,
+}
+
+/// Un extrait envoyé récemment (pour le renvoyer en un clic).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Recent {
+    pub path: String,
+    pub kind: String,
+    pub title: String,
+    pub start_s: Option<f64>,
+    pub end_s: Option<f64>,
+    pub volume: Option<f32>,
+    pub sound_id: Option<String>,
+}
+
+const RECENTS: usize = 5;
+
+fn recents_file(state: &AppState) -> PathBuf {
+    clips_dir(state).join("recents.json")
+}
+
+fn load_recents(state: &AppState) -> Vec<Recent> {
+    let list: Vec<Recent> = fs::read(recents_file(state)).ok().and_then(|d| serde_json::from_slice(&d).ok()).unwrap_or_default();
+    list.into_iter().filter(|r| Path::new(&r.path).exists()).take(RECENTS).collect()
+}
+
+fn add_recent(state: &AppState, recent: Recent) {
+    let mut list = load_recents(state);
+    list.retain(|r| r.path != recent.path);
+    list.insert(0, recent);
+    list.truncate(RECENTS);
+    if let Ok(data) = serde_json::to_vec(&list) {
+        let _ = fs::write(recents_file(state), data);
+    }
+}
+
+/// Les derniers extraits envoyés (encore sur le disque).
+#[tauri::command]
+pub fn clip_recents(state: State<AppState>) -> Vec<Recent> {
+    load_recents(&state)
 }
 
 #[derive(Default)]
@@ -173,7 +214,7 @@ fn keep_for_sending(
     let state = app.state::<AppState>();
     let dir = clips_dir(&state).join("envoi");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    trim_dir(&dir, 10);
+    trim_dir(&dir, 24);
     let id = uuid::Uuid::new_v4().simple().to_string();
     let copy = dir.join(format!("{id}.{ext}"));
     fs::write(&copy, data).map_err(|e| e.to_string())?;
@@ -359,9 +400,20 @@ pub async fn send_clip(
         return Err("ce pote n'est plus en ligne".into());
     }
     let title: String = title.trim().chars().take(60).collect();
+    let msg_title = title.clone();
     let msg = Msg::Clip { from: room.my_id(), name: room.my_name(), to, title };
     room.publish_file(&msg, "extrait.sbclip", data).await?;
     *state.extras.last_sent.lock().unwrap() = Some(Instant::now());
+    let is_video = kind_of(&media.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase()) == Some("video");
+    add_recent(&state, Recent {
+        path: media.to_string_lossy().into_owned(),
+        kind: if is_video { "video" } else { "image" }.into(),
+        title: msg_title,
+        start_s: start_s.filter(|_| is_video),
+        end_s: end_s.filter(|_| is_video),
+        volume: volume.filter(|_| is_video),
+        sound_id: sound.map(|s| s.id),
+    });
     Ok(())
 }
 
@@ -412,6 +464,7 @@ pub async fn receive(app: &AppHandle, from: String, name: String, title: String,
         end_ms: h.end_ms,
         volume: h.volume.clamp(0.0, 2.0),
         ask: mode != "auto",
+        preview: false,
     };
     let _ = app.emit("clip-received", (&show.from, &show.title));
     show_window(app, show)
@@ -490,7 +543,8 @@ fn show_window(app: &AppHandle, show: ClipShow) -> Result<(), String> {
 pub async fn clip_audio(app: AppHandle, path: String, start_ms: u64, end_ms: Option<u64>, volume: f32) -> Result<(), String> {
     let state = app.state::<AppState>();
     let path = PathBuf::from(path);
-    if path.parent() != Some(clips_dir(&state).join("recus").as_path()) {
+    let dir = clips_dir(&state);
+    if path.parent() != Some(dir.join("recus").as_path()) && path.parent() != Some(dir.join("envoi").as_path()) {
         return Err("fichier non autorisé".into());
     }
     play_audio(app.clone(), path, start_ms, end_ms, volume).await
@@ -514,6 +568,107 @@ async fn play_audio(app: AppHandle, path: PathBuf, start_ms: u64, end_ms: Option
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// « Aperçu » : montre son propre extrait dans le coin de son écran, comme
+/// le pote le verra (sans rien envoyer).
+#[tauri::command]
+pub async fn clip_preview(
+    app: AppHandle,
+    media: String,
+    sound_id: Option<String>,
+    title: String,
+    start_s: Option<f64>,
+    end_s: Option<f64>,
+    volume: Option<f32>,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let media = PathBuf::from(media);
+    let dir = clips_dir(&state).join("envoi");
+    if media.parent() != Some(dir.as_path()) || !media.exists() {
+        return Err("choisis d'abord une image ou une vidéo".into());
+    }
+    let ext = media.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let kind = kind_of(&ext).ok_or("format non pris en charge")?;
+    let (sound, start_ms, end_ms, volume) = if kind == "video" {
+        let start_ms = (start_s.unwrap_or(0.0).clamp(0.0, 36_000.0) * 1000.0) as u64;
+        let side = video_sound(&dir, &media);
+        let sound = (side != media).then(|| side.to_string_lossy().into_owned());
+        (sound, start_ms, video_end(start_ms, end_s), volume.unwrap_or(1.0).clamp(0.0, 2.0))
+    } else {
+        match sound_id.filter(|s| !s.is_empty()) {
+            Some(id) => {
+                // Copié à côté : la fenêtre ne lit que le dossier des extraits.
+                let s = find_sound(&state, &id)?;
+                let sext = s.path.extension().and_then(|e| e.to_str()).unwrap_or("mp3").to_lowercase();
+                let copy = dir.join(format!("apercu-son.{sext}"));
+                fs::copy(&s.path, &copy).map_err(|e| e.to_string())?;
+                (Some(copy.to_string_lossy().into_owned()), s.start_ms, s.end_ms, s.volume)
+            }
+            None => (None, 0, None, 1.0),
+        }
+    };
+    close(&app);
+    let show = ClipShow {
+        from: "Aperçu".into(),
+        title: title.trim().chars().take(60).collect(),
+        kind,
+        media: media.to_string_lossy().into_owned(),
+        sound,
+        start_ms,
+        end_ms,
+        volume,
+        from_id: String::new(),
+        ask: false,
+        preview: true,
+    };
+    show_window(&app, show)
+}
+
+/// « Garder » : l'extrait reçu devient un pad (son + image).
+#[tauri::command]
+pub async fn clip_keep(app: AppHandle) -> Result<String, String> {
+    let state = app.state::<AppState>();
+    let c = state.clips.pending.lock().unwrap().clone().ok_or("l'extrait est déjà fermé")?;
+    if c.preview {
+        return Err("c'est ton propre extrait".into());
+    }
+    let media = PathBuf::from(&c.media);
+    let ext_of = |p: &Path| p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    // Le son : à part, ou celui de la vidéo (MP4 = même conteneur que M4A).
+    let (sound_path, sound_ext) = match &c.sound {
+        Some(p) => (PathBuf::from(p), ext_of(Path::new(p))),
+        None if c.kind == "video" && ext_of(&media) == "mp4" => (media.clone(), "m4a".to_string()),
+        None if c.kind == "video" => return Err("le son de cette vidéo (WebM) ne peut pas devenir un pad".into()),
+        None => return Err("cet extrait n'a pas de son à garder".into()),
+    };
+    let data = fs::read(&sound_path).map_err(|_| "l'extrait a déjà été effacé".to_string())?;
+    let name = if c.title.trim().is_empty() { format!("Extrait de {}", c.from) } else { c.title.trim().to_string() };
+    let sounds_dir = state.sounds_dir.clone();
+    let index = state.config.lock().unwrap().sounds.len();
+    let mut sound = tauri::async_runtime::spawn_blocking(move || store_sound(&data, &sound_ext, name, &sounds_dir, index))
+        .await
+        .map_err(|e| e.to_string())??;
+    sound.start_ms = c.start_ms;
+    sound.end_ms = c.end_ms.or_else(|| (c.kind == "video").then_some(c.start_ms + 15_000));
+    sound.volume = c.volume;
+    let id = sound.id.clone();
+    let name = sound.name.clone();
+    {
+        let mut config = state.config.lock().unwrap();
+        config.sounds.push(sound);
+        state.save(&config)?;
+    }
+    if c.kind == "image" {
+        if let Ok(img) = fs::read(&media) {
+            if let Some(ext) = giphy::image_ext(&img) {
+                let _ = store_image(&state, &id, (img, ext), None);
+            }
+        }
+    }
+    let _ = app.emit("snapshot", state.snapshot());
+    journal::write(&format!("Extrait de {} gardé en pad « {name} »", c.from));
+    Ok(name)
 }
 
 /// L'extrait en attente (lu par la fenêtre quand elle s'ouvre).

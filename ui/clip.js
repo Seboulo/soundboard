@@ -71,6 +71,12 @@ function play(c) {
   fill($("#show"), c);
   $(".meme").textContent = c.title || "";
   $("#show").hidden = false;
+  $("[data-says]").textContent = c.preview ? "· ce que ton pote verra" : "t'envoie ça";
+  const keep = $('[data-action="keep"]');
+  // Garder : seulement s'il y a un son (une image seule ne fait pas un pad).
+  keep.hidden = c.preview || (c.kind === "image" && !c.sound) || (c.kind === "video" && !c.sound && !/\.mp4$/i.test(c.media));
+  keep.disabled = false;
+  keep.textContent = "💾 Garder";
   const vol = Math.min(1, Math.max(0, c.volume ?? 1));
   let ms = IMAGE_MS;
   if (c.kind === "video") {
@@ -165,6 +171,18 @@ $('[data-action="block"]').addEventListener("click", async () => {
   close();
 });
 $('[data-action="close"]').addEventListener("click", close);
+$('[data-action="keep"]').addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = "…";
+  try {
+    await invoke("clip_keep");
+    btn.textContent = "✓ Gardé";
+  } catch (err) {
+    btn.textContent = "Impossible";
+    btn.title = String(err);
+  }
+});
 
 listen("clip-show", ({ payload }) => start(payload));
 listen("clip-stop", () => {

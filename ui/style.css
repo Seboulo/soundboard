@@ -1559,3 +1559,9 @@ body:has(.grid.list) .tabbar .size { display: none; }
 .clip-range input[type="range"]::-webkit-slider-thumb { pointer-events: auto; -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--panel, #fff); border: 2px solid var(--accent); cursor: ew-resize; margin-top: 6px; }
 .clip-range input[type="range"]:focus-visible { outline: none; }
 .clip-range input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); }
+.clip-recents { display: flex; align-items: center; gap: 8px; }
+.clip-recents .label { color: var(--muted); font-size: 13px; }
+.clip-recents-list { display: flex; gap: 6px; overflow-x: auto; min-width: 0; }
+.clip-recents-list button { flex: 0 0 auto; padding: 0; width: 64px; height: 44px; border-radius: 8px; overflow: hidden; position: relative; background: #000; border: 1px solid var(--border); color: #fff; }
+.clip-recents-list img, .clip-recents-list video { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.clip-recents-list .tag { position: absolute; left: 3px; bottom: 2px; font-size: 11px; text-shadow: 0 1px 2px #000; }

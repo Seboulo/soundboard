@@ -25,6 +25,8 @@
     button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
     .x { border: 0; padding: 2px 8px; font-size: 16px; color: var(--muted); background: transparent; }
     .x.block { font-size: 12px; align-self: flex-start; }
+    .keep { padding: 3px 10px; font-size: 12px; }
+    .keep:disabled { opacity: .7; cursor: default; }
     .x.block:hover { color: #e5484d; }
     #ask { width: 100%; }
     #ask .row { display: flex; gap: 8px; padding: 0 12px 12px; }
@@ -51,7 +53,7 @@
     <div class="bar"></div>
   </div>
   <div id="show" class="card" hidden>
-    <div class="head"><span class="emo" aria-hidden="true">🎬</span><span class="who"><b data-from></b> <small>t'envoie ça</small></span><button type="button" class="x" data-action="close" title="Fermer">✕</button></div>
+    <div class="head"><span class="emo" aria-hidden="true">🎬</span><span class="who"><b data-from></b> <small data-says>t'envoie ça</small></span><button type="button" class="keep" data-action="keep" title="En faire un pad dans ta soundboard">💾 Garder</button><button type="button" class="x" data-action="close" title="Fermer">✕</button></div>
     <div class="stage"><img alt=""><video playsinline></video><div class="meme"></div></div>
     <div class="bar"></div>
   </div>

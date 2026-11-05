@@ -605,6 +605,10 @@
   <dialog id="dlg-clip">
     <form class="form" method="dialog">
       <h2>🎬 Envoyer un extrait</h2>
+      <div class="clip-recents" hidden>
+        <span class="label">Récents</span>
+        <div class="clip-recents-list"></div>
+      </div>
       <div class="segmented" id="clip-source">
         <button type="button" data-source="file" class="active">📁 Fichier <small>image, GIF, vidéo</small></button>
         <button type="button" data-source="link">🔗 Lien vidéo <small>YouTube, TikTok…</small></button>
@@ -659,6 +663,7 @@
       <div class="actions">
         <button type="button" data-action="close">Fermer</button>
         <div class="spacer"></div>
+        <button type="button" data-action="preview" disabled title="Le voir dans le coin de ton écran, comme ton pote">👁 Aperçu</button>
         <button type="button" class="primary" data-action="send" disabled>Envoyer</button>
       </div>
     </form>
