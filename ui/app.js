@@ -3703,12 +3703,15 @@ function trimUi() {
   sel.style.width = `${((b - a) / max) * 100}%`;
   $("[data-trim-label]", dlgClip).textContent = `${fmtS(a)} → ${fmtS(b)} (${(b - a).toFixed(1)} s)`;
 }
+let trimLast = [0, CLIP_MAX_S];
+let trimDrag = null;
 function setTrim(moved) {
   const dur = Number(formClip.start.max) || 0;
   let a = Number(formClip.start.value), b = Number(formClip.end.value);
   if (moved === "start") {
-    if (b - a > CLIP_MAX_S) b = a + CLIP_MAX_S;
-    if (b < a + 0.5) b = Math.min(dur, a + 0.5);
+    // Le début emmène tout le passage (même durée), comme on s'y attend.
+    const len = Math.max(0.5, trimLast[1] - trimLast[0]);
+    b = Math.min(dur, a + len);
     if (b - a < 0.5) a = Math.max(0, b - 0.5);
   } else {
     if (b - a > CLIP_MAX_S) a = b - CLIP_MAX_S;
@@ -3717,16 +3720,20 @@ function setTrim(moved) {
   }
   formClip.start.value = String(a);
   formClip.end.value = String(b);
+  trimLast = [a, b];
   trimUi();
 }
 for (const which of ["start", "end"]) {
   formClip[which].addEventListener("input", () => {
     setTrim(which);
     if (clipMedia?.kind !== "video") return;
+    // Pendant qu'on glisse : l'image montre l'endroit de la poignée.
+    trimDrag = which;
+    clipVideo.pause();
     clipVideo.currentTime = Number(formClip[which].value);
-    if (which === "start") clipVideo.play().catch(() => {});
   });
   formClip[which].addEventListener("change", () => {
+    trimDrag = null;
     if (clipMedia?.kind !== "video") return;
     clipVideo.currentTime = Number(formClip.start.value);
     clipVideo.play().catch(() => {});
@@ -3742,12 +3749,23 @@ clipVideo.addEventListener("loadedmetadata", () => {
   const wanted = clipTrimEnd != null && clipTrimEnd > a ? clipTrimEnd : a + CLIP_MAX_S;
   clipTrimEnd = null;
   formClip.end.value = String(Math.min(dur, wanted, a + CLIP_MAX_S));
+  trimLast = [a, Number(formClip.end.value)];
   trimUi();
   clipVideo.currentTime = a;
 });
+// Poignées collées (longue vidéo) : on attrape celle qui est la plus proche.
+$(".clip-range", dlgClip).addEventListener("pointermove", (e) => {
+  if (e.buttons) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  const max = Number(formClip.start.max) || 1;
+  const x = ((e.clientX - r.left) / r.width) * max;
+  const startCloser = Math.abs(x - Number(formClip.start.value)) < Math.abs(x - Number(formClip.end.value));
+  formClip.start.style.zIndex = startCloser ? "2" : "1";
+  formClip.end.style.zIndex = startCloser ? "1" : "2";
+});
 // L'aperçu tourne en boucle sur le passage choisi.
 clipVideo.addEventListener("timeupdate", () => {
-  if (clipMedia?.kind !== "video") return;
+  if (clipMedia?.kind !== "video" || trimDrag) return;
   const a = Number(formClip.start.value), b = Number(formClip.end.value);
   if (clipVideo.currentTime >= b || clipVideo.currentTime < a - 0.3) clipVideo.currentTime = a;
 });
