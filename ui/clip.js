@@ -24,7 +24,7 @@ function bar(el, ms) {
 
 function reset() {
   clearTimeout(timer);
-  video.onended = video.onerror = video.onloadedmetadata = img.onerror = null;
+  video.onended = video.onerror = video.onloadedmetadata = video.onplaying = img.onerror = null;
   video.pause();
   video.removeAttribute("src");
   img.removeAttribute("src");
@@ -55,18 +55,36 @@ function ask(c) {
   timer = setTimeout(close, ASK_MS);
 }
 
+// Le son part dans le casque choisi dans l'appli (moteur audio) ; si ça
+// échoue, l'élément joue le son lui-même (sortie par défaut de Windows).
+function playSound(c, path, startMs, endMs, el) {
+  invoke("clip_audio", { path, startMs: Math.round(startMs), endMs: endMs ?? null, volume: c.volume ?? 1 }).catch(() => {
+    if (current !== c) return;
+    el.muted = false;
+    if (el.paused && el !== video) el.play().catch(() => {});
+  });
+}
+
 function play(c) {
   clearTimeout(timer);
   $("#ask").hidden = true;
   fill($("#show"), c);
   $(".meme").textContent = c.title || "";
   $("#show").hidden = false;
+  $("[data-says]").textContent = c.preview ? "· ce que ton pote verra" : "t'envoie ça";
+  const keep = $('[data-action="keep"]');
+  // Garder : seulement s'il y a un son (une image seule ne fait pas un pad).
+  keep.hidden = c.preview || (c.kind === "image" && !c.sound) || (c.kind === "video" && !c.sound && !/\.mp4$/i.test(c.media));
+  keep.disabled = false;
+  keep.textContent = "💾 Garder";
   const vol = Math.min(1, Math.max(0, c.volume ?? 1));
   let ms = IMAGE_MS;
   if (c.kind === "video") {
     img.hidden = true;
     video.hidden = false;
     video.volume = vol;
+    // Image muette ici : le son passe par le casque (voir playSound).
+    video.muted = true;
     video.src = convertFileSrc(c.media);
     const from = (c.start_ms || 0) / 1000;
     if (from) video.currentTime = from;
@@ -75,10 +93,27 @@ function play(c) {
     video.onloadedmetadata = () => {
       if (current !== c) return;
       if (from && from < video.duration) video.currentTime = from;
-      const d = Math.max(2000, Math.min(MAX_MS, ((video.duration || 15) - (from < video.duration ? from : 0)) * 1000));
+      const until = Math.min(video.duration || 15, c.end_ms ? c.end_ms / 1000 : Infinity);
+      const d = Math.max(2000, Math.min(MAX_MS, (until - (from < video.duration ? from : 0)) * 1000));
       bar($("#show .bar"), d);
       clearTimeout(timer);
       timer = setTimeout(close, d + 300);
+    };
+    video.onplaying = () => {
+      video.onplaying = null;
+      if (current !== c) return;
+      if (c.sound) {
+        // Son à part (Shorts) : même départ que l'image.
+        const a = new Audio(convertFileSrc(c.sound));
+        a.muted = true;
+        audio = a;
+        a.addEventListener("loadedmetadata", () => {
+          if (audio === a) a.currentTime = video.currentTime;
+        }, { once: true });
+        playSound(c, c.sound, video.currentTime * 1000, c.end_ms, a);
+      } else {
+        playSound(c, c.media, video.currentTime * 1000, c.end_ms, video);
+      }
     };
     video.play().catch(() => {});
     ms = MAX_MS;
@@ -104,7 +139,13 @@ function play(c) {
       a.ontimeupdate = () => {
         if (a.currentTime >= end) a.pause();
       };
-      a.play().catch(() => {});
+      // Sert à connaître la durée ; joue seulement si le casque échoue.
+      a.muted = true;
+      a.preload = "auto";
+      a.addEventListener("loadedmetadata", () => {
+        if (audio === a) a.currentTime = start;
+      }, { once: true });
+      playSound(c, c.sound, start * 1000, c.end_ms, a);
       ms = MAX_MS;
     }
   }
@@ -125,7 +166,23 @@ $('[data-action="accept"]').addEventListener("click", async () => {
   if (current) play(current);
 });
 $('[data-action="refuse"]').addEventListener("click", close);
+$('[data-action="block"]').addEventListener("click", async () => {
+  if (current) await invoke("set_friend_blocked", { id: current.from_id, name: current.from, blocked: true }).catch(() => {});
+  close();
+});
 $('[data-action="close"]').addEventListener("click", close);
+$('[data-action="keep"]').addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = "…";
+  try {
+    await invoke("clip_keep");
+    btn.textContent = "✓ Gardé";
+  } catch (err) {
+    btn.textContent = "Impossible";
+    btn.title = String(err);
+  }
+});
 
 listen("clip-show", ({ payload }) => start(payload));
 listen("clip-stop", () => {

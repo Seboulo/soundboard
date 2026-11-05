@@ -3300,7 +3300,31 @@ function ago(secs) {
   return min < 1 ? "vérifié à l'instant" : min < 60 ? `vérifié il y a ${min} min` : `vérifié il y a ${Math.round(min / 60)} h`;
 }
 
+function renderBlockList() {
+  const blocked = state.config.settings.room_blocked ?? [];
+  const isBlocked = (id) => blocked.some((b) => b.id === id);
+  const toggle = (id, name, on) => async () => {
+    const res = await call("set_friend_blocked", { id, name, blocked: on });
+    if (res) {
+      toast(on ? `${name} est bloqué : plus de sons ni d'extraits de sa part` : `${name} est débloqué`);
+      renderBlockList();
+    }
+  };
+  const rows = [
+    ...blocked.map((b) => linkItem(`🚫 ${b.name || "Pote"}`, "Bloqué", false, [["Débloquer", toggle(b.id, b.name, false)]])),
+    ...room.members.filter((m) => !isBlocked(m.id)).map((m) => linkItem(m.name, "En ligne", false, [["Bloquer", toggle(m.id, m.name, true)]])),
+  ];
+  if (!rows.length) {
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = "Tes potes en ligne apparaîtront ici.";
+    rows.push(note);
+  }
+  $("#block-list").replaceChildren(...rows);
+}
+
 function renderLinkLists() {
+  renderBlockList();
   const s = state.config.settings;
   $("#subs-list").replaceChildren(
     ...s.subscriptions.map((sub) =>
@@ -3422,6 +3446,7 @@ listen("room", ({ payload }) => {
   room = payload;
   renderRoom();
   if (!roomMenu.hidden) setRoomMenu(true);
+  if (dlgSettings.open) renderBlockList();
 });
 listen("room-played", ({ payload: [who, title] }) => toast(`${who} a joué « ${title} » chez toi`));
 listen("room-sent", ({ payload }) => {
@@ -3447,8 +3472,15 @@ function clipUi() {
   clipVideo.hidden = clipMedia?.kind !== "video";
   // Une vidéo garde son propre son.
   $("[data-for-image]", dlgClip).hidden = clipMedia?.kind === "video";
-  $("[data-for-video]", dlgClip).hidden = clipMedia?.kind !== "video";
+  dlgClip.querySelectorAll("[data-for-video]").forEach((el) => (el.hidden = clipMedia?.kind !== "video"));
+  const hasSound = clipMedia?.kind === "video" || (clipMedia?.kind === "image" && !!formClip.sound.value);
+  $("[data-for-sound]", dlgClip).hidden = !hasSound;
+  $(".clip-listen > span", dlgClip).replaceChildren(
+    clipMedia?.kind === "video" ? "Son de la vidéo " : "Son avec l'image ",
+    Object.assign(document.createElement("span"), { className: "value", textContent: clipMedia?.kind === "video" ? `${Math.round(Number(formClip.cvol.value) * 100)} %` : "" }),
+  );
   $('[data-action="send"]', dlgClip).disabled = !clipMedia;
+  $('[data-action="preview"]', dlgClip).disabled = !clipMedia;
   $(".meme-text", dlgClip).textContent = clipMedia ? formClip.title.value.trim() : "";
 }
 function setClipSource(source) {
@@ -3464,6 +3496,7 @@ function setClipSource(source) {
 dlgClip.querySelectorAll("#clip-source button").forEach((b) => b.addEventListener("click", () => setClipSource(b.dataset.source)));
 
 function showClipMedia(picked, startS = 0) {
+  stopClipListen();
   clipMedia = picked;
   const src = fileSrc(picked.path);
   if (picked.kind === "video") {
@@ -3475,7 +3508,8 @@ function showClipMedia(picked, startS = 0) {
     clipVideo.removeAttribute("src");
     clipImg.src = src;
   }
-  formClip.start.value = String(Math.max(0, Math.round(startS)));
+  clipTrimFrom = startS;
+  formClip.start.value = String(startS);
   clipUi();
 }
 function openClipDialog(to) {
@@ -3487,7 +3521,56 @@ function openClipDialog(to) {
   setClipSource(clipSource);
   clipUi();
   dlgClip.showModal();
+  renderClipRecents();
 }
+// Les 5 derniers extraits envoyés : un clic les remet tels quels.
+async function renderClipRecents() {
+  const recents = await invoke("clip_recents").catch(() => []);
+  const box = $(".clip-recents", dlgClip);
+  box.hidden = !recents.length;
+  $(".clip-recents-list", dlgClip).replaceChildren(...recents.map((r) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.title = r.title ? `« ${r.title} »` : r.kind === "video" ? "Vidéo" : "Image";
+    if (r.kind === "video") {
+      const v = document.createElement("video");
+      v.muted = true;
+      v.preload = "metadata";
+      v.src = `${fileSrc(r.path)}#t=${(r.start_s || 0) + 0.5}`;
+      const tag = document.createElement("span");
+      tag.className = "tag";
+      tag.textContent = "▶";
+      b.append(v, tag);
+    } else {
+      const img = document.createElement("img");
+      img.src = fileSrc(r.path);
+      img.alt = "";
+      b.append(img);
+    }
+    b.addEventListener("click", () => {
+      clipTrimEnd = r.kind === "video" ? r.end_s ?? null : null;
+      showClipMedia({ path: r.path, kind: r.kind }, r.start_s || 0);
+      formClip.title.value = r.title || "";
+      formClip.cvol.value = String(r.volume ?? 1);
+      if (r.kind === "image") formClip.sound.value = r.sound_id || "";
+      clipUi();
+    });
+    return b;
+  }));
+}
+$('[data-action="preview"]', dlgClip).addEventListener("click", () => {
+  if (!clipMedia) return;
+  stopClipListen();
+  const video = clipMedia.kind === "video";
+  invoke("clip_preview", {
+    media: clipMedia.path,
+    soundId: video ? null : formClip.sound.value || null,
+    title: formClip.title.value,
+    startS: video ? Number(formClip.start.value) || 0 : null,
+    endS: video ? Number(formClip.end.value) || null : null,
+    volume: video ? Number(formClip.cvol.value) : null,
+  }).catch((err) => toast(String(err), true));
+});
 $("#btn-clip").addEventListener("click", () => openClipDialog());
 $('[data-action="pick"]', dlgClip).addEventListener("click", async () => {
   const picked = await call("pick_clip_media");
@@ -3570,12 +3653,121 @@ formClip.addEventListener("keydown", (e) => {
   else if (e.target.name === "gifq") $('[data-action="search-gif"]', dlgClip).click();
 });
 formClip.title.addEventListener("input", clipUi);
-formClip.start.addEventListener("change", () => {
-  if (clipMedia?.kind === "video") clipVideo.currentTime = Number(formClip.start.value) || 0;
-});
+formClip.sound.addEventListener("change", () => { stopClipListen(); clipUi(); });
+formClip.cvol.addEventListener("input", clipUi);
+formClip.cvol.addEventListener("change", () => { if (clipListening) clipListen(); });
+// « Écouter » : joue le son dans le casque, tel que le pote l'entendra.
+let clipListening = false;
+let clipListenTimer = 0;
+const listenBtn = $('[data-action="listen"]', dlgClip);
+function stopClipListen() {
+  if (clipListening) invoke("stop_preview");
+  clipListening = false;
+  clearTimeout(clipListenTimer);
+  listenBtn.textContent = "▶ Écouter";
+}
+async function clipListen() {
+  try {
+    await invoke("clip_listen", {
+      media: clipMedia.path,
+      soundId: clipMedia.kind === "image" ? formClip.sound.value || null : null,
+      startS: Number(formClip.start.value) || 0,
+      endS: clipMedia.kind === "video" ? Number(formClip.end.value) : null,
+      volume: Number(formClip.cvol.value),
+    });
+    clipListening = true;
+    listenBtn.textContent = "■ Arrêter";
+    clearTimeout(clipListenTimer);
+    clipListenTimer = setTimeout(() => { clipListening = false; listenBtn.textContent = "▶ Écouter"; }, 15_500);
+    if (clipMedia.kind === "video") {
+      clipVideo.currentTime = Number(formClip.start.value) || 0;
+      clipVideo.play().catch(() => {});
+    }
+  } catch (err) {
+    stopClipListen();
+    toast(String(err), true);
+  }
+}
+listenBtn.addEventListener("click", () => (clipListening ? stopClipListen() : clipListen()));
+
+// ---------- Découpe de la vidéo : début et fin, 15 s au plus ----------
+const CLIP_MAX_S = 15;
+let clipTrimFrom = 0;
+let clipTrimEnd = null;
+const fmtS = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`;
+function trimUi() {
+  const max = Number(formClip.start.max) || 1;
+  const a = Number(formClip.start.value), b = Number(formClip.end.value);
+  const sel = $(".clip-range-sel", dlgClip);
+  sel.style.left = `${(a / max) * 100}%`;
+  sel.style.width = `${((b - a) / max) * 100}%`;
+  $("[data-trim-label]", dlgClip).textContent = `${fmtS(a)} → ${fmtS(b)} (${(b - a).toFixed(1)} s)`;
+}
+let trimLast = [0, CLIP_MAX_S];
+let trimDrag = null;
+function setTrim(moved) {
+  const dur = Number(formClip.start.max) || 0;
+  let a = Number(formClip.start.value), b = Number(formClip.end.value);
+  if (moved === "start") {
+    // Le début emmène tout le passage (même durée), comme on s'y attend.
+    const len = Math.max(0.5, trimLast[1] - trimLast[0]);
+    b = Math.min(dur, a + len);
+    if (b - a < 0.5) a = Math.max(0, b - 0.5);
+  } else {
+    if (b - a > CLIP_MAX_S) a = b - CLIP_MAX_S;
+    if (a > b - 0.5) a = Math.max(0, b - 0.5);
+    if (b - a < 0.5) b = Math.min(dur, a + 0.5);
+  }
+  formClip.start.value = String(a);
+  formClip.end.value = String(b);
+  trimLast = [a, b];
+  trimUi();
+}
+for (const which of ["start", "end"]) {
+  formClip[which].addEventListener("input", () => {
+    setTrim(which);
+    if (clipMedia?.kind !== "video") return;
+    // Pendant qu'on glisse : l'image montre l'endroit de la poignée.
+    trimDrag = which;
+    clipVideo.pause();
+    clipVideo.currentTime = Number(formClip[which].value);
+  });
+  formClip[which].addEventListener("change", () => {
+    trimDrag = null;
+    if (clipMedia?.kind !== "video") return;
+    clipVideo.currentTime = Number(formClip.start.value);
+    clipVideo.play().catch(() => {});
+    if (clipListening) clipListen();
+  });
+}
 clipVideo.addEventListener("loadedmetadata", () => {
-  const left = clipVideo.duration - (Number(formClip.start.value) || 0);
-  if (left > 15.5) toast("Seules 15 secondes seront montrées (règle « Commencer à » pour choisir le passage)");
+  const dur = Math.round((clipVideo.duration || 0) * 10) / 10;
+  if (!dur || !isFinite(dur)) return;
+  for (const r of [formClip.start, formClip.end]) r.max = String(dur);
+  const a = Math.min(clipTrimFrom, Math.max(0, dur - 0.5));
+  formClip.start.value = String(a);
+  const wanted = clipTrimEnd != null && clipTrimEnd > a ? clipTrimEnd : a + CLIP_MAX_S;
+  clipTrimEnd = null;
+  formClip.end.value = String(Math.min(dur, wanted, a + CLIP_MAX_S));
+  trimLast = [a, Number(formClip.end.value)];
+  trimUi();
+  clipVideo.currentTime = a;
+});
+// Poignées collées (longue vidéo) : on attrape celle qui est la plus proche.
+$(".clip-range", dlgClip).addEventListener("pointermove", (e) => {
+  if (e.buttons) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  const max = Number(formClip.start.max) || 1;
+  const x = ((e.clientX - r.left) / r.width) * max;
+  const startCloser = Math.abs(x - Number(formClip.start.value)) < Math.abs(x - Number(formClip.end.value));
+  formClip.start.style.zIndex = startCloser ? "2" : "1";
+  formClip.end.style.zIndex = startCloser ? "1" : "2";
+});
+// L'aperçu tourne en boucle sur le passage choisi.
+clipVideo.addEventListener("timeupdate", () => {
+  if (clipMedia?.kind !== "video" || trimDrag) return;
+  const a = Number(formClip.start.value), b = Number(formClip.end.value);
+  if (clipVideo.currentTime >= b || clipVideo.currentTime < a - 0.3) clipVideo.currentTime = a;
 });
 $('[data-action="send"]', dlgClip).addEventListener("click", async (e) => {
   const btn = e.currentTarget;
@@ -3591,6 +3783,8 @@ $('[data-action="send"]', dlgClip).addEventListener("click", async (e) => {
       title: formClip.title.value,
       to,
       startS: clipMedia.kind === "video" ? Number(formClip.start.value) || 0 : null,
+      endS: clipMedia.kind === "video" ? Number(formClip.end.value) || null : null,
+      volume: clipMedia.kind === "video" ? Number(formClip.cvol.value) : null,
     });
   } catch (err) {
     return toast(String(err), true);
@@ -3604,13 +3798,18 @@ $('[data-action="send"]', dlgClip).addEventListener("click", async (e) => {
 });
 $('[data-action="close"]', dlgClip).addEventListener("click", () => dlgClip.close());
 dlgClip.addEventListener("close", () => {
+  stopClipListen();
+  formClip.cvol.value = "1";
   clipVideo.pause();
   clipVideo.removeAttribute("src");
   clipImg.removeAttribute("src");
   clipMedia = null;
   formClip.title.value = "";
   formClip.title.placeholder = "Ex. : QUAND KEVIN RATE SON TIR";
+  clipTrimFrom = 0;
+  for (const r of [formClip.start, formClip.end]) r.max = "15";
   formClip.start.value = "0";
+  formClip.end.value = "15";
 });
 invoke("room_status").then((r) => {
   room = r;

@@ -414,6 +414,8 @@
               </select>
             </label>
             <p class="hint" id="room-state"></p>
+            <div class="set-row"><span class="txt"><b>Bloquer un pote</b><small>Ses sons et ses extraits ne te parviennent plus. Ça ne le prévient pas.</small></span></div>
+            <div id="block-list" class="link-list"></div>
           </div>
           <h3>Packs que je suis</h3>
           <div class="set-card">
@@ -603,6 +605,10 @@
   <dialog id="dlg-clip">
     <form class="form" method="dialog">
       <h2>🎬 Envoyer un extrait</h2>
+      <div class="clip-recents" hidden>
+        <span class="label">Récents</span>
+        <div class="clip-recents-list"></div>
+      </div>
       <div class="segmented" id="clip-source">
         <button type="button" data-source="file" class="active">📁 Fichier <small>image, GIF, vidéo</small></button>
         <button type="button" data-source="link">🔗 Lien vidéo <small>YouTube, TikTok…</small></button>
@@ -621,7 +627,7 @@
       </div>
       <div class="clip-frame">
         <button type="button" class="clip-drop" data-action="pick">
-          <span class="clip-empty"><span class="emo" aria-hidden="true">🖼️</span><b>Choisir une image, un GIF ou une vidéo</b><small>PNG, JPG, GIF, WebP, MP4 ou WebM · 8 Mo au plus</small></span>
+          <span class="clip-empty"><span class="emo" aria-hidden="true">🖼️</span><b>Choisir une image, un GIF ou une vidéo</b><small>PNG, JPG, GIF, WebP, MP4 ou WebM · 14 Mo au plus</small></span>
           <img class="clip-preview" alt="" hidden>
           <video class="clip-preview" muted loop playsinline hidden></video>
         </button>
@@ -630,12 +636,26 @@
       <label class="set-field">Texte en gros sur l'extrait <small>(facultatif)</small>
         <input name="title" maxlength="60" autocomplete="off" placeholder="Ex. : QUAND KEVIN RATE SON TIR">
       </label>
-      <label class="set-field" data-for-video hidden>Commencer à (secondes)
-        <input name="start" type="number" min="0" step="1" value="0">
-      </label>
+      <div class="set-field clip-trim" data-for-video hidden>
+        <span>Passage à montrer <span class="value" data-trim-label></span></span>
+        <div class="clip-range">
+          <div class="clip-range-sel"></div>
+          <input name="start" type="range" min="0" max="15" step="0.1" value="0" aria-label="Début du passage">
+          <input name="end" type="range" min="0" max="15" step="0.1" value="15" aria-label="Fin du passage">
+        </div>
+        <small class="hint">Glisse les deux poignées (15 secondes au plus). ← → pour affiner après un clic.</small>
+      </div>
       <label class="set-field" data-for-image>Son avec l'image
         <select name="sound"></select>
       </label>
+      <div class="set-field clip-listen" data-for-sound hidden>
+        <span>Son de la vidéo <span class="value" data-for="cvol">100 %</span></span>
+        <div class="search-row">
+          <input name="cvol" type="range" list="tick-100" min="0" max="2" step="0.05" value="1" data-for-video aria-label="Volume du son de la vidéo">
+          <button type="button" data-action="listen">▶ Écouter</button>
+        </div>
+        <small class="hint">Tu l'entends dans ton casque, comme ton pote l'entendra : même passage, et niveau égalisé comme tes sons.</small>
+      </div>
       <label class="set-field">Envoyer à
         <select name="to"></select>
       </label>
@@ -643,6 +663,7 @@
       <div class="actions">
         <button type="button" data-action="close">Fermer</button>
         <div class="spacer"></div>
+        <button type="button" data-action="preview" disabled title="Le voir dans le coin de ton écran, comme ton pote">👁 Aperçu</button>
         <button type="button" class="primary" data-action="send" disabled>Envoyer</button>
       </div>
     </form>
