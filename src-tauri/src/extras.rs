@@ -199,7 +199,7 @@ pub async fn tts_create(app: AppHandle, text: String, voice: Option<String>, rat
 }
 
 /// Un son qui n'est pas dans la soundboard (voix, son reçu d'un pote).
-fn store_like(path: &Path, analysis: config::Analysis) -> Sound {
+pub(crate) fn store_like(path: &Path, analysis: config::Analysis) -> Sound {
     Sound {
         id: String::new(),
         name: String::new(),

@@ -58,6 +58,8 @@ pub struct Clips {
     /// Fenêtre affichée en ce moment.
     window: Mutex<Option<String>>,
     counter: AtomicU64,
+    /// Le son de l'extrait passe par le moteur audio (dans le casque).
+    audio_on: AtomicBool,
 }
 
 fn kind_of(ext: &str) -> Option<&'static str> {
@@ -374,6 +376,37 @@ fn show_window(app: &AppHandle, show: ClipShow) -> Result<(), String> {
     Ok(())
 }
 
+/// Joue le son de l'extrait (piste audio de la vidéo, ou son de l'image)
+/// dans le casque choisi dans les réglages, comme une pré-écoute. La
+/// fenêtre, elle, passerait par la sortie par défaut de Windows, qui n'est
+/// pas toujours le casque. En cas d'échec (vidéo WebM en Opus…), la fenêtre
+/// joue le son elle-même.
+#[tauri::command]
+pub async fn clip_audio(app: AppHandle, path: String, start_ms: u64, end_ms: Option<u64>, volume: f32) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let path = PathBuf::from(path);
+    if path.parent() != Some(clips_dir(&state).join("recus").as_path()) {
+        return Err("fichier non autorisé".into());
+    }
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app2.state::<AppState>();
+        let analysis = analysis::analyze(&path)?;
+        let mut sound = extras::store_like(&path, analysis);
+        sound.id = audio::PREVIEW_ID.into();
+        sound.start_ms = start_ms;
+        let total = analysis.duration_ms;
+        sound.end_ms = Some(end_ms.unwrap_or(total).min(total).min(start_ms + 15_500));
+        sound.volume = volume.clamp(0.0, 2.0);
+        let req = play_request(&state, &sound);
+        state.audio.preview(req)?;
+        state.clips.audio_on.store(true, Ordering::SeqCst);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// L'extrait en attente (lu par la fenêtre quand elle s'ouvre).
 #[tauri::command]
 pub fn clip_pending(state: State<AppState>) -> Option<ClipShow> {
@@ -399,6 +432,9 @@ pub fn close(app: &AppHandle) {
     if let Some(state) = app.try_state::<AppState>() {
         state.clips.pending.lock().unwrap().take();
         state.clips.window.lock().unwrap().take();
+        if state.clips.audio_on.swap(false, Ordering::SeqCst) {
+            state.audio.stop_preview();
+        }
     }
     for (label, w) in app.webview_windows() {
         if is_clip_window(&label) {

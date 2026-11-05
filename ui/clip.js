@@ -24,7 +24,7 @@ function bar(el, ms) {
 
 function reset() {
   clearTimeout(timer);
-  video.onended = video.onerror = video.onloadedmetadata = img.onerror = null;
+  video.onended = video.onerror = video.onloadedmetadata = video.onplaying = img.onerror = null;
   video.pause();
   video.removeAttribute("src");
   img.removeAttribute("src");
@@ -55,6 +55,16 @@ function ask(c) {
   timer = setTimeout(close, ASK_MS);
 }
 
+// Le son part dans le casque choisi dans l'appli (moteur audio) ; si ça
+// échoue, l'élément joue le son lui-même (sortie par défaut de Windows).
+function playSound(c, path, startMs, endMs, el) {
+  invoke("clip_audio", { path, startMs: Math.round(startMs), endMs: endMs ?? null, volume: c.volume ?? 1 }).catch(() => {
+    if (current !== c) return;
+    el.muted = false;
+    if (el.paused && el !== video) el.play().catch(() => {});
+  });
+}
+
 function play(c) {
   clearTimeout(timer);
   $("#ask").hidden = true;
@@ -67,6 +77,8 @@ function play(c) {
     img.hidden = true;
     video.hidden = false;
     video.volume = vol;
+    // Image muette ici : le son passe par le casque (voir playSound).
+    video.muted = true;
     video.src = convertFileSrc(c.media);
     const from = (c.start_ms || 0) / 1000;
     if (from) video.currentTime = from;
@@ -79,6 +91,10 @@ function play(c) {
       bar($("#show .bar"), d);
       clearTimeout(timer);
       timer = setTimeout(close, d + 300);
+    };
+    video.onplaying = () => {
+      video.onplaying = null;
+      if (current === c) playSound(c, c.media, video.currentTime * 1000, null, video);
     };
     video.play().catch(() => {});
     ms = MAX_MS;
@@ -104,7 +120,13 @@ function play(c) {
       a.ontimeupdate = () => {
         if (a.currentTime >= end) a.pause();
       };
-      a.play().catch(() => {});
+      // Sert à connaître la durée ; joue seulement si le casque échoue.
+      a.muted = true;
+      a.preload = "auto";
+      a.addEventListener("loadedmetadata", () => {
+        if (audio === a) a.currentTime = start;
+      }, { once: true });
+      playSound(c, c.sound, start * 1000, c.end_ms, a);
       ms = MAX_MS;
     }
   }

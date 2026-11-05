@@ -2433,6 +2433,7 @@ pub fn run() {
             clip::pick_clip_media,
             clip::clip_from_gif,
             clip::clip_from_link,
+            clip::clip_audio,
             clip::send_clip,
             clip::clip_pending,
             clip::clip_accept,
