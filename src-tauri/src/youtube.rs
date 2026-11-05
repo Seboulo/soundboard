@@ -37,7 +37,7 @@ pub fn is_youtube(url: &str) -> bool {
 fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .user_agent(concat!("Soundboard/", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(600))
         .build()
         .map_err(|e| e.to_string())
 }
@@ -71,10 +71,59 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Deno : depuis novembre 2025, yt-dlp a besoin d'un moteur JavaScript pour
+/// YouTube (sinon des formats manquent). Posé à côté de yt-dlp.exe, il est
+/// trouvé tout seul.
+const DENO_ZIP: &str = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip";
+const DENO_MAX: usize = 120 * 1024 * 1024;
+static DENO_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Empreinte du fichier « .sha256sum » de Deno (« Hash : ABCD… »).
+fn deno_hash(text: &str) -> Option<String> {
+    text.split(|c: char| !c.is_ascii_hexdigit()).find(|w| w.len() == 64).map(|h| h.to_lowercase())
+}
+
+/// Installe Deno à côté de yt-dlp, en arrière-plan (une seule fois) : la
+/// première récupération ne l'attend pas.
+fn ensure_deno(tools_dir: &Path) {
+    if !cfg!(windows) || tools_dir.join("deno.exe").exists() {
+        return;
+    }
+    if DENO_BUSY.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let dir = tools_dir.to_path_buf();
+    tauri::async_runtime::spawn(async move {
+        let res = install_deno(&dir).await;
+        crate::journal::write(&match res {
+            Ok(()) => "Deno installé pour yt-dlp".to_string(),
+            Err(e) => format!("Deno non installé ({e})"),
+        });
+        DENO_BUSY.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
+}
+
+async fn install_deno(dir: &Path) -> Result<(), String> {
+    let sums = fetch(&format!("{DENO_ZIP}.sha256sum"), 4096).await?;
+    let expected = deno_hash(&String::from_utf8_lossy(&sums)).ok_or("empreinte de Deno introuvable")?;
+    let data = fetch(DENO_ZIP, DENO_MAX).await?;
+    if hex(&Sha256::digest(&data)) != expected {
+        return Err("empreinte de Deno différente".into());
+    }
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(data)).map_err(|e| e.to_string())?;
+    let mut file = zip.by_name("deno.exe").map_err(|e| e.to_string())?;
+    let mut exe = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut exe).map_err(|e| e.to_string())?;
+    let tmp = dir.join("deno.download");
+    fs::write(&tmp, &exe).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, dir.join("deno.exe")).map_err(|e| e.to_string())
+}
+
 /// Installe yt-dlp dans `tools_dir` s'il n'y est pas encore et renvoie son chemin.
 pub async fn ensure(tools_dir: &Path, on_status: impl Fn(&str)) -> Result<PathBuf, String> {
     let exe = tools_dir.join(EXE);
     if exe.exists() {
+        ensure_deno(tools_dir);
         return Ok(exe);
     }
     on_status("Première fois : téléchargement de yt-dlp (environ 18 Mo)…");
@@ -91,6 +140,7 @@ pub async fn ensure(tools_dir: &Path, on_status: impl Fn(&str)) -> Result<PathBu
     fs::rename(&tmp, &exe).map_err(|e| e.to_string())?;
     // L'installation vaut vérification du jour.
     let _ = fs::write(tools_dir.join("last-update"), b"");
+    ensure_deno(tools_dir);
     Ok(exe)
 }
 
@@ -375,6 +425,12 @@ mod tests {
         assert!(is_web_link("https://www.tiktok.com/@a/video/1"));
         assert!(!is_web_link("--exec calc"));
         assert!(!is_web_link("file:///C:/x.mp4"));
+    }
+
+    #[test]
+    fn reads_deno_hash() {
+        let text = "\r\nAlgorithm : SHA256\r\nHash      : CBA84B26E0DF5AE7F74FC66B86A95B866872A86292EBD84FA1E959927EDD93BF\r\nPath      : C:\\a\\deno.zip\r\n";
+        assert_eq!(deno_hash(text).as_deref(), Some("cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf"));
     }
 
     #[test]
