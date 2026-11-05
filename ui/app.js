@@ -3300,7 +3300,31 @@ function ago(secs) {
   return min < 1 ? "vérifié à l'instant" : min < 60 ? `vérifié il y a ${min} min` : `vérifié il y a ${Math.round(min / 60)} h`;
 }
 
+function renderBlockList() {
+  const blocked = state.config.settings.room_blocked ?? [];
+  const isBlocked = (id) => blocked.some((b) => b.id === id);
+  const toggle = (id, name, on) => async () => {
+    const res = await call("set_friend_blocked", { id, name, blocked: on });
+    if (res) {
+      toast(on ? `${name} est bloqué : plus de sons ni d'extraits de sa part` : `${name} est débloqué`);
+      renderBlockList();
+    }
+  };
+  const rows = [
+    ...blocked.map((b) => linkItem(`🚫 ${b.name || "Pote"}`, "Bloqué", false, [["Débloquer", toggle(b.id, b.name, false)]])),
+    ...room.members.filter((m) => !isBlocked(m.id)).map((m) => linkItem(m.name, "En ligne", false, [["Bloquer", toggle(m.id, m.name, true)]])),
+  ];
+  if (!rows.length) {
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = "Tes potes en ligne apparaîtront ici.";
+    rows.push(note);
+  }
+  $("#block-list").replaceChildren(...rows);
+}
+
 function renderLinkLists() {
+  renderBlockList();
   const s = state.config.settings;
   $("#subs-list").replaceChildren(
     ...s.subscriptions.map((sub) =>
@@ -3422,6 +3446,7 @@ listen("room", ({ payload }) => {
   room = payload;
   renderRoom();
   if (!roomMenu.hidden) setRoomMenu(true);
+  if (dlgSettings.open) renderBlockList();
 });
 listen("room-played", ({ payload: [who, title] }) => toast(`${who} a joué « ${title} » chez toi`));
 listen("room-sent", ({ payload }) => {

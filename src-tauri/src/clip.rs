@@ -13,9 +13,10 @@ use std::time::{Duration, Instant};
 use tauri::{LogicalSize, WebviewUrl, WebviewWindowBuilder};
 
 /// Taille d'un extrait envoyé (image ou vidéo + son).
-pub const MAX_CLIP: u64 = 10 * 1024 * 1024;
+/// ntfy.sh refuse les pièces jointes de plus de 15 Mo : on garde de la marge.
+pub const MAX_CLIP: u64 = 14 * 1024 * 1024 + 512 * 1024;
 /// Taille de l'image ou de la vidéo choisie.
-pub const MAX_MEDIA: u64 = 8 * 1024 * 1024;
+pub const MAX_MEDIA: u64 = 14 * 1024 * 1024;
 const MAGIC: &[u8] = b"SBCLIP1\n";
 const IMAGES: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
 const VIDEOS: &[&str] = &["mp4", "webm"];
@@ -47,6 +48,8 @@ pub struct ClipShow {
     pub start_ms: u64,
     pub end_ms: Option<u64>,
     pub volume: f32,
+    /// Qui l'envoie (pour « Bloquer »).
+    pub from_id: String,
     /// Demander avant d'afficher.
     pub ask: bool,
 }
@@ -127,6 +130,8 @@ pub struct ClipPick {
     size: u64,
     /// Titre de la vidéo (lien), pour proposer un texte.
     title: String,
+    /// Piste audio à part (Shorts) : rangée à côté, « <nom>-son.<ext> ».
+    has_audio: bool,
 }
 
 /// Image, GIF ou vidéo choisie sur le PC, copiée dans le dossier de l'app
@@ -144,33 +149,46 @@ pub async fn pick_clip_media(app: AppHandle) -> Result<Option<ClipPick>, String>
     kind_of(&ext).ok_or("choisis une image (PNG, JPG, GIF, WebP) ou une vidéo (MP4, WebM)")?;
     let size = fs::metadata(&path).map_err(|e| e.to_string())?.len();
     if size > MAX_MEDIA {
-        return Err(format!("fichier trop lourd ({:.1} Mo) : 8 Mo au plus", size as f64 / 1048576.0));
+        return Err(format!("fichier trop lourd ({:.1} Mo) : 14 Mo au plus", size as f64 / 1048576.0));
     }
     let data = fs::read(&path).map_err(|e| e.to_string())?;
-    keep_for_sending(&app, &data, &ext, String::new()).map(Some)
+    keep_for_sending(&app, &data, &ext, String::new(), None).map(Some)
 }
 
 /// Range l'image ou la vidéo choisie dans le dossier de l'app (pour l'aperçu
 /// et l'envoi).
-fn keep_for_sending(app: &AppHandle, data: &[u8], ext: &str, title: String) -> Result<ClipPick, String> {
+fn keep_for_sending(
+    app: &AppHandle,
+    data: &[u8],
+    ext: &str,
+    title: String,
+    audio: Option<(Vec<u8>, String)>,
+) -> Result<ClipPick, String> {
     let kind = kind_of(ext).ok_or("format non pris en charge")?;
-    if data.len() as u64 > MAX_MEDIA {
-        return Err(format!("fichier trop lourd ({:.1} Mo) : 8 Mo au plus", data.len() as f64 / 1048576.0));
+    let audio_len = audio.as_ref().map_or(0, |(a, _)| a.len());
+    let total = data.len() + audio_len;
+    if total as u64 > MAX_MEDIA {
+        return Err(format!("fichier trop lourd ({:.1} Mo) : 14 Mo au plus", total as f64 / 1048576.0));
     }
     let state = app.state::<AppState>();
     let dir = clips_dir(&state).join("envoi");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     trim_dir(&dir, 10);
-    let copy = dir.join(format!("{}.{ext}", uuid::Uuid::new_v4().simple()));
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    let copy = dir.join(format!("{id}.{ext}"));
     fs::write(&copy, data).map_err(|e| e.to_string())?;
-    Ok(ClipPick { path: copy.to_string_lossy().into_owned(), kind, size: data.len() as u64, title })
+    let has_audio = audio.is_some();
+    if let Some((a, aext)) = audio {
+        fs::write(dir.join(format!("{id}-son.{aext}")), a).map_err(|e| e.to_string())?;
+    }
+    Ok(ClipPick { path: copy.to_string_lossy().into_owned(), kind, size: total as u64, title, has_audio })
 }
 
 /// GIF choisi dans la recherche GIPHY.
 #[tauri::command]
 pub async fn clip_from_gif(app: AppHandle, url: String) -> Result<ClipPick, String> {
     let (data, ext) = giphy::download(&url).await?;
-    keep_for_sending(&app, &data, ext, String::new())
+    keep_for_sending(&app, &data, ext, String::new(), None)
 }
 
 /// Vidéo d'un lien (YouTube, TikTok, X, Reddit…), avec yt-dlp.
@@ -191,16 +209,26 @@ pub async fn clip_from_link(app: AppHandle, url: String) -> Result<ClipPick, Str
         let exe = youtube::ensure(&data_dir.join("tools"), status).await?;
         let work_dir = data_dir.join("extrait-tmp");
         let wd = work_dir.clone();
-        let (file, title) = tauri::async_runtime::spawn_blocking(move || {
+        let got = tauri::async_runtime::spawn_blocking(move || {
             youtube::update_if_stale(&exe);
             youtube::download_video(&exe, &url, &wd)
         })
         .await
         .map_err(|e| e.to_string())??;
-        let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_lowercase();
-        let data = fs::read(&file).map_err(|e| e.to_string());
+        let ext_of = |p: &Path| p.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_lowercase();
+        let ext = ext_of(&got.video);
+        let read = || -> Result<(Vec<u8>, Option<(Vec<u8>, String)>), String> {
+            let video = fs::read(&got.video).map_err(|e| e.to_string())?;
+            let audio = match &got.audio {
+                Some(a) => Some((fs::read(a).map_err(|e| e.to_string())?, ext_of(a))),
+                None => None,
+            };
+            Ok((video, audio))
+        };
+        let files = read();
         let _ = fs::remove_dir_all(&work_dir);
-        keep_for_sending(&app, &data?, &ext, title)
+        let (video, audio) = files?;
+        keep_for_sending(&app, &video, &ext, got.title, audio)
     }
     .await;
     state.youtube_busy.store(false, Ordering::SeqCst);
@@ -245,15 +273,26 @@ pub async fn send_clip(
             (data, h)
         }
         None => {
-            // Vidéo : elle peut commencer plus loin que le début.
+            // Vidéo : elle peut commencer plus loin que le début, et son son
+            // peut être à part (« <nom>-son.m4a », Shorts YouTube).
             let start_ms = (start_s.unwrap_or(0.0).clamp(0.0, 36_000.0) * 1000.0) as u64;
-            (Vec::new(), Header { volume: 1.0, start_ms, ..Default::default() })
+            let stem = media.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            let side = ["m4a", "mp3", "aac"].iter().map(|e| dir.join(format!("{stem}-son.{e}"))).find(|p| p.exists());
+            match side.filter(|_| kind_of(&media_ext) == Some("video")) {
+                Some(p) => {
+                    let data = fs::read(&p).map_err(|e| e.to_string())?;
+                    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("m4a").to_string();
+                    let h = Header { sound_ext: ext, sound_len: data.len() as u64, start_ms, volume: 1.0, ..Default::default() };
+                    (data, h)
+                }
+                None => (Vec::new(), Header { volume: 1.0, start_ms, ..Default::default() }),
+            }
         }
     };
     let header = Header { media_ext, media_len: media_data.len() as u64, ..header };
     let data = pack(&header, &media_data, &sound_data);
     if data.len() as u64 > MAX_CLIP {
-        return Err("l'image et le son font plus de 10 Mo ensemble : prends un son plus court".into());
+        return Err("l'extrait et son son font plus de 14 Mo ensemble : prends plus court".into());
     }
     let room = &state.extras.room;
     let to = to.filter(|t| !t.is_empty()).unwrap_or_default();
@@ -262,7 +301,9 @@ pub async fn send_clip(
     }
     let title: String = title.trim().chars().take(60).collect();
     let msg = Msg::Clip { from: room.my_id(), name: room.my_name(), to, title };
-    room.publish_file(&msg, "extrait.sbclip", data).await
+    room.publish_file(&msg, "extrait.sbclip", data).await?;
+    *state.extras.last_sent.lock().unwrap() = Some(Instant::now());
+    Ok(())
 }
 
 /// Un extrait arrive d'un pote.
@@ -270,6 +311,10 @@ pub async fn receive(app: &AppHandle, from: String, name: String, title: String,
     let state = app.state::<AppState>();
     let mode = state.config.lock().unwrap().settings.clips_mode.clone();
     if mode == "off" {
+        return Ok(());
+    }
+    if extras::is_blocked(&state, &from) {
+        journal::write(&format!("Extrait de {name} ignoré (bloqué)"));
         return Ok(());
     }
     let Some(url) = url else { return Ok(()) };
@@ -298,6 +343,7 @@ pub async fn receive(app: &AppHandle, from: String, name: String, title: String,
     let name: String = name.chars().take(32).collect();
     let title: String = title.chars().take(60).collect();
     let show = ClipShow {
+        from_id: from.clone(),
         from: name,
         title,
         kind: kind_of(&h.media_ext).unwrap_or("image"),
@@ -440,6 +486,15 @@ pub fn close(app: &AppHandle) {
         if is_clip_window(&label) {
             let _ = w.destroy();
         }
+    }
+}
+
+/// Ferme l'extrait s'il vient de ce pote.
+pub fn close_from(app: &AppHandle, from: &str) {
+    let state = app.state::<AppState>();
+    let from_him = state.clips.pending.lock().unwrap().as_ref().is_some_and(|c| c.from_id == from);
+    if from_him {
+        close(app);
     }
 }
 

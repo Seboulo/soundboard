@@ -20,6 +20,10 @@ pub struct Extras {
     /// Une seule vérification des packs à la fois.
     sync_busy: AtomicBool,
     tts_turn: AtomicU64,
+    /// Dernier son ou extrait envoyé à des potes (pour « Tout arrêter »).
+    pub(crate) last_sent: Mutex<Option<Instant>>,
+    /// Son en cours joué de la part de chaque pote.
+    playing_from: Mutex<HashMap<String, String>>,
 }
 
 fn data_dir(state: &AppState) -> PathBuf {
@@ -648,6 +652,7 @@ pub fn send_to_friend(app: &AppHandle, sound: Sound) -> Result<PlayOutcome, Stri
     let room = state.extras.room.clone();
     let app2 = app.clone();
     journal::write(&format!("Salon : « {} » envoyé", sound.name));
+    *state.extras.last_sent.lock().unwrap() = Some(Instant::now());
     tauri::async_runtime::spawn(async move {
         if let Err(e) = room.publish(&msg).await {
             journal::write(&format!("Salon : envoi impossible ({e})"));
@@ -691,6 +696,10 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
                 "Salon : « {title} » reçu de {name}{}",
                 if inc.attachment.is_some() { " (avec le fichier)" } else { "" }
             ));
+            if is_blocked(&state, &from) {
+                journal::write(&format!("Salon : ignoré ({name} est bloqué)"));
+                return Ok(());
+            }
             if !state.config.lock().unwrap().settings.room_accept {
                 journal::write("Salon : ignoré (« Mes potes peuvent jouer des sons chez moi » est coupé)");
                 return Ok(());
@@ -747,12 +756,66 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
             // n'arrête pas celui en cours comme un clic sur un pad).
             state.audio.stop(&sound.id);
             state.audio.toggle_detached(play_request(&state, &sound));
+            state.extras.playing_from.lock().unwrap().insert(from.clone(), sound.id.clone());
             let _ = app.emit("room-played", (name, title));
+            Ok(())
+        }
+        Msg::Stop { from, .. } => {
+            // Le pote arrête ce qu'il nous a envoyé.
+            if let Some(id) = state.extras.playing_from.lock().unwrap().remove(&from) {
+                state.audio.stop(&id);
+            }
+            clip::close_from(app, &from);
+            journal::write("Salon : un pote a arrêté son envoi");
             Ok(())
         }
         Msg::Clip { from, name, title, .. } => clip::receive(app, from, name, title, inc.attachment).await,
         _ => Ok(()),
     }
+}
+
+/// « Tout arrêter » : arrête aussi, chez les potes, ce qu'on vient de leur
+/// envoyer (dans la dernière minute).
+pub fn stop_sent(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let recent = state.extras.last_sent.lock().unwrap().take().is_some_and(|t| t.elapsed() < Duration::from_secs(60));
+    if !recent {
+        return;
+    }
+    let room = state.extras.room.clone();
+    let msg = Msg::Stop { from: room.my_id(), to: String::new() };
+    tauri::async_runtime::spawn(async move {
+        let _ = room.publish(&msg).await;
+    });
+}
+
+/// Ce pote est-il bloqué (ni sons ni extraits) ?
+pub(crate) fn is_blocked(state: &AppState, id: &str) -> bool {
+    state.config.lock().unwrap().settings.room_blocked.iter().any(|b| b.id == id)
+}
+
+/// Bloque ou débloque un pote du salon.
+#[tauri::command]
+pub fn set_friend_blocked(app: AppHandle, id: String, name: String, blocked: bool) -> Result<Snapshot, String> {
+    let state = app.state::<AppState>();
+    {
+        let mut config = state.config.lock().unwrap();
+        let list = &mut config.settings.room_blocked;
+        list.retain(|b| b.id != id);
+        if blocked {
+            list.push(config::BlockedFriend { id: id.clone(), name: name.chars().take(32).collect() });
+        }
+        state.save(&config)?;
+    }
+    if blocked {
+        if state.extras.room.target().as_deref() == Some(id.as_str()) {
+            state.extras.room.set_target(None);
+        }
+        // Ce qui joue ou s'affiche de sa part s'arrête.
+        clip::close(&app);
+    }
+    let _ = app.emit("room", state.extras.room.status());
+    Ok(state.snapshot())
 }
 
 /// Garde au plus 60 sons reçus.

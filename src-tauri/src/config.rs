@@ -290,10 +290,20 @@ pub struct Settings {
     pub room_accept: bool,
     /// Extraits des potes sur mon écran : "off", "ask" (demander) ou "auto".
     pub clips_mode: String,
+    /// Potes bloqués : leurs sons et extraits sont ignorés.
+    pub room_blocked: Vec<BlockedFriend>,
     /// Packs de potes suivis par lien.
     pub subscriptions: Vec<Subscription>,
     /// Onglets que tu partages par lien.
     pub published: Vec<Published>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BlockedFriend {
+    pub id: String,
+    /// Nom au moment du blocage (pour la liste des réglages).
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -365,6 +375,7 @@ impl Default for Settings {
             room_id: String::new(),
             room_accept: true,
             clips_mode: "ask".into(),
+            room_blocked: Vec::new(),
             subscriptions: Vec::new(),
             published: Vec::new(),
         }

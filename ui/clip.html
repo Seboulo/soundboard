@@ -24,6 +24,8 @@
     button:hover { filter: brightness(.96); }
     button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
     .x { border: 0; padding: 2px 8px; font-size: 16px; color: var(--muted); background: transparent; }
+    .x.block { font-size: 12px; align-self: flex-start; }
+    .x.block:hover { color: #e5484d; }
     #ask { width: 100%; }
     #ask .row { display: flex; gap: 8px; padding: 0 12px 12px; }
     #ask .row button { flex: 1; }
@@ -41,7 +43,7 @@
 </head>
 <body>
   <div id="ask" class="card" hidden>
-    <div class="head"><span class="emo" aria-hidden="true">🎬</span><span class="who"><b data-from></b> t'envoie un extrait<br><small data-title></small></span></div>
+    <div class="head"><span class="emo" aria-hidden="true">🎬</span><span class="who"><b data-from></b> t'envoie un extrait<br><small data-title></small></span><button type="button" class="x block" data-action="block" title="Ne plus rien recevoir de ce pote">Bloquer</button></div>
     <div class="row">
       <button type="button" data-action="refuse">Refuser</button>
       <button type="button" class="primary" data-action="accept">Afficher</button>

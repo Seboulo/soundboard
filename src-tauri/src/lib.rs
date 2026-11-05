@@ -194,6 +194,7 @@ fn phone_request(app: &AppHandle, req: phone::Request) -> Result<serde_json::Val
         phone::Request::Stop => {
             state.audio.stop_all();
             clip::close(app);
+            extras::stop_sent(app);
             Ok(serde_json::json!({ "ok": true }))
         }
         phone::Request::Random(category) => {
@@ -481,6 +482,7 @@ fn on_hotkey(app: &AppHandle, shortcut: &Shortcut) {
         Some(HotkeyAction::StopAll) => {
             state.audio.stop_all();
             clip::close(app);
+            extras::stop_sent(app);
             let _ = app.emit("stopped", ());
         }
         Some(HotkeyAction::ToggleMute) => {
@@ -1789,6 +1791,7 @@ fn regenerate_phone_token(app: AppHandle, state: State<AppState>) -> Result<Snap
 fn stop_all(app: AppHandle, state: State<AppState>) {
     state.audio.stop_all();
     clip::close(&app);
+    extras::stop_sent(&app);
 }
 
 #[tauri::command]
@@ -2217,6 +2220,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             "stop" => {
                 app.state::<AppState>().audio.stop_all();
                 clip::close(app);
+                extras::stop_sent(app);
             }
             "quit" => app.exit(0),
             _ => {}
@@ -2434,6 +2438,7 @@ pub fn run() {
             clip::clip_from_gif,
             clip::clip_from_link,
             clip::clip_audio,
+            extras::set_friend_blocked,
             clip::send_clip,
             clip::clip_pending,
             clip::clip_accept,

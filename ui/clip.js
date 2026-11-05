@@ -94,7 +94,19 @@ function play(c) {
     };
     video.onplaying = () => {
       video.onplaying = null;
-      if (current === c) playSound(c, c.media, video.currentTime * 1000, null, video);
+      if (current !== c) return;
+      if (c.sound) {
+        // Son à part (Shorts) : même départ que l'image.
+        const a = new Audio(convertFileSrc(c.sound));
+        a.muted = true;
+        audio = a;
+        a.addEventListener("loadedmetadata", () => {
+          if (audio === a) a.currentTime = video.currentTime;
+        }, { once: true });
+        playSound(c, c.sound, video.currentTime * 1000, null, a);
+      } else {
+        playSound(c, c.media, video.currentTime * 1000, null, video);
+      }
     };
     video.play().catch(() => {});
     ms = MAX_MS;
@@ -147,6 +159,10 @@ $('[data-action="accept"]').addEventListener("click", async () => {
   if (current) play(current);
 });
 $('[data-action="refuse"]').addEventListener("click", close);
+$('[data-action="block"]').addEventListener("click", async () => {
+  if (current) await invoke("set_friend_blocked", { id: current.from_id, name: current.from, blocked: true }).catch(() => {});
+  close();
+});
 $('[data-action="close"]').addEventListener("click", close);
 
 listen("clip-show", ({ payload }) => start(payload));

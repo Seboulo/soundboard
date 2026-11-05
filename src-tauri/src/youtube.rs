@@ -183,9 +183,30 @@ pub fn is_web_link(url: &str) -> bool {
     reqwest::Url::parse(url.trim()).is_ok_and(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
 }
 
-/// Télécharge une petite vidéo (image + son, 8 Mo au plus) pour un extrait.
-/// Renvoie le chemin du fichier (mp4 ou webm) et le titre.
-pub fn download_video(exe: &Path, url: &str, work_dir: &Path) -> Result<(PathBuf, String), String> {
+/// Une vidéo récupérée pour un extrait : le fichier vidéo, et à part la
+/// piste audio quand YouTube ne donne pas les deux ensemble (Shorts, HD).
+pub struct WebVideo {
+    pub video: PathBuf,
+    pub audio: Option<PathBuf>,
+    pub title: String,
+}
+
+/// Choix des formats, du plus simple au plus courant :
+/// 1. un seul fichier image + son (MP4 H.264) assez léger ;
+/// 2. image (MP4 H.264, 720p au plus, en largeur comme en hauteur pour les
+///    Shorts verticaux) + son (M4A) séparés : sans ffmpeg, yt-dlp les garde
+///    en deux fichiers, que l'appli rejoue ensemble ;
+/// 3. vidéo plus longue : la plus petite image en H.264 (240p au moins) ;
+/// 4. pareil sans exiger le H.264.
+/// Vérifié avec yt-dlp sur des fiches de Short, de vidéo et de longue vidéo.
+const VIDEO_FORMATS: &str = "b[ext=mp4][filesize<13M]/b[ext=mp4][filesize_approx<13M]\
+/bv[ext=mp4][vcodec^=avc1][height<=1280][width<=1280][filesize<12M]+ba[ext=m4a]\
+/bv[ext=mp4][vcodec^=avc1][height<=1280][width<=1280][filesize_approx<12M]+ba[ext=m4a]\
+/wv[ext=mp4][vcodec^=avc1][height>=240][width>=240]+ba[ext=m4a]\
+/bv[height<=1280][width<=1280]+ba[ext=m4a]/b";
+
+/// Télécharge une petite vidéo pour un extrait (13 Mo au plus).
+pub fn download_video(exe: &Path, url: &str, work_dir: &Path) -> Result<WebVideo, String> {
     if !is_web_link(url) {
         return Err("colle un lien qui commence par https://".into());
     }
@@ -199,15 +220,13 @@ pub fn download_video(exe: &Path, url: &str, work_dir: &Path) -> Result<(PathBuf
             "--no-simulate",
             "--print",
             "title",
-            // Un seul fichier avec image et son (pas besoin de ffmpeg), le
-            // plus léger qui reste net.
             "-f",
-            "b[ext=mp4][filesize<8M][height<=720]/b[ext=mp4][filesize_approx<8M][height<=720]/b[ext=mp4][height<=480]/b[ext=webm][height<=480]/18/b",
+            VIDEO_FORMATS,
             "--max-filesize",
-            "8M",
+            "13M",
             "-o",
         ])
-        .arg(work_dir.join("video.%(ext)s"))
+        .arg(work_dir.join("video.%(format_id)s.%(ext)s"))
         .arg("--")
         .arg(url.trim())
         .output()
@@ -226,12 +245,19 @@ pub fn download_video(exe: &Path, url: &str, work_dir: &Path) -> Result<(PathBuf
         return Err(format!("vidéo : {short}"));
     }
     let title = String::from_utf8_lossy(&output.stdout).lines().next().unwrap_or("").trim().to_string();
-    let file = fs::read_dir(work_dir)
+    let files: Vec<PathBuf> = fs::read_dir(work_dir)
         .map_err(|e| e.to_string())?
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .find(|p| p.extension().is_some_and(|e| e == "mp4" || e == "webm"))
-        .ok_or("vidéo trop lourde (8 Mo au plus) : prends une vidéo plus courte")?;
-    Ok((file, title.chars().take(60).collect()))
+        .filter(|p| !p.to_string_lossy().ends_with(".part"))
+        .collect();
+    let ext_is = |p: &PathBuf, exts: &[&str]| p.extension().and_then(|e| e.to_str()).is_some_and(|e| exts.contains(&e));
+    let audio = files.iter().find(|p| ext_is(p, &["m4a", "mp3", "aac"])).cloned();
+    let video = files
+        .iter()
+        .find(|p| ext_is(p, &["mp4", "webm"]))
+        .cloned()
+        .ok_or("vidéo trop lourde (13 Mo au plus) : prends une vidéo plus courte")?;
+    Ok(WebVideo { video, audio, title: title.chars().take(60).collect() })
 }
 
 #[cfg(test)]
