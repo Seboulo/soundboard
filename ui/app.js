@@ -3640,10 +3640,18 @@ const isLink = (v) => /^https?:\/\/\S+$/i.test(v.trim());
 formClip.link.addEventListener("input", () => {
   fetchLinkBtn.textContent = isLink(formClip.link.value) ? "Récupérer" : "Chercher";
 });
+// Avancement du téléchargement, sur la vignette ou le bouton.
+let clipFetchTile = null;
+listen("clip-progress", ({ payload }) => {
+  const text = `Récupération… ${payload} %`;
+  if (clipFetchTile) clipFetchTile.dataset.progress = text;
+  else if (fetchLinkBtn.disabled) fetchLinkBtn.textContent = text;
+});
 async function fetchClipLink(url, tile) {
+  clipFetchTile = tile || null;
   fetchLinkBtn.disabled = true;
   const label = fetchLinkBtn.textContent;
-  if (tile) tile.classList.add("loading");
+  if (tile) { tile.dataset.progress = "Récupération…"; tile.classList.add("loading"); }
   else fetchLinkBtn.textContent = "Récupération…";
   try {
     const picked = await invoke("clip_from_link", { url });
@@ -3655,6 +3663,8 @@ async function fetchClipLink(url, tile) {
     fetchLinkBtn.disabled = false;
     fetchLinkBtn.textContent = label;
     tile?.classList.remove("loading");
+    if (tile) delete tile.dataset.progress;
+    clipFetchTile = null;
   }
 }
 // Mots-clés : on cherche sur YouTube et on montre les miniatures ;
@@ -3777,7 +3787,7 @@ $('[data-action="search-gif"]', dlgClip).addEventListener("click", async (e) => 
     b.append(img);
     b.addEventListener("click", async () => {
       clipGifs.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
-      b.classList.add("loading");
+      b.dataset.progress = "Récupération…"; b.classList.add("loading");
       try {
         showClipMedia(await invoke("clip_from_gif", { url: r.big || r.anim }));
       } catch (err) {
@@ -3917,7 +3927,7 @@ $('[data-action="send"]', dlgClip).addEventListener("click", async (e) => {
   if (!clipMedia) return;
   if (!room.members.length && formClip.to.value !== "*moi") return toast("Aucun pote en ligne dans le salon pour l'instant : choisis « Tout le salon et moi » pour tester seul", true);
   btn.disabled = true;
-  btn.textContent = "Envoi…";
+  btn.textContent = "Envoi… (jusqu'à 1 min)";
   const to = formClip.to.value || null;
   try {
     await invoke("send_clip", {

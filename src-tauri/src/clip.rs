@@ -343,9 +343,13 @@ pub async fn clip_from_link(app: AppHandle, url: String) -> Result<ClipPick, Str
         let exe = youtube::ensure(&data_dir.join("tools"), status).await?;
         let work_dir = data_dir.join("extrait-tmp");
         let wd = work_dir.clone();
+        let app2 = app.clone();
         let got = tauri::async_runtime::spawn_blocking(move || {
-            youtube::update_if_stale(&exe);
-            youtube::download_video(&exe, &url, &wd)
+            let res = youtube::download_video(&exe, &url, &wd, |p| {
+                let _ = app2.emit("clip-progress", p.round() as u32);
+            });
+            youtube::update_in_background(&exe);
+            res
         })
         .await
         .map_err(|e| e.to_string())??;
@@ -487,11 +491,19 @@ pub async fn send_clip(
     }
     let title: String = title.trim().chars().take(60).collect();
     let msg_title = title.clone();
+    let to_all = to.is_empty();
     let msg = Msg::Clip { from: room.my_id(), name: room.my_name(), to, title };
     if with_me {
         room.expect_echo();
     }
-    room.publish_file(&msg, "extrait.sbclip", data).await?;
+    let mb = data.len() as f64 / 1_048_576.0;
+    journal::write(&format!("Extrait : envoi de {mb:.1} Mo{}", if to_all { " au salon" } else { "" }));
+    let sent = Instant::now();
+    if let Err(e) = room.publish_file(&msg, "extrait.sbclip", data).await {
+        journal::write(&format!("Extrait : envoi raté après {} s ({e})", sent.elapsed().as_secs()));
+        return Err(e);
+    }
+    journal::write(&format!("Extrait : envoyé en {} s", sent.elapsed().as_secs()));
     *state.extras.last_sent.lock().unwrap() = Some(Instant::now());
     let is_video = kind_of(&media.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase()) == Some("video");
     add_recent(&state, Recent {
@@ -528,7 +540,15 @@ pub async fn receive(app: &AppHandle, from: String, name: String, title: String,
         }
         last.insert(from.clone(), Instant::now());
     }
-    let data = room::fetch(&url).await?;
+    let got = Instant::now();
+    let data = match room::fetch(&url).await {
+        Ok(d) => d,
+        Err(e) => {
+            journal::write(&format!("Extrait de {name} : réception ratée après {} s ({e})", got.elapsed().as_secs()));
+            return Err(e);
+        }
+    };
+    journal::write(&format!("Extrait de {name} reçu ({:.1} Mo en {} s)", data.len() as f64 / 1_048_576.0, got.elapsed().as_secs()));
     let (h, media, sound) = unpack(&data)?;
     let dir = clips_dir(&state).join("recus");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;

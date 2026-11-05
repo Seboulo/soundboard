@@ -1524,7 +1524,7 @@ body:has(.grid.list) .tabbar .size { display: none; }
 .clip-gifs button { position: relative; }
 .clip-gifs button.loading > * { opacity: .35; }
 .clip-gifs button.loading::after {
-  content: "Récupération…"; position: absolute; inset: 0; display: grid; place-items: center;
+  content: attr(data-progress); position: absolute; inset: 0; display: grid; place-items: center;
   font-size: 12px; font-weight: 600; color: #fff; background: rgba(0, 0, 0, .45);
 }
 /* Rien de choisi : on cache ce qui ne sert qu'avec un extrait. */

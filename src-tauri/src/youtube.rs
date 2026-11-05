@@ -164,7 +164,6 @@ pub fn download_audio(exe: &Path, url: &str, work_dir: &Path) -> Result<(Vec<u8>
         let short: String = line.chars().take(200).collect();
         return Err(format!("YouTube : {short}"));
     }
-    let title = String::from_utf8_lossy(&output.stdout).lines().next().unwrap_or("").trim().to_string();
     let file = fs::read_dir(work_dir)
         .map_err(|e| e.to_string())?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -172,6 +171,7 @@ pub fn download_audio(exe: &Path, url: &str, work_dir: &Path) -> Result<(Vec<u8>
         .ok_or_else(|| {
             format!("vidéo ignorée : pas de piste audio compatible, ou plus de {} minutes", MAX_DURATION_S / 60)
         })?;
+    let title = String::from_utf8_lossy(&output.stdout).lines().next().unwrap_or("").trim().to_string();
     let data = fs::read(&file).map_err(|e| e.to_string())?;
     let _ = fs::remove_dir_all(work_dir);
     let title: String = title.chars().take(60).collect();
@@ -193,26 +193,41 @@ pub struct WebVideo {
 
 /// Choix des formats, du plus simple au plus courant :
 /// 1. un seul fichier image + son (MP4 H.264) assez léger ;
-/// 2. image (MP4 H.264, 720p au plus, en largeur comme en hauteur pour les
+/// 2. image (MP4 H.264, 480p au plus, en largeur comme en hauteur pour les
 ///    Shorts verticaux) + son (M4A) séparés : sans ffmpeg, yt-dlp les garde
 ///    en deux fichiers, que l'appli rejoue ensemble ;
 /// 3. vidéo plus longue : la plus petite image en H.264 (240p au moins) ;
 /// 4. pareil sans exiger le H.264.
 /// Vérifié avec yt-dlp sur des fiches de Short, de vidéo et de longue vidéo.
 const VIDEO_FORMATS: &str = "b[ext=mp4][filesize<13M]/b[ext=mp4][filesize_approx<13M]\
-/bv[ext=mp4][vcodec^=avc1][height<=1280][width<=1280][filesize<12M]+ba[ext=m4a]\
-/bv[ext=mp4][vcodec^=avc1][height<=1280][width<=1280][filesize_approx<12M]+ba[ext=m4a]\
+/bv[ext=mp4][vcodec^=avc1][height<=854][width<=854][filesize<12M]+ba[ext=m4a]\
+/bv[ext=mp4][vcodec^=avc1][height<=854][width<=854][filesize_approx<12M]+ba[ext=m4a]\
 /wv[ext=mp4][vcodec^=avc1][height>=240][width>=240]+ba[ext=m4a]\
-/bv[height<=1280][width<=1280]+ba[ext=m4a]/b";
+/bv[height<=854][width<=854]+ba[ext=m4a]/b";
+
+/// Lance la mise à jour du jour sans attendre (elle ralentissait la
+/// récupération qui la précédait).
+pub fn update_in_background(exe: &Path) {
+    let exe = exe.to_path_buf();
+    std::thread::spawn(move || update_if_stale(&exe));
+}
+
+/// Pourcentage d'une ligne de progression (« SBPCT  42.3% »).
+fn progress_of(line: &str) -> Option<f32> {
+    line.trim().strip_prefix("SBPCT")?.trim().trim_end_matches('%').trim().parse().ok()
+}
 
 /// Télécharge une petite vidéo pour un extrait (13 Mo au plus).
-pub fn download_video(exe: &Path, url: &str, work_dir: &Path) -> Result<WebVideo, String> {
+/// `on_progress` reçoit l'avancement (0 à 100) de chaque fichier.
+pub fn download_video(exe: &Path, url: &str, work_dir: &Path, on_progress: impl Fn(f32)) -> Result<WebVideo, String> {
     if !is_web_link(url) {
         return Err("colle un lien qui commence par https://".into());
     }
     let _ = fs::remove_dir_all(work_dir);
     fs::create_dir_all(work_dir).map_err(|e| e.to_string())?;
-    let output = command(exe)
+    use std::io::{BufRead, BufReader, Read};
+    use std::process::Stdio;
+    let mut child = command(exe)
         .args([
             "--no-playlist",
             "--no-warnings",
@@ -220,6 +235,14 @@ pub fn download_video(exe: &Path, url: &str, work_dir: &Path) -> Result<WebVideo
             "--no-simulate",
             "--print",
             "title",
+            // Avancement, une ligne par étape, sur la sortie standard.
+            "--progress",
+            "--newline",
+            "--progress-template",
+            "download:SBPCT %(progress._percent_str)s",
+            // Plusieurs morceaux à la fois : YouTube bride une connexion seule.
+            "-N",
+            "4",
             "-f",
             VIDEO_FORMATS,
             "--max-filesize",
@@ -229,10 +252,31 @@ pub fn download_video(exe: &Path, url: &str, work_dir: &Path) -> Result<WebVideo
         .arg(work_dir.join("video.%(format_id)s.%(ext)s"))
         .arg("--")
         .arg(url.trim())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("yt-dlp n'a pas pu démarrer : {e}"))?;
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
+    let mut stderr = child.stderr.take();
+    let err_reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        if let Some(e) = stderr.as_mut() {
+            let _ = e.read_to_string(&mut s);
+        }
+        s
+    });
+    let mut title = String::new();
+    if let Some(out) = child.stdout.take() {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            match progress_of(&line) {
+                Some(p) => on_progress(p),
+                None if title.is_empty() && !line.trim().is_empty() => title = line.trim().to_string(),
+                None => {}
+            }
+        }
+    }
+    let status = child.wait().map_err(|e| e.to_string())?;
+    let err = err_reader.join().unwrap_or_default();
+    if !status.success() {
         let line = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("erreur inconnue");
         let line = line.trim().trim_start_matches("ERROR: ");
         if line.contains("Unable to download") || line.contains("connect") {
@@ -244,7 +288,6 @@ pub fn download_video(exe: &Path, url: &str, work_dir: &Path) -> Result<WebVideo
         let short: String = line.chars().take(200).collect();
         return Err(format!("vidéo : {short}"));
     }
-    let title = String::from_utf8_lossy(&output.stdout).lines().next().unwrap_or("").trim().to_string();
     let files: Vec<PathBuf> = fs::read_dir(work_dir)
         .map_err(|e| e.to_string())?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -332,6 +375,13 @@ mod tests {
         assert!(is_web_link("https://www.tiktok.com/@a/video/1"));
         assert!(!is_web_link("--exec calc"));
         assert!(!is_web_link("file:///C:/x.mp4"));
+    }
+
+    #[test]
+    fn reads_progress_lines() {
+        assert_eq!(progress_of("SBPCT   42.3%"), Some(42.3));
+        assert_eq!(progress_of("SBPCT 100.0%"), Some(100.0));
+        assert_eq!(progress_of("Mon titre"), None);
     }
 
     #[test]

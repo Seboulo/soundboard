@@ -129,6 +129,9 @@ pub fn new_code() -> String {
     format!("{}-{}-{}", &s[..4], &s[4..8], &s[8..])
 }
 
+/// Envoi ou réception d'un fichier (son, extrait).
+const FILE_TIMEOUT: Duration = Duration::from_secs(240);
+
 fn client(streaming: bool) -> Result<reqwest::Client, String> {
     let b = reqwest::Client::builder()
         .user_agent(concat!("Soundboard/", env!("CARGO_PKG_VERSION")))
@@ -356,8 +359,11 @@ impl Room {
         let body = serde_json::to_string(msg).map_err(|e| e.to_string())?;
         let mut url = reqwest::Url::parse(&format!("{SERVER}/{topic}")).map_err(|e| e.to_string())?;
         url.query_pairs_mut().append_pair("message", &body).append_pair("filename", file_name);
+        // Un extrait de 14 Mo met plus d'une minute à partir avec une petite
+        // connexion : on lui laisse 4 minutes.
         let res = client(false)?
             .put(url)
+            .timeout(FILE_TIMEOUT)
             .body(data)
             .send()
             .await
@@ -397,7 +403,7 @@ pub async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     if !url.starts_with(SERVER) {
         return Err("adresse non autorisée".into());
     }
-    let mut res = client(false)?.get(url).send().await.map_err(|e| e.to_string())?;
+    let mut res = client(false)?.get(url).timeout(FILE_TIMEOUT).send().await.map_err(|e| e.to_string())?;
     if !res.status().is_success() {
         return Err(format!("erreur {}", res.status().as_u16()));
     }
