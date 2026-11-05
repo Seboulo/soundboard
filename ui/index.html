@@ -611,12 +611,15 @@
       </div>
       <div class="segmented" id="clip-source">
         <button type="button" data-source="file" class="active">📁 Fichier <small>image, GIF, vidéo</small></button>
-        <button type="button" data-source="link">🔗 Lien vidéo <small>YouTube, TikTok…</small></button>
+        <button type="button" data-source="link">🔗 Vidéo <small>recherche ou lien</small></button>
         <button type="button" data-source="gif">🎞️ GIF <small>recherche GIPHY</small></button>
       </div>
-      <div class="search-row" data-pane="link" hidden>
-        <input name="link" type="url" placeholder="Colle un lien YouTube, TikTok, X, Reddit…" autocomplete="off">
-        <button type="button" class="primary" data-action="fetch-link">Récupérer</button>
+      <div data-pane="link" hidden>
+        <div class="search-row">
+          <input name="link" type="search" placeholder="Mots-clés (ex. : bruh moment) ou lien YouTube, TikTok, X…" autocomplete="off">
+          <button type="button" class="primary" data-action="fetch-link">Chercher</button>
+        </div>
+        <div class="clip-gifs clip-videos" role="listbox" aria-label="Vidéos trouvées"></div>
       </div>
       <div data-pane="gif" hidden>
         <div class="search-row">

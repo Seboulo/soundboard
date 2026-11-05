@@ -3586,12 +3586,17 @@ function linkStart(url) {
     return 0;
   }
 }
-$('[data-action="fetch-link"]', dlgClip).addEventListener("click", async (e) => {
-  const btn = e.currentTarget;
-  const url = formClip.link.value.trim();
-  if (!url) return formClip.link.focus();
-  btn.disabled = true;
-  btn.textContent = "Récupération…";
+const clipVideos = $(".clip-videos", dlgClip);
+const fetchLinkBtn = $('[data-action="fetch-link"]', dlgClip);
+const isLink = (v) => /^https?:\/\/\S+$/i.test(v.trim());
+formClip.link.addEventListener("input", () => {
+  fetchLinkBtn.textContent = isLink(formClip.link.value) ? "Récupérer" : "Chercher";
+});
+async function fetchClipLink(url, tile) {
+  fetchLinkBtn.disabled = true;
+  const label = fetchLinkBtn.textContent;
+  if (tile) tile.classList.add("loading");
+  else fetchLinkBtn.textContent = "Récupération…";
   try {
     const picked = await invoke("clip_from_link", { url });
     showClipMedia(picked, linkStart(url));
@@ -3599,9 +3604,63 @@ $('[data-action="fetch-link"]', dlgClip).addEventListener("click", async (e) => 
   } catch (err) {
     toast(String(err), true);
   } finally {
-    btn.disabled = false;
-    btn.textContent = "Récupérer";
+    fetchLinkBtn.disabled = false;
+    fetchLinkBtn.textContent = label;
+    tile?.classList.remove("loading");
   }
+}
+// Mots-clés : on cherche sur YouTube et on montre les miniatures ;
+// un clic récupère la vidéo comme un lien collé.
+async function searchClipVideos(q) {
+  fetchLinkBtn.disabled = true;
+  fetchLinkBtn.textContent = "Recherche…";
+  clipVideos.replaceChildren();
+  let results = [];
+  try {
+    results = await invoke("clip_search_videos", { query: q });
+  } catch (err) {
+    toast(String(err), true);
+  }
+  fetchLinkBtn.disabled = false;
+  fetchLinkBtn.textContent = "Chercher";
+  if (!results.length) {
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = "Aucune vidéo trouvée.";
+    return clipVideos.replaceChildren(note);
+  }
+  clipVideos.replaceChildren(...results.map((r) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("role", "option");
+    b.title = r.title;
+    const img = document.createElement("img");
+    img.src = r.thumb;
+    img.alt = "";
+    img.loading = "lazy";
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = r.title;
+    b.append(img, name);
+    if (r.duration_s != null) {
+      const tag = document.createElement("span");
+      tag.className = "tag";
+      tag.textContent = fmtS(r.duration_s).replace(/\.\d$/, "");
+      b.append(tag);
+    }
+    b.addEventListener("click", () => {
+      if (fetchLinkBtn.disabled) return;
+      clipVideos.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+      fetchClipLink(r.url, b);
+    });
+    return b;
+  }));
+}
+fetchLinkBtn.addEventListener("click", () => {
+  const v = formClip.link.value.trim();
+  if (!v) return formClip.link.focus();
+  if (isLink(v)) fetchClipLink(v);
+  else searchClipVideos(v);
 });
 $('[data-action="search-gif"]', dlgClip).addEventListener("click", async (e) => {
   const btn = e.currentTarget;

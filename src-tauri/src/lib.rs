@@ -2467,6 +2467,7 @@ pub fn run() {
             clip::pick_clip_media,
             clip::clip_from_gif,
             clip::clip_from_link,
+            clip::clip_search_videos,
             clip::clip_audio,
             clip::clip_listen,
             clip::clip_recents,
