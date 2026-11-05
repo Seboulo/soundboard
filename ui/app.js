@@ -3773,7 +3773,7 @@ async function clipListen() {
     clipListening = true;
     listenBtn.textContent = "■ Arrêter";
     clearTimeout(clipListenTimer);
-    clipListenTimer = setTimeout(() => { clipListening = false; listenBtn.textContent = "▶ Écouter"; }, 15_500);
+    clipListenTimer = setTimeout(() => { clipListening = false; listenBtn.textContent = "▶ Écouter"; }, 30_500);
     if (clipMedia.kind === "video") {
       clipVideo.currentTime = Number(formClip.start.value) || 0;
       clipVideo.play().catch(() => {});
@@ -3785,8 +3785,8 @@ async function clipListen() {
 }
 listenBtn.addEventListener("click", () => (clipListening ? stopClipListen() : clipListen()));
 
-// ---------- Découpe de la vidéo : début et fin, 15 s au plus ----------
-const CLIP_MAX_S = 15;
+// ---------- Découpe de la vidéo : début et fin, 30 s au plus ----------
+const CLIP_MAX_S = 30;
 let clipTrimFrom = 0;
 let clipTrimEnd = null;
 const fmtS = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`;

@@ -301,10 +301,10 @@ pub async fn clip_from_link(app: AppHandle, url: String) -> Result<ClipPick, Str
     res
 }
 
-/// Fin du passage choisi (15 s au plus après le début) ; `None` = jusqu'au bout.
+/// Fin du passage choisi (30 s au plus après le début) ; `None` = jusqu'au bout.
 fn video_end(start_ms: u64, end_s: Option<f64>) -> Option<u64> {
-    let end_ms = (end_s?.clamp(0.0, 36_015.0) * 1000.0) as u64;
-    (end_ms > start_ms).then(|| end_ms.min(start_ms + 15_000))
+    let end_ms = (end_s?.clamp(0.0, 36_030.0) * 1000.0) as u64;
+    (end_ms > start_ms).then(|| end_ms.min(start_ms + 30_000))
 }
 
 /// Le son d'une vidéo prête à l'envoi : à part (« <nom>-son.m4a ») ou dans la vidéo.
@@ -664,7 +664,7 @@ pub async fn clip_keep(app: AppHandle) -> Result<String, String> {
         .await
         .map_err(|e| e.to_string())??;
     sound.start_ms = c.start_ms;
-    sound.end_ms = c.end_ms.or_else(|| (c.kind == "video").then_some(c.start_ms + 15_000));
+    sound.end_ms = c.end_ms.or_else(|| (c.kind == "video").then_some(c.start_ms + 30_000));
     sound.volume = c.volume;
     let id = sound.id.clone();
     let name = sound.name.clone();
@@ -741,7 +741,7 @@ mod tests {
     #[test]
     fn video_end_keeps_15_seconds_at_most() {
         assert_eq!(video_end(42_000, Some(52.0)), Some(52_000));
-        assert_eq!(video_end(0, Some(40.0)), Some(15_000));
+        assert_eq!(video_end(0, Some(40.0)), Some(30_000));
         assert_eq!(video_end(10_000, Some(5.0)), None);
         assert_eq!(video_end(0, None), None);
     }

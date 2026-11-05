@@ -406,7 +406,7 @@
               <input name="room_name" maxlength="32" autocomplete="off" placeholder="Ton pseudo">
             </label>
             <label class="set-row"><span class="txt"><b>Mes potes peuvent jouer des sons chez moi</b><small>30 secondes au plus par son. « Tout arrêter » les coupe aussi.</small></span><input name="room_accept" type="checkbox" class="switch"></label>
-            <label class="set-row"><span class="txt"><b>Extraits des potes sur mon écran</b><small>Image, GIF ou vidéo dans un coin de l'écran, 15 secondes au plus, sans quitter le jeu. Ferme-le avec ✕ ou « Tout arrêter ».</small></span>
+            <label class="set-row"><span class="txt"><b>Extraits des potes sur mon écran</b><small>Image, GIF ou vidéo dans un coin de l'écran, 30 secondes au plus, sans quitter le jeu. Ferme-le avec ✕ ou « Tout arrêter ».</small></span>
               <select name="clips_mode">
                 <option value="ask">Me demander</option>
                 <option value="auto">Afficher direct</option>
@@ -643,10 +643,10 @@
         <span>Passage à montrer <span class="value" data-trim-label></span></span>
         <div class="clip-range">
           <div class="clip-range-sel"></div>
-          <input name="start" type="range" min="0" max="15" step="0.1" value="0" aria-label="Début du passage">
-          <input name="end" type="range" min="0" max="15" step="0.1" value="15" aria-label="Fin du passage">
+          <input name="start" type="range" min="0" max="30" step="0.1" value="0" aria-label="Début du passage">
+          <input name="end" type="range" min="0" max="30" step="0.1" value="30" aria-label="Fin du passage">
         </div>
-        <small class="hint">Glisse les deux poignées (15 secondes au plus). ← → pour affiner après un clic.</small>
+        <small class="hint">Glisse les deux poignées (30 secondes au plus). ← → pour affiner après un clic.</small>
       </div>
       <label class="set-field" data-for-image>Son avec l'image
         <select name="sound"></select>
@@ -662,7 +662,7 @@
       <label class="set-field">Envoyer à
         <select name="to"></select>
       </label>
-      <p class="hint">L'extrait s'affiche dans un coin de son écran, 15 secondes au plus, sans le sortir de son jeu. Ton pote peut le refuser ou le fermer, et choisit dans ses réglages s'il veut être prévenu avant.</p>
+      <p class="hint">L'extrait s'affiche dans un coin de son écran, 30 secondes au plus, sans le sortir de son jeu. Ton pote peut le refuser ou le fermer, et choisit dans ses réglages s'il veut être prévenu avant.</p>
       <div class="actions">
         <button type="button" data-action="close">Fermer</button>
         <div class="spacer"></div>
