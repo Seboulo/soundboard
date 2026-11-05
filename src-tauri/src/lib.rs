@@ -205,6 +205,10 @@ fn phone_request(app: &AppHandle, req: phone::Request) -> Result<serde_json::Val
             let res = tauri::async_runtime::block_on(giphy::search(q.trim(), &key, 18))?;
             Ok(serde_json::json!({ "gifs": res }))
         }
+        phone::Request::Videos(q, start) => {
+            let res = tauri::async_runtime::block_on(clip::clip_search_videos(app.clone(), q, Some(start)))?;
+            Ok(serde_json::json!({ "videos": res }))
+        }
         phone::Request::ClipGif(url) => {
             let pick = tauri::async_runtime::block_on(clip::clip_from_gif(app.clone(), url))?;
             Ok(serde_json::to_value(pick).map_err(|e| e.to_string())?)
@@ -2467,6 +2471,7 @@ pub fn run() {
             clip::pick_clip_media,
             clip::clip_from_gif,
             clip::clip_from_link,
+            clip::clip_search_videos,
             clip::clip_audio,
             clip::clip_listen,
             clip::clip_recents,

@@ -3586,12 +3586,17 @@ function linkStart(url) {
     return 0;
   }
 }
-$('[data-action="fetch-link"]', dlgClip).addEventListener("click", async (e) => {
-  const btn = e.currentTarget;
-  const url = formClip.link.value.trim();
-  if (!url) return formClip.link.focus();
-  btn.disabled = true;
-  btn.textContent = "Récupération…";
+const clipVideos = $(".clip-videos", dlgClip);
+const fetchLinkBtn = $('[data-action="fetch-link"]', dlgClip);
+const isLink = (v) => /^https?:\/\/\S+$/i.test(v.trim());
+formClip.link.addEventListener("input", () => {
+  fetchLinkBtn.textContent = isLink(formClip.link.value) ? "Récupérer" : "Chercher";
+});
+async function fetchClipLink(url, tile) {
+  fetchLinkBtn.disabled = true;
+  const label = fetchLinkBtn.textContent;
+  if (tile) tile.classList.add("loading");
+  else fetchLinkBtn.textContent = "Récupération…";
   try {
     const picked = await invoke("clip_from_link", { url });
     showClipMedia(picked, linkStart(url));
@@ -3599,9 +3604,99 @@ $('[data-action="fetch-link"]', dlgClip).addEventListener("click", async (e) => 
   } catch (err) {
     toast(String(err), true);
   } finally {
-    btn.disabled = false;
-    btn.textContent = "Récupérer";
+    fetchLinkBtn.disabled = false;
+    fetchLinkBtn.textContent = label;
+    tile?.classList.remove("loading");
   }
+}
+// Mots-clés : on cherche sur YouTube et on montre les miniatures ;
+// un clic récupère la vidéo comme un lien collé. La dernière recherche est
+// gardée (même après redémarrage) pour ne pas avoir à la retaper.
+const LONG_VIDEO_S = 10 * 60;
+const VSEARCH_KEY = "soundboard.clipSearch";
+let vSearch = { q: "", results: [] };
+function saveVSearch() {
+  try { localStorage.setItem(VSEARCH_KEY, JSON.stringify(vSearch)); } catch {}
+}
+function videoTile(r) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.setAttribute("role", "option");
+  const long = (r.duration_s ?? 0) > LONG_VIDEO_S;
+  b.title = long ? `${r.title}\nVidéo longue : plus lente à récupérer, et parfois trop lourde` : r.title;
+  const img = document.createElement("img");
+  img.src = r.thumb;
+  img.alt = "";
+  img.loading = "lazy";
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = r.title;
+  b.append(img, name);
+  if (r.duration_s != null) {
+    const tag = document.createElement("span");
+    tag.className = long ? "tag long" : "tag";
+    tag.textContent = (long ? "longue · " : "") + `${Math.floor(r.duration_s / 60)}:${String(r.duration_s % 60).padStart(2, "0")}`;
+    b.append(tag);
+  }
+  b.addEventListener("click", () => {
+    if (fetchLinkBtn.disabled) return;
+    clipVideos.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+    fetchClipLink(r.url, b);
+  });
+  return b;
+}
+function renderVideos() {
+  if (!vSearch.results.length) {
+    if (!vSearch.q) return clipVideos.replaceChildren();
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = "Aucune vidéo trouvée.";
+    return clipVideos.replaceChildren(note);
+  }
+  const tiles = vSearch.results.map(videoTile);
+  // YouTube ne renvoie que 12 vidéos à la fois : on peut en demander d'autres.
+  if (vSearch.results.length % 12 === 0 && vSearch.results.length < 96) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "more";
+    more.textContent = "Plus de résultats";
+    more.addEventListener("click", () => searchClipVideos(vSearch.q, true, more));
+    tiles.push(more);
+  }
+  clipVideos.replaceChildren(...tiles);
+}
+async function searchClipVideos(q, more = false, moreBtn = null) {
+  fetchLinkBtn.disabled = true;
+  if (moreBtn) { moreBtn.disabled = true; moreBtn.textContent = "Recherche…"; }
+  else fetchLinkBtn.textContent = "Recherche…";
+  if (!more) { vSearch = { q, results: [] }; clipVideos.replaceChildren(); }
+  try {
+    const found = await invoke("clip_search_videos", { query: q, start: vSearch.results.length + 1 });
+    const seen = new Set(vSearch.results.map((r) => r.url));
+    vSearch.results.push(...found.filter((r) => !seen.has(r.url)));
+    saveVSearch();
+  } catch (err) {
+    toast(String(err), true);
+  }
+  fetchLinkBtn.disabled = false;
+  fetchLinkBtn.textContent = "Chercher";
+  const scroll = clipVideos.scrollTop;
+  renderVideos();
+  clipVideos.scrollTop = scroll;
+}
+try {
+  const saved = JSON.parse(localStorage.getItem(VSEARCH_KEY) || "null");
+  if (saved?.q && Array.isArray(saved.results)) {
+    vSearch = saved;
+    formClip.link.value = saved.q;
+    renderVideos();
+  }
+} catch {}
+fetchLinkBtn.addEventListener("click", () => {
+  const v = formClip.link.value.trim();
+  if (!v) return formClip.link.focus();
+  if (isLink(v)) fetchClipLink(v);
+  else searchClipVideos(v);
 });
 $('[data-action="search-gif"]', dlgClip).addEventListener("click", async (e) => {
   const btn = e.currentTarget;

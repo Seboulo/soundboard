@@ -260,6 +260,61 @@ pub fn download_video(exe: &Path, url: &str, work_dir: &Path) -> Result<WebVideo
     Ok(WebVideo { video, audio, title: title.chars().take(60).collect() })
 }
 
+/// Une vidéo trouvée par mots-clés.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub struct Found {
+    pub url: String,
+    pub title: String,
+    pub thumb: String,
+    pub duration_s: Option<u32>,
+}
+
+/// Lit les lignes « id \t durée \t titre » données par yt-dlp. Les id
+/// bizarres sont écartés : l'adresse et la miniature en sont tirées.
+pub fn parse_found(out: &str) -> Vec<Found> {
+    out.lines()
+        .filter_map(|l| {
+            let mut it = l.splitn(3, '\t');
+            let id = it.next()?.trim();
+            let dur = it.next()?.trim();
+            let title = it.next()?.trim();
+            if id.len() != 11 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                return None;
+            }
+            Some(Found {
+                url: format!("https://www.youtube.com/watch?v={id}"),
+                title: title.chars().take(100).collect(),
+                thumb: format!("https://i.ytimg.com/vi/{id}/mqdefault.jpg"),
+                duration_s: dur.parse::<f64>().ok().map(|d| d.round() as u32),
+            })
+        })
+        .collect()
+}
+
+/// Cherche des vidéos YouTube par mots-clés (sans rien télécharger) :
+/// `count` résultats à partir du n° `start` (1 pour la première page).
+pub fn search(exe: &Path, query: &str, start: u32, count: u32) -> Result<Vec<Found>, String> {
+    let q: String = query.trim().chars().filter(|c| !c.is_control()).take(100).collect();
+    if q.is_empty() {
+        return Err("tape quelques mots".into());
+    }
+    let start = start.clamp(1, 100);
+    let end = start + count.clamp(1, 24) - 1;
+    let output = command(exe)
+        .args(["--flat-playlist", "--no-warnings", "--ignore-errors", "--print", "%(id)s\t%(duration)s\t%(title)s"])
+        .arg("-I")
+        .arg(format!("{start}:{end}"))
+        .arg("--")
+        .arg(format!("ytsearch{end}:{q}"))
+        .output()
+        .map_err(|e| format!("yt-dlp n'a pas pu démarrer : {e}"))?;
+    let found = parse_found(&String::from_utf8_lossy(&output.stdout));
+    if found.is_empty() && !output.status.success() {
+        return Err("recherche impossible, vérifie ta connexion".into());
+    }
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +332,18 @@ mod tests {
         assert!(is_web_link("https://www.tiktok.com/@a/video/1"));
         assert!(!is_web_link("--exec calc"));
         assert!(!is_web_link("file:///C:/x.mp4"));
+    }
+
+    #[test]
+    fn parses_search_results() {
+        let out = "dQw4w9WgXcQ\t212.0\tRick Astley - Never Gonna Give You Up\nbad id\t3\tx\nabcdefghij_\tNA\tSans durée\n";
+        let f = parse_found(out);
+        assert_eq!(f.len(), 2);
+        assert_eq!(f[0].url, "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+        assert_eq!(f[0].thumb, "https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg");
+        assert_eq!(f[0].duration_s, Some(212));
+        assert_eq!(f[1].duration_s, None);
+        assert_eq!(f[1].title, "Sans durée");
     }
 
     #[test]

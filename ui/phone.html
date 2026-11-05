@@ -107,6 +107,14 @@
     .gifs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
     .gifs img { width: 100%; height: 84px; object-fit: cover; border-radius: 8px; border: 2px solid transparent; }
     .gifs img.on { border-color: var(--accent); }
+    .vids { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 6px; }
+    .vids button { position: relative; padding: 0; border: 2px solid transparent; border-radius: 8px; overflow: hidden; background: none; color: inherit; text-align: left; font: inherit; }
+    .vids button.on { border-color: var(--accent); }
+    .vids img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; }
+    .vids .name { display: block; font-size: 12px; padding: 3px 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .vids .tag { position: absolute; top: 4px; right: 4px; font-size: 11px; padding: 1px 4px; border-radius: 4px; background: rgba(0, 0, 0, .75); color: #fff; }
+    .vids .tag.long { background: #b45309; }
+    .vids .more { grid-column: 1 / -1; padding: 10px; border: 1px dashed currentColor; text-align: center; }
     .ready { position: relative; border-radius: 12px; overflow: hidden; background: #000; color: #fff; min-height: 96px; display: grid; place-items: start center; }
     .ready img { max-width: 100%; max-height: 200px; display: block; }
     .ready .msg { padding: 14px; font-size: 14px; }
@@ -133,11 +141,12 @@
   <div class="sheet" id="sheet" hidden>
     <h2>🎬 Envoyer un extrait</h2>
     <div class="seg" id="src">
-      <button type="button" data-src="link" class="on">🔗 Lien</button>
+      <button type="button" data-src="link" class="on">🔗 Vidéo</button>
       <button type="button" data-src="gif">🎞️ GIF</button>
       <button type="button" data-src="file">📁 Fichier</button>
     </div>
-    <div class="row" data-pane="link"><input id="link" type="url" placeholder="Lien YouTube, TikTok, X…"><button class="btn" id="get-link">OK</button></div>
+    <div data-pane="link"><div class="row"><input id="link" type="search" placeholder="Mots-clés ou lien YouTube, TikTok…"><button class="btn" id="get-link">OK</button></div>
+      <div class="vids" id="vids"></div></div>
     <div data-pane="gif" hidden>
       <div class="row"><input id="gifq" type="search" placeholder="Chercher un GIF…"><button class="btn" id="get-gifs">🔍</button></div>
       <div class="gifs" id="gifs"></div>
@@ -305,9 +314,63 @@
       btn.disabled = false;
       btn.textContent = label;
     }
-    $("get-link").onclick = (e) => busy(e.currentTarget, async () => {
-      const url = $("link").value.trim();
-      if (!url) return;
+    // Mots-clés : vidéos YouTube trouvées, un appui récupère la vidéo.
+    let vids = { q: "", list: [] };
+    function renderVids() {
+      const tiles = vids.list.map((r) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        const img = document.createElement("img");
+        img.src = r.thumb;
+        img.alt = "";
+        img.loading = "lazy";
+        const name = document.createElement("span");
+        name.className = "name";
+        name.textContent = r.title;
+        b.append(img, name);
+        if (r.duration_s != null) {
+          const long = r.duration_s > 600;
+          const tag = document.createElement("span");
+          tag.className = long ? "tag long" : "tag";
+          tag.textContent = (long ? "longue · " : "") + Math.floor(r.duration_s / 60) + ":" + String(r.duration_s % 60).padStart(2, "0");
+          b.append(tag);
+        }
+        b.onclick = () => {
+          document.querySelectorAll("#vids button").forEach((x) => x.classList.toggle("on", x === b));
+          fetchLink(r.url, $("get-link"));
+        };
+        return b;
+      });
+      if (vids.list.length && vids.list.length % 12 === 0 && vids.list.length < 96) {
+        const more = document.createElement("button");
+        more.type = "button";
+        more.className = "more";
+        more.textContent = "Plus de résultats";
+        more.onclick = () => busy(more, () => searchVids(true));
+        tiles.push(more);
+      }
+      $("vids").replaceChildren(...tiles);
+    }
+    async function searchVids(more) {
+      if (!more) vids = { q: $("link").value.trim(), list: [] };
+      const { videos } = await api("/api/videos", { q: vids.q, start: vids.list.length + 1 });
+      const seen = new Set(vids.list.map((r) => r.url));
+      vids.list.push(...videos.filter((r) => !seen.has(r.url)));
+      if (!vids.list.length) showError("Aucune vidéo trouvée");
+      try { localStorage.setItem("soundboard.clipSearch", JSON.stringify(vids)); } catch {}
+      renderVids();
+    }
+    try {
+      const saved = JSON.parse(localStorage.getItem("soundboard.clipSearch") || "null");
+      if (saved && saved.q && Array.isArray(saved.list)) { vids = saved; $("link").value = saved.q; renderVids(); }
+    } catch {}
+    $("get-link").onclick = (e) => {
+      const v = $("link").value.trim();
+      if (!v) return;
+      if (/^https?:\/\/\S+$/i.test(v)) fetchLink(v, e.currentTarget);
+      else busy(e.currentTarget, () => searchVids(false));
+    };
+    const fetchLink = (url, btn) => busy(btn, async () => {
       setPicked(null);
       $("ready").hidden = false;
       $("ready-msg").hidden = false;

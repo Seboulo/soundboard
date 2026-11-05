@@ -1,6 +1,11 @@
 Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
 Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
+Nouveautés de la 2.2 :
+- Envoyer un extrait : l'onglet « 🔗 Vidéo » cherche directement sur YouTube avec des mots-clés (plus besoin de lien). Miniatures, titres et durées ; un clic récupère la vidéo.
+- Les vidéos de plus de 10 min sont marquées « longue », « Plus de résultats » en affiche d'autres, et ta dernière recherche reste là.
+- La même recherche marche depuis le téléphone.
+
 Nouveautés de la 2.1 :
 - Extraits vidéo : choisis le passage avec deux poignées (15 s au plus), règle le volume du son et « ▶ Écouter » avant d'envoyer. « 👁 Aperçu » montre l'extrait dans le coin de ton écran comme ton pote le verra.
 - Le son des vidéos passe dans le casque du pote, Shorts YouTube compris, et les extraits peuvent faire jusqu'à 14 Mo.
