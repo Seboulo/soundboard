@@ -48,12 +48,12 @@ async fn fetch(url: &str, max: usize) -> Result<Vec<u8>, String> {
         .send()
         .await
         .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("téléchargement de yt-dlp impossible : {e}"))?;
+        .map_err(|e| format!("téléchargement impossible ({url}) : {e}"))?;
     let mut data = Vec::new();
     while let Some(chunk) = res.chunk().await.map_err(|e| e.to_string())? {
         data.extend_from_slice(&chunk);
         if data.len() > max {
-            return Err("téléchargement de yt-dlp trop gros".into());
+            return Err("téléchargement trop gros".into());
         }
     }
     Ok(data)
@@ -117,6 +117,79 @@ async fn install_deno(dir: &Path) -> Result<(), String> {
     let tmp = dir.join("deno.download");
     fs::write(&tmp, &exe).map_err(|e| e.to_string())?;
     fs::rename(&tmp, dir.join("deno.exe")).map_err(|e| e.to_string())
+}
+
+/// ffmpeg (versions préparées par yt-dlp, environ 90 Mo, une seule fois) :
+/// permet de ne récupérer que le passage choisi d'une vidéo, même longue.
+const FFMPEG_BASE: &str = "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download/";
+const FFMPEG_ZIP: &str = "ffmpeg-master-latest-win64-gpl-shared.zip";
+const FFMPEG_MAX: usize = 200 * 1024 * 1024;
+static FFMPEG_LOCK: tauri::async_runtime::Mutex<()> = tauri::async_runtime::Mutex::const_new(());
+
+/// Dossier de ffmpeg s'il est déjà installé.
+pub fn ffmpeg_ready(tools_dir: &Path) -> Option<PathBuf> {
+    let dir = tools_dir.join("ffmpeg");
+    let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    dir.join(exe).exists().then_some(dir)
+}
+
+/// Installe ffmpeg à côté de yt-dlp (une seule fois) et renvoie son dossier.
+pub async fn ensure_ffmpeg(tools_dir: &Path, on_status: impl Fn(&str)) -> Result<PathBuf, String> {
+    if let Some(dir) = ffmpeg_ready(tools_dir) {
+        return Ok(dir);
+    }
+    if !cfg!(windows) {
+        return Err("ffmpeg n'est installé tout seul que sous Windows".into());
+    }
+    on_status("Première fois : téléchargement de l'outil vidéo ffmpeg (environ 90 Mo)…");
+    // Deux demandes en même temps : la seconde attend la première.
+    let _one = FFMPEG_LOCK.lock().await;
+    if let Some(dir) = ffmpeg_ready(tools_dir) {
+        return Ok(dir);
+    }
+    let sums = fetch(&format!("{FFMPEG_BASE}checksums.sha256"), 64 * 1024).await?;
+    let expected = expected_hash(&String::from_utf8_lossy(&sums), FFMPEG_ZIP).ok_or("empreinte de ffmpeg introuvable")?;
+    let data = fetch(&format!("{FFMPEG_BASE}{FFMPEG_ZIP}"), FFMPEG_MAX).await?;
+    let dir = tools_dir.to_path_buf();
+    let res = tauri::async_runtime::spawn_blocking(move || unpack_ffmpeg(&data, &expected, &dir))
+        .await
+        .map_err(|e| e.to_string())?;
+    crate::journal::write(&match &res {
+        Ok(()) => "ffmpeg installé pour les extraits vidéo".to_string(),
+        Err(e) => format!("ffmpeg non installé ({e})"),
+    });
+    res?;
+    ffmpeg_ready(tools_dir).ok_or_else(|| "ffmpeg introuvable après l'installation".into())
+}
+
+/// Vérifie l'archive de ffmpeg puis garde ffmpeg.exe, ffprobe.exe et leurs DLL
+/// dans `tools/ffmpeg` (posé d'un coup : jamais à moitié installé).
+fn unpack_ffmpeg(data: &[u8], expected: &str, tools_dir: &Path) -> Result<(), String> {
+    if hex(&Sha256::digest(data)) != expected {
+        return Err("empreinte de ffmpeg différente".into());
+    }
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(data)).map_err(|e| e.to_string())?;
+    let tmp = tools_dir.join("ffmpeg.download");
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
+        let name = entry.name().replace('\\', "/");
+        let Some((folder, file)) = name.rsplit_once('/') else { continue };
+        let wanted = file == "ffmpeg.exe" || file == "ffprobe.exe" || file.to_lowercase().ends_with(".dll");
+        if !folder.ends_with("bin") || !wanted || file.contains("..") {
+            continue;
+        }
+        let mut out = fs::File::create(tmp.join(file)).map_err(|e| e.to_string())?;
+        std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+    }
+    if !tmp.join("ffmpeg.exe").exists() {
+        let _ = fs::remove_dir_all(&tmp);
+        return Err("ffmpeg.exe absent de l'archive".into());
+    }
+    let dir = tools_dir.join("ffmpeg");
+    let _ = fs::remove_dir_all(&dir);
+    fs::rename(&tmp, &dir).map_err(|e| e.to_string())
 }
 
 /// Installe yt-dlp dans `tools_dir` s'il n'y est pas encore et renvoie son chemin.
@@ -318,6 +391,10 @@ const VIDEO_FORMATS: &str = "b[ext=mp4][filesize<8M]/b[ext=mp4][filesize_approx<
 /wv[ext=mp4][vcodec^=avc1][height>=240][width>=240]+ba[ext=m4a]\
 /bv[height<=854][width<=854]+ba[ext=m4a]/b";
 
+/// Passage avec ffmpeg : 480p au plus (H.264 + AAC de préférence), réunis en MP4.
+const CUT_FORMATS: &str = "bv*[ext=mp4][vcodec^=avc1][height<=480]+ba[ext=m4a]\
+/b[ext=mp4][vcodec^=avc1][height<=480]/bv*[height<=480]+ba/b[height<=480]/b";
+
 /// Lance la mise à jour du jour sans attendre (elle ralentissait la
 /// récupération qui la précédait).
 pub fn update_in_background(exe: &Path) {
@@ -330,9 +407,28 @@ fn progress_of(line: &str) -> Option<f32> {
     line.trim().strip_prefix("SBPCT")?.trim().trim_end_matches('%').trim().parse().ok()
 }
 
+/// Vidéo entière trop lourde : on peut alors n'en récupérer qu'un passage.
+pub const TOO_BIG: &str = "vidéo trop lourde (8 Mo au plus) : prends une vidéo plus courte";
+
+/// Passage récupéré avec ffmpeg : 40 s, de quoi choisir les 30 s à envoyer.
+pub const CUT_WINDOW_S: f64 = 40.0;
+
+/// Comment yt-dlp récupère la vidéo.
+enum Fetch<'a> {
+    /// Vidéo entière, 4 morceaux à la fois, avec l'avancement.
+    Fast,
+    /// Vidéo entière, sans options (secours).
+    Simple,
+    /// Seulement le passage qui commence à `start` (secondes), avec ffmpeg :
+    /// toute vidéo marche, même longue.
+    Cut { start: f64, ffmpeg: &'a Path },
+}
+
 /// Télécharge une petite vidéo pour un extrait (8 Mo au plus : le relais limite les envois).
+/// Avec `cut` (début en secondes, dossier de ffmpeg), seul le passage de
+/// `CUT_WINDOW_S` secondes est récupéré ; le fichier commence alors à 0.
 /// `on_progress` reçoit l'avancement (0 à 100) de chaque fichier.
-pub fn download_video(exe: &Path, url: &str, work_dir: &Path, on_progress: impl Fn(f32)) -> Result<WebVideo, String> {
+pub fn download_video(exe: &Path, url: &str, work_dir: &Path, cut: Option<(f64, &Path)>, on_progress: impl Fn(f32)) -> Result<WebVideo, String> {
     if !is_web_link(url) {
         return Err("colle un lien qui commence par https://".into());
     }
@@ -340,11 +436,15 @@ pub fn download_video(exe: &Path, url: &str, work_dir: &Path, on_progress: impl 
     // la refuse sur ce PC (« [Errno 22] Invalid argument » vu sous Windows),
     // on refait la récupération simple d'avant, sans ces options.
     // Une raison connue (vidéo privée, réservée aux adultes…) : inutile de retenter.
-    let title = match run_video(exe, url, work_dir, true, &on_progress) {
+    let first = match cut {
+        Some((start, ffmpeg)) => Fetch::Cut { start, ffmpeg },
+        None => Fetch::Fast,
+    };
+    let title = match run_video(exe, url, work_dir, first, &on_progress) {
         Ok(t) => t,
         Err(line) => match explain(&line) {
             Some(why) => return Err(why),
-            None => run_video(exe, url, work_dir, false, &on_progress).map_err(|line| {
+            None => run_video(exe, url, work_dir, Fetch::Simple, &on_progress).map_err(|line| {
                 crate::journal::write(&format!("yt-dlp : {line}"));
                 explain(&line).unwrap_or_else(|| {
                     let short: String = line.chars().take(200).collect();
@@ -364,20 +464,20 @@ pub fn download_video(exe: &Path, url: &str, work_dir: &Path, on_progress: impl 
         .iter()
         .find(|p| ext_is(p, &["mp4", "webm"]))
         .cloned()
-        .ok_or("vidéo trop lourde (8 Mo au plus) : prends une vidéo plus courte")?;
+        .ok_or(TOO_BIG)?;
     Ok(WebVideo { video, audio, title: title.chars().take(60).collect() })
 }
 
 /// Lance yt-dlp pour `download_video` ; renvoie le titre, ou la dernière
-/// ligne d'erreur. `fast` : morceaux en parallèle et avancement en %.
-fn run_video(exe: &Path, url: &str, work_dir: &Path, fast: bool, on_progress: &impl Fn(f32)) -> Result<String, String> {
+/// ligne d'erreur.
+fn run_video(exe: &Path, url: &str, work_dir: &Path, how: Fetch, on_progress: &impl Fn(f32)) -> Result<String, String> {
     use std::io::{BufRead, BufReader, Read};
     use std::process::Stdio;
     let _ = fs::remove_dir_all(work_dir);
     fs::create_dir_all(work_dir).map_err(|e| e.to_string())?;
     let mut cmd = command(exe);
     cmd.args(["--no-playlist", "--no-warnings", "--quiet", "--no-simulate", "--print", "title"]);
-    if fast {
+    if !matches!(how, Fetch::Simple) {
         cmd.args([
             // Avancement, une ligne par étape, sur la sortie standard.
             "--progress",
@@ -389,9 +489,22 @@ fn run_video(exe: &Path, url: &str, work_dir: &Path, fast: bool, on_progress: &i
             "4",
         ]);
     }
+    match how {
+        Fetch::Cut { start, ffmpeg } => {
+            // Image et son réunis en un MP4 (H.264 de préférence, lu partout).
+            // Pas de --max-filesize : il jugerait la taille de la vidéo entière.
+            let start = start.max(0.0);
+            cmd.arg("--ffmpeg-location")
+                .arg(ffmpeg)
+                .args(["--download-sections", &format!("*{start:.1}-{:.1}", start + CUT_WINDOW_S)])
+                .args(["-f", CUT_FORMATS, "--merge-output-format", "mp4", "-o"])
+                .arg(work_dir.join("video.%(ext)s"));
+        }
+        _ => {
+            cmd.args(["-f", VIDEO_FORMATS, "--max-filesize", "8M", "-o"]).arg(work_dir.join("video.%(format_id)s.%(ext)s"));
+        }
+    }
     let mut child = cmd
-        .args(["-f", VIDEO_FORMATS, "--max-filesize", "8M", "-o"])
-        .arg(work_dir.join("video.%(format_id)s.%(ext)s"))
         .arg("--")
         .arg(url.trim())
         .stdout(Stdio::piped())
@@ -515,6 +628,32 @@ mod tests {
         assert_eq!(progress_of("SBPCT   42.3%"), Some(42.3));
         assert_eq!(progress_of("SBPCT 100.0%"), Some(100.0));
         assert_eq!(progress_of("Mon titre"), None);
+    }
+
+    #[test]
+    fn unpacks_ffmpeg_bin_only() {
+        use std::io::Write;
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut z = zip::ZipWriter::new(&mut buf);
+            let o = zip::write::SimpleFileOptions::default();
+            z.add_directory("ff/bin/", o).unwrap();
+            for (name, data) in [("ff/bin/ffmpeg.exe", "a"), ("ff/bin/ffprobe.exe", "b"), ("ff/bin/avcodec-63.dll", "c"), ("ff/bin/ffplay.exe", "d"), ("ff/doc/x.dll", "e")] {
+                z.start_file(name, o).unwrap();
+                z.write_all(data.as_bytes()).unwrap();
+            }
+            z.finish().unwrap();
+        }
+        let data = buf.into_inner();
+        let dir = std::env::temp_dir().join(format!("sb-ff-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        assert!(unpack_ffmpeg(&data, "bad", &dir).is_err());
+        unpack_ffmpeg(&data, &hex(&Sha256::digest(&data)), &dir).unwrap();
+        let mut got: Vec<_> = fs::read_dir(dir.join("ffmpeg")).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        got.sort();
+        assert_eq!(got, ["avcodec-63.dll", "ffmpeg.exe", "ffprobe.exe"]);
+        assert!(!dir.join("ffmpeg.download").exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -296,6 +296,8 @@ pub struct ClipPick {
     title: String,
     /// Piste audio à part (Shorts) : rangée à côté, « <nom>-son.<ext> ».
     has_audio: bool,
+    /// Seul un passage a été récupéré (vidéo longue) : il commence à 0.
+    cut: bool,
 }
 
 /// Image, GIF ou vidéo choisie sur le PC, copiée dans le dossier de l'app
@@ -345,7 +347,7 @@ fn keep_for_sending(
     if let Some((a, aext)) = audio {
         fs::write(dir.join(format!("{id}-son.{aext}")), a).map_err(|e| e.to_string())?;
     }
-    Ok(ClipPick { path: copy.to_string_lossy().into_owned(), kind, size: total as u64, title, has_audio })
+    Ok(ClipPick { path: copy.to_string_lossy().into_owned(), kind, size: total as u64, title, has_audio, cut: false })
 }
 
 /// Fichier envoyé depuis la page du téléphone.
@@ -401,8 +403,11 @@ pub async fn clip_search_videos(app: AppHandle, query: String, start: Option<u32
 }
 
 /// Vidéo d'un lien (YouTube, TikTok, X, Reddit…), avec yt-dlp.
+/// `start_s` : début du passage voulu. `cut` : vidéo longue, on ne récupère
+/// que ce passage (avec ffmpeg). Sans `cut`, la vidéo entière est récupérée,
+/// et si elle est trop lourde, seulement le passage qui commence à `start_s`.
 #[tauri::command]
-pub async fn clip_from_link(app: AppHandle, url: String) -> Result<ClipPick, String> {
+pub async fn clip_from_link(app: AppHandle, url: String, start_s: Option<f64>, cut: Option<bool>) -> Result<ClipPick, String> {
     let state = app.state::<AppState>();
     if !youtube::is_web_link(&url) {
         return Err("colle un lien qui commence par https://".into());
@@ -415,20 +420,36 @@ pub async fn clip_from_link(app: AppHandle, url: String) -> Result<ClipPick, Str
         let status = |msg: &str| {
             let _ = app.emit("youtube-status", msg);
         };
-        let exe = youtube::ensure(&data_dir.join("tools"), status).await?;
+        let tools = data_dir.join("tools");
+        let exe = youtube::ensure(&tools, status).await?;
         let work_dir = data_dir.join("extrait-tmp");
-        let wd = work_dir.clone();
-        let app2 = app.clone();
-        let source = url.clone();
-        let got = tauri::async_runtime::spawn_blocking(move || {
-            let res = youtube::download_video(&exe, &url, &wd, |p| {
-                let _ = app2.emit("clip-progress", p.round() as u32);
-            });
-            youtube::update_in_background(&exe);
-            res
-        })
-        .await
-        .map_err(|e| e.to_string())??;
+        let start = start_s.unwrap_or(0.0).clamp(0.0, 36_000.0);
+        let fetch = |ffmpeg: Option<PathBuf>| {
+            let (exe, url, wd, app2) = (exe.clone(), url.clone(), work_dir.clone(), app.clone());
+            tauri::async_runtime::spawn_blocking(move || {
+                youtube::download_video(&exe, &url, &wd, ffmpeg.as_deref().map(|f| (start, f)), |p| {
+                    let _ = app2.emit("clip-progress", p.round() as u32);
+                })
+            })
+        };
+        let mut was_cut = cut.unwrap_or(false);
+        let got = if was_cut {
+            let ffmpeg = youtube::ensure_ffmpeg(&tools, status).await?;
+            fetch(Some(ffmpeg)).await.map_err(|e| e.to_string())?
+        } else {
+            match fetch(None).await.map_err(|e| e.to_string())? {
+                // Trop lourde entière : on ne prend que le passage.
+                Err(e) if e == youtube::TOO_BIG => {
+                    status("Vidéo longue : on ne récupère que le passage (40 s)…");
+                    let ffmpeg = youtube::ensure_ffmpeg(&tools, status).await?;
+                    was_cut = true;
+                    fetch(Some(ffmpeg)).await.map_err(|e| e.to_string())?
+                }
+                other => other,
+            }
+        };
+        youtube::update_in_background(&exe);
+        let got = got?;
         let ext_of = |p: &Path| p.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_lowercase();
         let ext = ext_of(&got.video);
         let read = || -> Result<(Vec<u8>, Option<(Vec<u8>, String)>), String> {
@@ -442,8 +463,13 @@ pub async fn clip_from_link(app: AppHandle, url: String) -> Result<ClipPick, Str
         let files = read();
         let _ = fs::remove_dir_all(&work_dir);
         let (video, audio) = files?;
-        let pick = keep_for_sending(&app, &video, &ext, got.title, audio)?;
-        state.clips.links.lock().unwrap().insert(pick.path.clone(), source);
+        let mut pick = keep_for_sending(&app, &video, &ext, got.title, audio)?;
+        pick.cut = was_cut;
+        // Un passage découpé part en fichier : le pote ne pourrait pas
+        // retrouver le même passage depuis le lien.
+        if !was_cut {
+            state.clips.links.lock().unwrap().insert(pick.path.clone(), url.clone());
+        }
         Ok(pick)
     }
     .await;
@@ -660,7 +686,7 @@ async fn fetch_link(app: &AppHandle, url: &str, dir: &Path, id: &str) -> Result<
     let work = data_dir.join(format!("extrait-recu-{id}"));
     let (url, dir, id) = (url.to_string(), dir.to_path_buf(), id.to_string());
     tauri::async_runtime::spawn_blocking(move || {
-        let res = youtube::download_video(&exe, &url, &work, |_| {}).and_then(|got| {
+        let res = youtube::download_video(&exe, &url, &work, None, |_| {}).and_then(|got| {
             let ext = |p: &Path| p.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_lowercase();
             let media = dir.join(format!("{id}.{}", ext(&got.video)));
             fs::copy(&got.video, &media).map_err(|e| e.to_string())?;

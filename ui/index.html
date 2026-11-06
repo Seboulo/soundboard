@@ -181,6 +181,15 @@
             </section>
             <section class="send-results" data-res="video" hidden>
               <h3>Vidéos <small data-count></small></h3>
+              <div class="clip-ask" hidden>
+                <p><b data-ask-title></b> dure <span data-ask-len></span>. Le passage commence à quel moment ?</p>
+                <div class="search-row">
+                  <input name="from" inputmode="numeric" placeholder="1:30" aria-label="Début du passage (minutes:secondes)">
+                  <button type="button" class="primary" data-action="ask-ok">Récupérer 40 s</button>
+                  <button type="button" data-action="ask-cancel">Annuler</button>
+                </div>
+                <small class="hint">Astuce : sur YouTube, le moment s'affiche sous la vidéo. Tu ajusteras les 30 s exactes à l'étape 2.</small>
+              </div>
               <div class="clip-gifs clip-videos" role="listbox" aria-label="Vidéos trouvées"></div>
               <p class="hint" data-note></p>
             </section>

@@ -3735,17 +3735,19 @@ listen("clip-progress", ({ payload }) => {
   if (clipFetchTile) clipFetchTile.dataset.progress = text;
   else if (clipFetching) searchBtn.textContent = text;
 });
-async function fetchClipLink(url, tile) {
+// `startS` : début du passage voulu ; `cut` : vidéo longue, seul ce passage
+// est récupéré (le fichier commence alors à 0).
+async function fetchClipLink(url, tile, startS = linkStart(url), cut = false) {
   if (clipFetching) return toast("Une vidéo est déjà en cours de récupération, patiente un instant", true);
   clipFetching = true;
   clipFetchTile = tile || null;
   if (tile) { tile.dataset.progress = "Récupération…"; tile.classList.add("loading"); }
   else { searchBtn.disabled = true; searchBtn.textContent = "Récupération…"; }
   try {
-    const picked = await invoke("clip_from_link", { url });
+    const picked = await invoke("clip_from_link", { url, startS, cut });
     formClip.title.value = "";
     formClip.title.placeholder = picked.title || "Ex. : QUAND KEVIN RATE SON TIR";
-    if (sendOpen) showClipMedia(picked, linkStart(url));
+    if (sendOpen) showClipMedia(picked, picked.cut ? 0 : startS);
   } catch (err) {
     toast(String(err), true);
     // La raison reste affichée sous les vidéos (le message disparaît vite).
@@ -3763,7 +3765,6 @@ async function fetchClipLink(url, tile) {
 // Une recherche pour tout : les GIF (GIPHY, rapides) arrivent d'abord, les
 // vidéos YouTube ensuite. La dernière recherche est gardée, même après
 // redémarrage, pour ne pas avoir à la retaper.
-const LONG_VIDEO_S = 5 * 60;
 const VSEARCH_KEY = "soundboard.clipSearch";
 let vSearch = { q: "", results: [], gifs: [] };
 let searchSeq = 0;
@@ -3790,8 +3791,7 @@ function videoTile(r) {
   const b = document.createElement("button");
   b.type = "button";
   b.setAttribute("role", "option");
-  const long = (r.duration_s ?? 0) > LONG_VIDEO_S;
-  b.title = long ? `${r.title}\nVidéo longue : souvent trop lourde (8 Mo au plus), préfère une vidéo courte` : r.title;
+  b.title = (r.duration_s ?? 0) > CUT_FROM_S ? `${r.title}\nTu choisiras le moment du passage (40 s récupérées)` : r.title;
   const img = document.createElement("img");
   img.src = r.thumb;
   img.alt = "";
@@ -3802,17 +3802,61 @@ function videoTile(r) {
   b.append(img, name);
   if (r.duration_s != null) {
     const tag = document.createElement("span");
-    tag.className = long ? "tag long" : "tag";
-    tag.textContent = (long ? "longue · " : "") + `${Math.floor(r.duration_s / 60)}:${String(r.duration_s % 60).padStart(2, "0")}`;
+    tag.className = "tag";
+    tag.textContent = `${Math.floor(r.duration_s / 60)}:${String(r.duration_s % 60).padStart(2, "0")}`;
     b.append(tag);
   }
   b.addEventListener("click", () => {
     if (clipFetching) return toast("Une vidéo est déjà en cours de récupération, patiente un instant", true);
     clipVideos.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
-    fetchClipLink(r.url, b);
+    // Plus d'une minute : on demande où commence le passage, et on ne
+    // récupère que lui (rapide, et jamais trop lourd).
+    if ((r.duration_s ?? 0) > CUT_FROM_S) return askClipStart(r, b);
+    fetchClipLink(r.url, b, 0);
   });
   return b;
 }
+const CUT_FROM_S = 60;
+const fmtClock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+// « 1:30 », « 90 » ou « 1h02:03 » → secondes (null si illisible).
+function parseClock(v) {
+  const m = v.trim().replace(/h/i, ":").match(/^(?:(\d+):)?(?:(\d+):)?(\d+(?:[.,]\d+)?)$/);
+  if (!m) return null;
+  const parts = [m[1], m[2], m[3]].filter((x) => x != null).map((x) => Number(x.replace(",", ".")));
+  return parts.reduce((t, x) => t * 60 + x, 0);
+}
+const clipAsk = $(".clip-ask", dlgClip);
+let clipAskFor = null;
+function askClipStart(r, tile) {
+  clipAskFor = { r, tile };
+  $("[data-ask-title]", clipAsk).textContent = r.title;
+  $("[data-ask-len]", clipAsk).textContent = fmtClock(r.duration_s);
+  formClip.from.value = "0:00";
+  clipAsk.hidden = false;
+  clipAsk.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  formClip.from.focus();
+  formClip.from.select();
+}
+function closeClipAsk() {
+  clipAsk.hidden = true;
+  clipAskFor?.tile.classList.remove("on");
+  clipAskFor = null;
+}
+function confirmClipStart() {
+  if (!clipAskFor) return;
+  const at = parseClock(formClip.from.value);
+  const len = clipAskFor.r.duration_s ?? Infinity;
+  if (at == null || at < 0 || at >= len) {
+    toast(`Écris un moment entre 0:00 et ${fmtClock(len)}, par exemple 1:30`, true);
+    return formClip.from.focus();
+  }
+  const { r, tile } = clipAskFor;
+  clipAsk.hidden = true;
+  clipAskFor = null;
+  fetchClipLink(r.url, tile, at, true);
+}
+$('[data-action="ask-ok"]', dlgClip).addEventListener("click", confirmClipStart);
+$('[data-action="ask-cancel"]', dlgClip).addEventListener("click", closeClipAsk);
 function gifTile(r) {
   const b = document.createElement("button");
   b.type = "button";
@@ -3910,6 +3954,7 @@ async function runSendSearch() {
   if (!v) return formClip.q.focus();
   if (isLink(v)) return fetchClipLink(v);
   setClipSource("search");
+  closeClipAsk();
   const seq = ++searchSeq;
   vSearch = { q: v, results: [], gifs: [] };
   renderSearchHint();
@@ -3935,6 +3980,7 @@ formClip.addEventListener("keydown", (e) => {
   if (e.key !== "Enter" || e.target.tagName !== "INPUT") return;
   e.preventDefault();
   if (e.target.name === "q") runSendSearch();
+  else if (e.target.name === "from") confirmClipStart();
   else if (e.target.name === "title" && clipMedia) sendBtn.click();
 });
 formClip.title.addEventListener("input", clipUi);
