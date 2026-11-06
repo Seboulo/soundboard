@@ -146,6 +146,21 @@ pub async fn ensure(tools_dir: &Path, on_status: impl Fn(&str)) -> Result<PathBu
 
 fn command(exe: &Path) -> Command {
     let mut cmd = Command::new(exe);
+    // Deno est posé à côté de yt-dlp, mais yt-dlp ne le cherche que dans le
+    // PATH : sans lui, YouTube ne donne qu'une partie des formats (« Requested
+    // format is not available »). On ajoute donc le dossier au PATH.
+    if let Some(dir) = exe.parent() {
+        let mut paths = vec![dir.to_path_buf()];
+        if let Some(old) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&old));
+        }
+        if let Ok(joined) = std::env::join_paths(paths) {
+            cmd.env("PATH", joined);
+        }
+    }
+    // L'appli n'a pas de console : sans entrée explicite, yt-dlp hérite
+    // d'une entrée invalide.
+    cmd.stdin(std::process::Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -154,6 +169,41 @@ fn command(exe: &Path) -> Command {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     cmd
+}
+
+/// Traduit les refus connus de yt-dlp en une raison claire. `None` : erreur
+/// inattendue (on peut retenter autrement).
+pub fn explain(line: &str) -> Option<String> {
+    let l = line.to_lowercase();
+    let says = |keys: &[&str]| keys.iter().any(|k| l.contains(k));
+    let why = if says(&["confirm your age", "age-restricted", "inappropriate for some users"]) {
+        "vidéo réservée aux adultes : YouTube demande d'être connecté, elle ne peut pas être récupérée"
+    } else if says(&["not a bot", "sign in to confirm"]) {
+        "YouTube bloque les récupérations depuis ta connexion pour le moment : réessaie dans quelques minutes"
+    } else if says(&["private video", "this video is private"]) {
+        "vidéo privée : seul son auteur peut la voir"
+    } else if says(&["members-only", "join this channel", "members only"]) {
+        "vidéo réservée aux membres de la chaîne"
+    } else if says(&["not available in your country", "blocked it in your country", "geo restrict", "geo-restrict"]) {
+        "vidéo bloquée dans ton pays"
+    } else if says(&["is live", "live event", "premieres in", "this live"]) {
+        "c'est un direct (ou une première pas encore diffusée) : prends une vidéo déjà publiée"
+    } else if says(&["video unavailable", "has been removed", "no longer available", "account associated", "terminated"]) {
+        "vidéo supprimée ou indisponible"
+    } else if says(&["copyright"]) {
+        "vidéo retirée pour droits d'auteur"
+    } else if says(&["login required", "log in", "logged-in", "requires authentication", "rate-limit reached", "cookies"]) {
+        "ce site demande d'être connecté pour cette vidéo (Instagram, Facebook…) : essaie un autre lien"
+    } else if says(&["unsupported url"]) {
+        "ce site n'est pas pris en charge"
+    } else if says(&["unable to download webpage", "getaddrinfo", "timed out", "connection", "network is unreachable"]) {
+        "vidéo injoignable, vérifie le lien et ta connexion"
+    } else if says(&["http error 404", "not found"]) {
+        "lien introuvable : vérifie qu'il est complet"
+    } else {
+        return None;
+    };
+    Some(why.to_string())
 }
 
 /// Met yt-dlp à jour au plus une fois par jour. Une erreur n'est pas bloquante.
@@ -205,11 +255,11 @@ pub fn download_audio(exe: &Path, url: &str, work_dir: &Path) -> Result<(Vec<u8>
         let err = String::from_utf8_lossy(&output.stderr);
         let line = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("erreur inconnue");
         let line = line.trim().trim_start_matches("ERROR: ");
-        if line.contains("Unable to download") || line.contains("connect") {
-            return Err("connexion à YouTube impossible, vérifie ta connexion internet".into());
-        }
         if line.contains("does not pass filter") {
             return Err(format!("vidéo ignorée : plus de {} minutes", MAX_DURATION_S / 60));
+        }
+        if let Some(why) = explain(line) {
+            return Err(why);
         }
         let short: String = line.chars().take(200).collect();
         return Err(format!("YouTube : {short}"));
@@ -289,19 +339,19 @@ pub fn download_video(exe: &Path, url: &str, work_dir: &Path, on_progress: impl 
     // Récupération rapide (4 morceaux à la fois, avancement en %) ; si yt-dlp
     // la refuse sur ce PC (« [Errno 22] Invalid argument » vu sous Windows),
     // on refait la récupération simple d'avant, sans ces options.
+    // Une raison connue (vidéo privée, réservée aux adultes…) : inutile de retenter.
     let title = match run_video(exe, url, work_dir, true, &on_progress) {
         Ok(t) => t,
-        Err(line) if line.contains("Unsupported URL") => return Err("ce site n'est pas pris en charge".into()),
-        Err(_) => run_video(exe, url, work_dir, false, &on_progress).map_err(|line| {
-            if line.contains("Unable to download") || line.contains("connect") {
-                return "vidéo injoignable, vérifie le lien et ta connexion".to_string();
-            }
-            if line.contains("Unsupported URL") {
-                return "ce site n'est pas pris en charge".to_string();
-            }
-            let short: String = line.chars().take(200).collect();
-            format!("vidéo : {short}")
-        })?,
+        Err(line) => match explain(&line) {
+            Some(why) => return Err(why),
+            None => run_video(exe, url, work_dir, false, &on_progress).map_err(|line| {
+                crate::journal::write(&format!("yt-dlp : {line}"));
+                explain(&line).unwrap_or_else(|| {
+                    let short: String = line.chars().take(200).collect();
+                    format!("vidéo : {short}")
+                })
+            })?,
+        },
     };
     let files: Vec<PathBuf> = fs::read_dir(work_dir)
         .map_err(|e| e.to_string())?
@@ -344,9 +394,6 @@ fn run_video(exe: &Path, url: &str, work_dir: &Path, fast: bool, on_progress: &i
         .arg(work_dir.join("video.%(format_id)s.%(ext)s"))
         .arg("--")
         .arg(url.trim())
-        // L'appli n'a pas de console : sans entrée explicite, yt-dlp hérite
-        // d'une entrée invalide.
-        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -468,6 +515,15 @@ mod tests {
         assert_eq!(progress_of("SBPCT   42.3%"), Some(42.3));
         assert_eq!(progress_of("SBPCT 100.0%"), Some(100.0));
         assert_eq!(progress_of("Mon titre"), None);
+    }
+
+    #[test]
+    fn explains_known_refusals() {
+        assert!(explain("ERROR: [youtube] x: Sign in to confirm your age. This video may be inappropriate for some users.").unwrap().contains("adultes"));
+        assert!(explain("ERROR: [youtube] x: Sign in to confirm you're not a bot").unwrap().contains("bloque"));
+        assert!(explain("ERROR: [youtube] x: Private video. Sign in if you've been granted access").unwrap().contains("privée"));
+        assert!(explain("ERROR: [youtube] x: Video unavailable").unwrap().contains("supprimée"));
+        assert!(explain("[Errno 22] Invalid argument").is_none());
     }
 
     #[test]

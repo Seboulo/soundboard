@@ -3748,6 +3748,8 @@ async function fetchClipLink(url, tile) {
     if (sendOpen) showClipMedia(picked, linkStart(url));
   } catch (err) {
     toast(String(err), true);
+    // La raison reste affichée sous les vidéos (le message disparaît vite).
+    if (tile) resultNote("video", `« ${tile.title.split("\n")[0]} » : ${err}`);
   } finally {
     clipFetching = false;
     searchBtn.disabled = false;
@@ -3761,7 +3763,7 @@ async function fetchClipLink(url, tile) {
 // Une recherche pour tout : les GIF (GIPHY, rapides) arrivent d'abord, les
 // vidéos YouTube ensuite. La dernière recherche est gardée, même après
 // redémarrage, pour ne pas avoir à la retaper.
-const LONG_VIDEO_S = 10 * 60;
+const LONG_VIDEO_S = 5 * 60;
 const VSEARCH_KEY = "soundboard.clipSearch";
 let vSearch = { q: "", results: [], gifs: [] };
 let searchSeq = 0;
@@ -3789,7 +3791,7 @@ function videoTile(r) {
   b.type = "button";
   b.setAttribute("role", "option");
   const long = (r.duration_s ?? 0) > LONG_VIDEO_S;
-  b.title = long ? `${r.title}\nVidéo longue : plus lente à récupérer, et parfois trop lourde` : r.title;
+  b.title = long ? `${r.title}\nVidéo longue : souvent trop lourde (8 Mo au plus), préfère une vidéo courte` : r.title;
   const img = document.createElement("img");
   img.src = r.thumb;
   img.alt = "";
