@@ -68,6 +68,7 @@
 
   <nav class="tabbar">
     <div id="tabs" class="tabs"></div>
+    <button id="tab-send" type="button" class="tab tab-send" title="Envoyer un GIF, une image ou une vidéo sur l'écran d'un pote du salon"><span class="emo" aria-hidden="true">🎬</span>Envoyer</button>
     <div class="spacer"></div>
     <select id="sort" title="Ordre des sons">
       <option value="favorites">★ Favoris en premier</option>
@@ -139,6 +140,111 @@
         <li data-step="sound"><span class="mark"></span><span class="txt"><b>Ajouter ton premier son</b><small>Glisse des fichiers audio dans la fenêtre, ou :</small></span><span class="start-btns"><button type="button" class="primary" data-action="start-add">Ajouter des sons</button><button type="button" data-action="start-online">En ligne</button><button type="button" data-action="start-import">Pack .zip</button></span></li>
       </ol>
     </div>
+    <!-- Onglet « Envoyer » : un extrait sur l'écran d'un pote, en 3 étapes -->
+    <section id="dlg-clip" class="send-view no-media" hidden aria-label="Envoyer un extrait">
+      <form class="send-form" autocomplete="off">
+        <ol class="send-steps">
+          <li data-goto="pick"><button type="button"><span class="num">1</span>Choisir</button></li>
+          <li data-goto="adjust"><button type="button"><span class="num">2</span>Ajuster</button></li>
+          <li data-goto="send"><button type="button"><span class="num">3</span>Envoyer</button></li>
+        </ol>
+
+        <div class="send-noroom" hidden>
+          <p class="big">Rejoins d'abord un salon avec tes potes</p>
+          <p>Les extraits s'affichent sur l'écran des potes de ton salon, sans les sortir de leur jeu.</p>
+          <button type="button" class="primary" data-action="room-settings">Réglages → Potes</button>
+        </div>
+
+        <!-- Étape 1 : choisir -->
+        <div class="send-step" data-step="pick">
+          <div class="clip-recents" hidden>
+            <span class="label">Récents</span>
+            <div class="clip-recents-list"></div>
+          </div>
+          <div class="send-search">
+            <div class="search-row">
+              <input name="q" type="search" placeholder="Cherche un GIF ou une vidéo (ex. : bruh), ou colle un lien YouTube, TikTok, X…" aria-label="Recherche de GIF et de vidéos, ou lien">
+              <button type="button" class="primary" data-action="search">Chercher</button>
+            </div>
+            <div class="segmented" id="clip-source">
+              <button type="button" data-source="search" class="active">🔎 Résultats</button>
+              <button type="button" data-source="history">🕘 Historique</button>
+              <button type="button" data-action="pick">📁 Fichier du PC</button>
+            </div>
+          </div>
+          <div data-pane="search">
+            <p class="send-hint hint" data-hint="start">Tape des mots-clés et appuie sur Entrée : les GIF et les vidéos YouTube s'affichent ici. Un clic sur un résultat le prépare.</p>
+            <section class="send-results" data-res="gif" hidden>
+              <h3>GIF <small data-count></small></h3>
+              <div class="clip-gifs clip-gif-strip" role="listbox" aria-label="GIF trouvés"></div>
+              <p class="hint" data-note></p>
+            </section>
+            <section class="send-results" data-res="video" hidden>
+              <h3>Vidéos <small data-count></small></h3>
+              <div class="clip-gifs clip-videos" role="listbox" aria-label="Vidéos trouvées"></div>
+              <p class="hint" data-note></p>
+            </section>
+          </div>
+          <div data-pane="history" hidden>
+            <h3>Envoyés</h3>
+            <div class="clip-gifs clip-history" data-list="sent"></div>
+            <h3>Reçus</h3>
+            <div class="clip-gifs clip-history" data-list="received"></div>
+            <p class="hint">Les 20 derniers de chaque côté. Un clic le remet à l'étape 2 : tu peux le revoir, l'écouter ou le renvoyer.</p>
+          </div>
+        </div>
+
+        <!-- Étape 2 : ajuster -->
+        <div class="send-step" data-step="adjust" hidden>
+          <div class="adjust">
+            <div class="adjust-media">
+              <div class="clip-frame">
+                <img class="clip-preview" alt="" hidden>
+                <video class="clip-preview" muted loop playsinline hidden></video>
+                <div class="meme-text" aria-hidden="true"></div>
+              </div>
+              <button type="button" class="ghost" data-action="back">← Choisir autre chose</button>
+            </div>
+            <div class="adjust-fields">
+              <label class="set-field"><span>Texte en gros sur l'extrait <small class="muted">(facultatif)</small></span>
+                <input name="title" maxlength="60" placeholder="Ex. : QUAND KEVIN RATE SON TIR">
+              </label>
+              <div class="set-field clip-trim" data-for-video hidden>
+                <span>Passage à montrer <span class="value" data-trim-label></span></span>
+                <div class="clip-range">
+                  <div class="clip-range-sel"></div>
+                  <input name="start" type="range" min="0" max="30" step="0.1" value="0" aria-label="Début du passage">
+                  <input name="end" type="range" min="0" max="30" step="0.1" value="30" aria-label="Fin du passage">
+                </div>
+                <small class="hint">Glisse les deux poignées (30 secondes au plus). ← → pour affiner après un clic.</small>
+              </div>
+              <label class="set-field" data-for-image>Son avec l'image
+                <select name="sound"></select>
+              </label>
+              <div class="set-field clip-listen" data-for-sound hidden>
+                <span>Son de la vidéo <span class="value" data-for="cvol">100 %</span></span>
+                <div class="search-row">
+                  <input name="cvol" type="range" list="tick-100" min="0" max="2" step="0.05" value="1" data-for-video aria-label="Volume du son de la vidéo">
+                  <button type="button" data-action="listen">▶ Écouter</button>
+                </div>
+                <small class="hint">Tu l'entends dans ton casque, comme ton pote l'entendra.</small>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Étape 3 : toujours visible en bas -->
+        <div class="send-bar">
+          <label class="send-to">Envoyer à
+            <select name="to" title="Envoyé à un seul pote, le son passe aussi dans Discord par son micro. À tout le salon, chacun l'entend chez soi."></select>
+          </label>
+          <span class="send-status" role="status" aria-live="polite"></span>
+          <div class="spacer"></div>
+          <button type="button" data-action="preview" disabled title="Le voir dans le coin de ton écran, comme ton pote">👁 Aperçu</button>
+          <button type="button" class="primary" data-action="send" disabled>Envoyer</button>
+        </div>
+      </form>
+    </section>
   </main>
 
   <datalist id="tick-100"><option value="1"></option></datalist>
@@ -597,85 +703,6 @@
         <div class="spacer"></div>
         <button type="button" data-action="say">▶ Dire dans Discord</button>
         <button type="button" class="primary" data-action="create">Créer un pad</button>
-      </div>
-    </form>
-  </dialog>
-
-  <!-- Extrait sur l'écran d'un pote -->
-  <dialog id="dlg-clip">
-    <form class="form" method="dialog">
-      <h2>🎬 Envoyer un extrait</h2>
-      <div class="clip-recents" hidden>
-        <span class="label">Récents</span>
-        <div class="clip-recents-list"></div>
-      </div>
-      <div class="segmented" id="clip-source">
-        <button type="button" data-source="file" class="active">📁 Fichier <small>image, GIF, vidéo</small></button>
-        <button type="button" data-source="link">🔗 Vidéo <small>recherche ou lien</small></button>
-        <button type="button" data-source="gif">🎞️ GIF <small>recherche GIPHY</small></button>
-        <button type="button" data-source="history">🕘 Historique <small>envoyés, reçus</small></button>
-      </div>
-      <div data-pane="link" hidden>
-        <div class="search-row">
-          <input name="link" type="search" placeholder="Mots-clés (ex. : bruh moment) ou lien YouTube, TikTok, X…" autocomplete="off">
-          <button type="button" class="primary" data-action="fetch-link">Chercher</button>
-        </div>
-        <div class="clip-gifs clip-videos" role="listbox" aria-label="Vidéos trouvées"></div>
-      </div>
-      <div data-pane="gif" hidden>
-        <div class="search-row">
-          <input name="gifq" type="search" placeholder="bruh, facepalm, applaudir…" autocomplete="off">
-          <button type="button" class="primary" data-action="search-gif">Chercher</button>
-        </div>
-        <div class="clip-gifs" role="listbox" aria-label="GIF trouvés"></div>
-      </div>
-      <div data-pane="history" hidden>
-        <p class="label">Envoyés</p>
-        <div class="clip-gifs clip-history" data-list="sent"></div>
-        <p class="label">Reçus</p>
-        <div class="clip-gifs clip-history" data-list="received"></div>
-        <small class="hint">Les 20 derniers de chaque côté. Un clic le remet ici : tu peux le revoir (👁 Aperçu), l'écouter ou le renvoyer.</small>
-      </div>
-      <div class="clip-frame">
-        <button type="button" class="clip-drop" data-action="pick">
-          <span class="clip-empty"><span class="emo" aria-hidden="true">🖼️</span><b>Choisir une image, un GIF ou une vidéo</b><small>PNG, JPG, GIF, WebP, MP4 ou WebM · 14 Mo au plus</small></span>
-          <img class="clip-preview" alt="" hidden>
-          <video class="clip-preview" muted loop playsinline hidden></video>
-        </button>
-        <div class="meme-text" aria-hidden="true"></div>
-      </div>
-      <label class="set-field clip-needs-media">Texte en gros sur l'extrait <small>(facultatif)</small>
-        <input name="title" maxlength="60" autocomplete="off" placeholder="Ex. : QUAND KEVIN RATE SON TIR">
-      </label>
-      <div class="set-field clip-trim" data-for-video hidden>
-        <span>Passage à montrer <span class="value" data-trim-label></span></span>
-        <div class="clip-range">
-          <div class="clip-range-sel"></div>
-          <input name="start" type="range" min="0" max="30" step="0.1" value="0" aria-label="Début du passage">
-          <input name="end" type="range" min="0" max="30" step="0.1" value="30" aria-label="Fin du passage">
-        </div>
-        <small class="hint">Glisse les deux poignées (30 secondes au plus). ← → pour affiner après un clic.</small>
-      </div>
-      <label class="set-field clip-needs-media" data-for-image>Son avec l'image
-        <select name="sound"></select>
-      </label>
-      <div class="set-field clip-listen" data-for-sound hidden>
-        <span>Son de la vidéo <span class="value" data-for="cvol">100 %</span></span>
-        <div class="search-row">
-          <input name="cvol" type="range" list="tick-100" min="0" max="2" step="0.05" value="1" data-for-video aria-label="Volume du son de la vidéo">
-          <button type="button" data-action="listen">▶ Écouter</button>
-        </div>
-        <small class="hint">Tu l'entends dans ton casque, comme ton pote l'entendra : même passage, et niveau égalisé comme tes sons.</small>
-      </div>
-      <label class="set-field">Envoyer à
-        <select name="to"></select>
-      </label>
-      <p class="hint">L'extrait s'affiche dans un coin de son écran, 30 secondes au plus, sans le sortir de son jeu. Envoyé à un seul pote, le son passe aussi dans Discord par son micro (à tout le salon, chacun l'entend chez soi). Ton pote peut le refuser ou le fermer, et choisit dans ses réglages s'il veut être prévenu avant.</p>
-      <div class="actions">
-        <button type="button" data-action="close">Fermer</button>
-        <div class="spacer"></div>
-        <button type="button" data-action="preview" disabled title="Le voir dans le coin de ton écran, comme ton pote">👁 Aperçu</button>
-        <button type="button" class="primary" data-action="send" disabled>Envoyer</button>
       </div>
     </form>
   </dialog>

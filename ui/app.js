@@ -7,6 +7,7 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 let state = null; // { config, devices, warnings, vb_cable_url }
+let sendOpen = false; // onglet « Envoyer » affiché à la place des sons
 
 // Les erreurs de l'interface vont dans le journal (« Copier le rapport »).
 const logUi = (msg) => invoke("log_ui", { message: String(msg) }).catch(() => {});
@@ -290,7 +291,7 @@ function renderTabs() {
   const tab = (label, value, iconName) => {
     const b = document.createElement("button");
     b.type = "button";
-    b.className = "tab" + (currentTab === value ? " active" : "");
+    b.className = "tab" + (currentTab === value && !sendOpen ? " active" : "");
     if (iconName) b.append(svgIcon(iconName));
     b.append(label);
     // Un son glissé sur l'onglet y est rangé.
@@ -301,6 +302,7 @@ function renderTabs() {
     }
     b.addEventListener("click", () => {
       if (reorder.justDropped) return;
+      closeSendView();
       currentTab = value;
       try {
         if (value) localStorage.setItem(TAB_KEY, value);
@@ -2639,7 +2641,11 @@ $("#btn-stop").addEventListener("click", () => call("stop_all"));
 $("#btn-settings").addEventListener("click", openSettings);
 $("#cable-status").addEventListener("click", () => (state.devices.vb_cable ? openDiagnostics() : openWizard()));
 $("#btn-stats").addEventListener("click", openStats);
-$("#search").addEventListener("input", renderGrid);
+$("#search").addEventListener("input", () => {
+  // Chercher un son ramène aux sons.
+  if (sendOpen) { closeSendView(); renderTabs(); }
+  renderGrid();
+});
 $("#search").addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (!e.target.value) return e.target.blur();
@@ -2668,6 +2674,14 @@ document.addEventListener("keydown", (e) => {
   if (e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey || e.key.length !== 1 || e.key === " ") return;
   if (document.querySelector("dialog[open]")) return;
   if (e.target.closest?.("input, textarea, select, [contenteditable]")) return;
+  // Onglet « Envoyer » : on tape dans sa recherche à lui.
+  if (sendOpen) {
+    if (sendStep !== "pick") return;
+    e.preventDefault();
+    formClip.q.focus();
+    formClip.q.value += e.key;
+    return formClip.q.dispatchEvent(new Event("input"));
+  }
   const search = $("#search");
   e.preventDefault();
   search.focus();
@@ -2796,7 +2810,14 @@ listen("youtube-status", ({ payload }) => toast(payload));
 document.addEventListener("paste", (e) => {
   if (e.target.closest?.("input, textarea") || document.querySelector("dialog[open]")) return;
   const text = e.clipboardData?.getData("text")?.trim() ?? "";
-  if (LINK_RE.test(text)) {
+  if (LINK_RE.test(text) && sendOpen) {
+    // Onglet « Envoyer » : le lien devient un extrait, pas un son.
+    e.preventDefault();
+    setSendStep("pick");
+    formClip.q.value = text;
+    formClip.q.dispatchEvent(new Event("input"));
+    fetchClipLink(text);
+  } else if (LINK_RE.test(text)) {
     e.preventDefault();
     addFromLink(text);
   }
@@ -3447,6 +3468,7 @@ listen("room", ({ payload }) => {
   renderRoom();
   if (!roomMenu.hidden) setRoomMenu(true);
   if (dlgSettings.open) renderBlockList();
+  if (sendOpen) fillSendTargets();
 });
 listen("room-played", ({ payload: [who, title] }) => toast(`${who} a joué « ${title} » chez toi`));
 listen("room-sent", ({ payload }) => {
@@ -3456,19 +3478,25 @@ listen("room-sent", ({ payload }) => {
 listen("room-error", ({ payload }) => toast(String(payload), true));
 listen("clip-received", ({ payload: [who, title] }) => toast(`🎬 ${who} t'envoie un extrait${title ? ` : « ${title} »` : ""}`));
 
-// ---------- 2.0 : extrait sur l'écran d'un pote ----------
+// ---------- Onglet « Envoyer » : extrait sur l'écran d'un pote ----------
+// 1. Choisir (une recherche pour les GIF et les vidéos, un lien, un fichier,
+// l'historique), 2. ajuster (texte, passage, son), 3. envoyer : la barre du
+// bas reste visible, avec l'état de l'envoi.
 
 const dlgClip = $("#dlg-clip");
 const formClip = $("form", dlgClip);
 const clipImg = $("img.clip-preview", dlgClip);
 const clipVideo = $("video.clip-preview", dlgClip);
-const clipGifs = $(".clip-gifs", dlgClip);
+const clipGifs = $(".clip-gif-strip", dlgClip);
+const clipVideos = $(".clip-videos", dlgClip);
+const searchBtn = $('[data-action="search"]', dlgClip);
+const sendBtn = $('[data-action="send"]', dlgClip);
+const sendStatus = $(".send-status", dlgClip);
 let clipMedia = null;
-let clipSource = "file";
-try { clipSource = localStorage.getItem("soundboard.clipSource") || "file"; } catch {}
+let sendStep = "pick";
+let clipSource = "search";
 
 function clipUi() {
-  $(".clip-empty", dlgClip).hidden = !!clipMedia;
   clipImg.hidden = clipMedia?.kind !== "image";
   clipVideo.hidden = clipMedia?.kind !== "video";
   // Une vidéo garde son propre son.
@@ -3481,26 +3509,49 @@ function clipUi() {
     Object.assign(document.createElement("span"), { className: "value", textContent: clipMedia?.kind === "video" ? `${Math.round(Number(formClip.cvol.value) * 100)} %` : "" }),
   );
   dlgClip.classList.toggle("no-media", !clipMedia);
-  $('[data-action="send"]', dlgClip).disabled = !clipMedia;
-  $('[data-action="send"]', dlgClip).title = clipMedia ? "" : "Choisis d'abord une image, une vidéo ou un GIF";
+  if (!sendBtn.classList.contains("busy")) sendBtn.disabled = !clipMedia;
+  sendBtn.title = clipMedia ? "" : "Choisis d'abord un GIF, une image ou une vidéo";
   $('[data-action="preview"]', dlgClip).disabled = !clipMedia;
   $(".meme-text", dlgClip).textContent = clipMedia ? formClip.title.value.trim() : "";
+  // Étapes : celle en cours, celles déjà faites.
+  const done = { pick: !!clipMedia, adjust: !!clipMedia && sendStep === "adjust", send: false };
+  dlgClip.querySelectorAll(".send-steps li").forEach((li) => {
+    const k = li.dataset.goto;
+    li.classList.toggle("on", k === sendStep || (k === "send" && !!clipMedia && sendStep === "adjust"));
+    li.classList.toggle("done", done[k] && k !== sendStep);
+    $("button", li).disabled = k === "adjust" && !clipMedia;
+  });
 }
+function setSendStep(step) {
+  if (step === "send") step = clipMedia ? "adjust" : "pick";
+  if (step === "adjust" && !clipMedia) step = "pick";
+  sendStep = step;
+  dlgClip.querySelectorAll(".send-step").forEach((el) => (el.hidden = el.dataset.step !== step));
+  if (step === "pick") {
+    stopClipListen();
+    clipVideo.pause();
+  } else if (clipMedia?.kind === "video") {
+    clipVideo.play().catch(() => {});
+  }
+  clipUi();
+}
+dlgClip.querySelectorAll(".send-steps li").forEach((li) =>
+  $("button", li).addEventListener("click", () => {
+    setSendStep(li.dataset.goto);
+    if (li.dataset.goto === "send") formClip.to.focus();
+  }),
+);
+$('[data-action="back"]', dlgClip).addEventListener("click", () => {
+  setSendStep("pick");
+  formClip.q.focus();
+});
 function setClipSource(source) {
   clipSource = source;
-  try { localStorage.setItem("soundboard.clipSource", source); } catch {}
-  dlgClip.classList.toggle("src-file", source === "file");
-  dlgClip.querySelectorAll("#clip-source button").forEach((b) => b.classList.toggle("active", b.dataset.source === source));
+  dlgClip.querySelectorAll("#clip-source [data-source]").forEach((b) => b.classList.toggle("active", b.dataset.source === source));
   dlgClip.querySelectorAll("[data-pane]").forEach((p) => (p.hidden = p.dataset.pane !== source));
-  clipUi();
-  if (source === "link") formClip.link.focus();
   if (source === "history") renderClipHistory();
-  if (source === "gif") {
-    if (!state.config.settings.giphy_key) toast("Ajoute ta clé GIPHY gratuite dans les réglages (⚙ → Général) pour chercher des GIF", true);
-    formClip.gifq.focus();
-  }
 }
-dlgClip.querySelectorAll("#clip-source button").forEach((b) => b.addEventListener("click", () => setClipSource(b.dataset.source)));
+dlgClip.querySelectorAll("#clip-source [data-source]").forEach((b) => b.addEventListener("click", () => setClipSource(b.dataset.source)));
 
 function showClipMedia(picked, startS = 0) {
   stopClipListen();
@@ -3510,32 +3561,67 @@ function showClipMedia(picked, startS = 0) {
     clipImg.removeAttribute("src");
     clipVideo.src = src;
     clipVideo.currentTime = startS;
-    clipVideo.play().catch(() => {});
   } else {
     clipVideo.removeAttribute("src");
     clipImg.src = src;
   }
   clipTrimFrom = startS;
   formClip.start.value = String(startS);
-  clipUi();
-  // L'aperçu peut être sous la liste : on le montre.
-  requestAnimationFrame(() => $(".clip-frame", dlgClip).scrollIntoView({ behavior: "smooth", block: "nearest" }));
+  setSendStatus("");
+  setSendStep("adjust");
+  window.scrollTo({ top: 0 });
 }
-function openClipDialog(to) {
-  if (!state.config.settings.room_code) return toast("Rejoins d'abord un salon avec tes potes : Réglages → Potes", true);
-  const sounds = [...state.config.sounds].sort((a, b) => a.name.localeCompare(b.name, "fr"));
-  formClip.sound.replaceChildren(new Option("Pas de son", ""), ...sounds.map((s) => new Option(`${s.emoji ? s.emoji + " " : ""}${s.name}`, s.id)));
+function fillSendTargets(to) {
+  const keep = to ?? formClip.to.value ?? room.target ?? "";
   formClip.to.replaceChildren(
     new Option(`Tout le salon (${room.members.length} en ligne)`, ""),
     new Option("Tout le salon et moi (pour vérifier que ça marche)", "*moi"),
     ...room.members.map((m) => new Option(m.name, m.id)),
   );
-  formClip.to.value = to ?? room.target ?? "";
-  setClipSource(clipSource);
-  clipUi();
-  dlgClip.showModal();
-  renderClipRecents();
+  formClip.to.value = [...formClip.to.options].some((o) => o.value === keep) ? keep : "";
 }
+function fillSendSounds() {
+  const keep = formClip.sound.value;
+  const sounds = [...state.config.sounds].sort((a, b) => a.name.localeCompare(b.name, "fr"));
+  formClip.sound.replaceChildren(new Option("Pas de son", ""), ...sounds.map((s) => new Option(`${s.emoji ? s.emoji + " " : ""}${s.name}`, s.id)));
+  formClip.sound.value = keep;
+}
+function sendRoomUi() {
+  const noRoom = !state.config.settings.room_code;
+  $(".send-noroom", dlgClip).hidden = !noRoom;
+  dlgClip.classList.toggle("no-room", noRoom);
+}
+// Ouvre l'onglet « Envoyer » (à la place des sons).
+function openClipDialog(to) {
+  const first = !sendOpen;
+  sendOpen = true;
+  document.body.classList.add("send-mode");
+  $("#tab-send").classList.add("active");
+  dlgClip.hidden = false;
+  renderTabs();
+  sendRoomUi();
+  fillSendSounds();
+  fillSendTargets(to ?? (first ? room.target ?? "" : undefined));
+  setClipSource(clipSource);
+  setSendStep(sendStep);
+  window.scrollTo({ top: 0 });
+  renderClipRecents();
+  if (sendStep === "pick" && state.config.settings.room_code) formClip.q.focus();
+}
+// Retour aux sons : on garde l'extrait en cours pour y revenir.
+function closeSendView() {
+  if (!sendOpen) return;
+  sendOpen = false;
+  stopClipListen();
+  clipVideo.pause();
+  document.body.classList.remove("send-mode");
+  $("#tab-send").classList.remove("active");
+  dlgClip.hidden = true;
+}
+$("#tab-send").addEventListener("click", () => openClipDialog());
+$('[data-action="room-settings"]', dlgClip).addEventListener("click", () => openSettings().then(() => showSettingsTab("friends")));
+formClip.addEventListener("submit", (e) => e.preventDefault());
+
 const tileObserver = new IntersectionObserver((entries) => {
   for (const e of entries) {
     if (!e.isIntersecting) continue;
@@ -3567,35 +3653,35 @@ function clipTile(r, caption) {
     img.alt = "";
     b.append(img);
   }
-  if (caption) {
+  if (caption || r.title) {
     const name = document.createElement("span");
     name.className = "name";
-    name.textContent = caption;
+    name.textContent = caption || r.title;
     b.append(name);
   }
   b.addEventListener("click", () => {
     clipTrimEnd = r.kind === "video" ? r.end_s ?? null : null;
-    showClipMedia({ path: r.path, kind: r.kind }, r.start_s || 0);
     formClip.title.value = r.title || "";
     formClip.cvol.value = String(r.volume ?? 1);
     if (r.kind === "image") formClip.sound.value = r.sound_id || "";
-    clipUi();
+    showClipMedia({ path: r.path, kind: r.kind }, r.start_s || 0);
   });
   return b;
 }
 const fmtWhen = (at) => (at ? new Date(at * 1000).toLocaleString("fr-FR", { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "");
-// Les 5 derniers extraits envoyés, en haut de la fenêtre.
+// Les derniers extraits envoyés, en vignettes en haut : un clic pour renvoyer.
 async function renderClipRecents() {
-  const recents = (await invoke("clip_recents").catch(() => [])).slice(0, 5);
+  const recents = (await invoke("clip_recents").catch(() => [])).slice(0, 8);
   const box = $(".clip-recents", dlgClip);
   box.hidden = !recents.length;
   $(".clip-recents-list", dlgClip).replaceChildren(...recents.map((r) => clipTile(r)));
 }
-// Onglet « Historique » : les 20 derniers envoyés et reçus.
+// « Historique » : les 20 derniers envoyés et reçus.
 async function renderClipHistory() {
   const h = await invoke("clip_history").catch(() => ({ sent: [], received: [] }));
   for (const [key, list] of Object.entries(h)) {
     const box = $(`[data-list="${key}"]`, dlgClip);
+    if (!box) continue;
     if (!list.length) {
       const note = document.createElement("p");
       note.className = "hint";
@@ -3622,7 +3708,10 @@ $('[data-action="preview"]', dlgClip).addEventListener("click", () => {
 $("#btn-clip").addEventListener("click", () => openClipDialog());
 $('[data-action="pick"]', dlgClip).addEventListener("click", async () => {
   const picked = await call("pick_clip_media");
-  if (picked) showClipMedia(picked);
+  if (picked) {
+    formClip.title.value = "";
+    showClipMedia(picked);
+  }
 });
 // Lien YouTube : « ?t=42 » ou « &t=1m30s » donne le début.
 function linkStart(url) {
@@ -3634,47 +3723,66 @@ function linkStart(url) {
     return 0;
   }
 }
-const clipVideos = $(".clip-videos", dlgClip);
-const fetchLinkBtn = $('[data-action="fetch-link"]', dlgClip);
 const isLink = (v) => /^https?:\/\/\S+$/i.test(v.trim());
-formClip.link.addEventListener("input", () => {
-  fetchLinkBtn.textContent = isLink(formClip.link.value) ? "Récupérer" : "Chercher";
+formClip.q.addEventListener("input", () => {
+  searchBtn.textContent = isLink(formClip.q.value) ? "Récupérer" : "Chercher";
 });
-// Avancement du téléchargement, sur la vignette ou le bouton.
+// Une seule récupération à la fois (yt-dlp).
+let clipFetching = false;
 let clipFetchTile = null;
 listen("clip-progress", ({ payload }) => {
   const text = `Récupération… ${payload} %`;
   if (clipFetchTile) clipFetchTile.dataset.progress = text;
-  else if (fetchLinkBtn.disabled) fetchLinkBtn.textContent = text;
+  else if (clipFetching) searchBtn.textContent = text;
 });
 async function fetchClipLink(url, tile) {
+  if (clipFetching) return toast("Une vidéo est déjà en cours de récupération, patiente un instant", true);
+  clipFetching = true;
   clipFetchTile = tile || null;
-  fetchLinkBtn.disabled = true;
-  const label = fetchLinkBtn.textContent;
   if (tile) { tile.dataset.progress = "Récupération…"; tile.classList.add("loading"); }
-  else fetchLinkBtn.textContent = "Récupération…";
+  else { searchBtn.disabled = true; searchBtn.textContent = "Récupération…"; }
   try {
     const picked = await invoke("clip_from_link", { url });
-    showClipMedia(picked, linkStart(url));
-    if (!formClip.title.value.trim() && picked.title) formClip.title.placeholder = picked.title;
+    formClip.title.value = "";
+    formClip.title.placeholder = picked.title || "Ex. : QUAND KEVIN RATE SON TIR";
+    if (sendOpen) showClipMedia(picked, linkStart(url));
   } catch (err) {
     toast(String(err), true);
   } finally {
-    fetchLinkBtn.disabled = false;
-    fetchLinkBtn.textContent = label;
-    tile?.classList.remove("loading");
+    clipFetching = false;
+    searchBtn.disabled = false;
+    searchBtn.textContent = isLink(formClip.q.value) ? "Récupérer" : "Chercher";
+    tile?.classList.remove("loading", "on");
     if (tile) delete tile.dataset.progress;
     clipFetchTile = null;
   }
 }
-// Mots-clés : on cherche sur YouTube et on montre les miniatures ;
-// un clic récupère la vidéo comme un lien collé. La dernière recherche est
-// gardée (même après redémarrage) pour ne pas avoir à la retaper.
+
+// Une recherche pour tout : les GIF (GIPHY, rapides) arrivent d'abord, les
+// vidéos YouTube ensuite. La dernière recherche est gardée, même après
+// redémarrage, pour ne pas avoir à la retaper.
 const LONG_VIDEO_S = 10 * 60;
 const VSEARCH_KEY = "soundboard.clipSearch";
-let vSearch = { q: "", results: [] };
+let vSearch = { q: "", results: [], gifs: [] };
+let searchSeq = 0;
 function saveVSearch() {
   try { localStorage.setItem(VSEARCH_KEY, JSON.stringify(vSearch)); } catch {}
+}
+function resultBox(kind) {
+  return $(`.send-results[data-res="${kind}"]`, dlgClip);
+}
+function resultNote(kind, text, action) {
+  const note = $("[data-note]", resultBox(kind));
+  note.replaceChildren(text);
+  if (action) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "link-btn";
+    b.textContent = action.label;
+    b.addEventListener("click", action.run);
+    note.append(" ", b);
+  }
+  note.hidden = !text;
 }
 function videoTile(r) {
   const b = document.createElement("button");
@@ -3697,115 +3805,135 @@ function videoTile(r) {
     b.append(tag);
   }
   b.addEventListener("click", () => {
-    if (fetchLinkBtn.disabled) return;
+    if (clipFetching) return toast("Une vidéo est déjà en cours de récupération, patiente un instant", true);
     clipVideos.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
     fetchClipLink(r.url, b);
   });
   return b;
 }
-function renderVideos() {
-  if (!vSearch.results.length) {
-    if (!vSearch.q) return clipVideos.replaceChildren();
-    const note = document.createElement("p");
-    note.className = "hint";
-    note.textContent = "Aucune vidéo trouvée.";
-    return clipVideos.replaceChildren(note);
-  }
+function gifTile(r) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.setAttribute("role", "option");
+  b.title = r.title || "GIF";
+  const img = document.createElement("img");
+  img.src = r.anim;
+  img.alt = r.title || "GIF";
+  img.loading = "lazy";
+  b.append(img);
+  b.addEventListener("click", async () => {
+    if (b.classList.contains("loading")) return;
+    b.dataset.progress = "Récupération…";
+    b.classList.add("loading");
+    try {
+      const picked = await invoke("clip_from_gif", { url: r.big || r.anim });
+      formClip.title.value = "";
+      formClip.title.placeholder = "Ex. : QUAND KEVIN RATE SON TIR";
+      if (sendOpen) showClipMedia(picked);
+    } catch (err) {
+      toast(String(err), true);
+    }
+    b.classList.remove("loading");
+    delete b.dataset.progress;
+  });
+  return b;
+}
+function renderGifs(loading = false) {
+  const box = resultBox("gif");
+  box.hidden = !vSearch.q;
+  $("[data-count]", box).textContent = vSearch.gifs.length ? `· ${vSearch.gifs.length}` : "";
+  clipGifs.replaceChildren(...vSearch.gifs.map(gifTile));
+  if (!state.config.settings.giphy_key) {
+    resultNote("gif", "Pour chercher des GIF, ajoute ta clé GIPHY gratuite.", {
+      label: "Ajouter la clé",
+      run: () => openSettings().then(() => showSettingsTab("general")),
+    });
+  } else resultNote("gif", loading ? "Recherche des GIF…" : vSearch.gifs.length ? "" : "Aucun GIF trouvé.");
+}
+function renderVideos(loading = false) {
+  const box = resultBox("video");
+  box.hidden = !vSearch.q;
+  $("[data-count]", box).textContent = vSearch.results.length ? `· ${vSearch.results.length}` : "";
   const tiles = vSearch.results.map(videoTile);
   // YouTube ne renvoie que 12 vidéos à la fois : on peut en demander d'autres.
-  if (vSearch.results.length % 12 === 0 && vSearch.results.length < 96) {
+  if (!loading && vSearch.results.length % 12 === 0 && vSearch.results.length && vSearch.results.length < 96) {
     const more = document.createElement("button");
     more.type = "button";
     more.className = "more";
-    more.textContent = "Plus de résultats";
-    more.addEventListener("click", () => searchClipVideos(vSearch.q, true, more));
+    more.textContent = "Plus de vidéos";
+    more.addEventListener("click", () => searchVideos(vSearch.q, true, more));
     tiles.push(more);
   }
   clipVideos.replaceChildren(...tiles);
+  resultNote("video", loading && !vSearch.results.length ? "Recherche des vidéos… (quelques secondes)" : !loading && !vSearch.results.length ? "Aucune vidéo trouvée." : "");
 }
-async function searchClipVideos(q, more = false, moreBtn = null) {
-  fetchLinkBtn.disabled = true;
+function renderSearchHint() {
+  $('[data-hint="start"]', dlgClip).hidden = !!vSearch.q;
+}
+async function searchGifs(q, seq) {
+  if (!state.config.settings.giphy_key) return renderGifs();
+  renderGifs(true);
+  let found = [];
+  try {
+    found = await invoke("search_images", { query: q });
+  } catch (err) {
+    if (seq === searchSeq) resultNote("gif", String(err));
+    return;
+  }
+  if (seq !== searchSeq) return;
+  vSearch.gifs = found.slice(0, 40);
+  saveVSearch();
+  renderGifs();
+}
+async function searchVideos(q, more = false, moreBtn = null, seq = searchSeq) {
   if (moreBtn) { moreBtn.disabled = true; moreBtn.textContent = "Recherche…"; }
-  else fetchLinkBtn.textContent = "Recherche…";
-  if (!more) { vSearch = { q, results: [] }; clipVideos.replaceChildren(); }
+  else renderVideos(true);
   try {
     const found = await invoke("clip_search_videos", { query: q, start: vSearch.results.length + 1 });
+    if (seq !== searchSeq) return;
     const seen = new Set(vSearch.results.map((r) => r.url));
     vSearch.results.push(...found.filter((r) => !seen.has(r.url)));
     saveVSearch();
   } catch (err) {
-    toast(String(err), true);
+    if (seq !== searchSeq) return;
+    renderVideos();
+    return resultNote("video", String(err));
   }
-  fetchLinkBtn.disabled = false;
-  fetchLinkBtn.textContent = "Chercher";
   const scroll = clipVideos.scrollTop;
   renderVideos();
   clipVideos.scrollTop = scroll;
 }
+async function runSendSearch() {
+  const v = formClip.q.value.trim();
+  if (!v) return formClip.q.focus();
+  if (isLink(v)) return fetchClipLink(v);
+  setClipSource("search");
+  const seq = ++searchSeq;
+  vSearch = { q: v, results: [], gifs: [] };
+  renderSearchHint();
+  searchBtn.disabled = true;
+  searchBtn.textContent = "Recherche…";
+  await Promise.all([searchGifs(v, seq), searchVideos(v, false, null, seq)]);
+  if (seq !== searchSeq) return;
+  searchBtn.disabled = false;
+  searchBtn.textContent = "Chercher";
+}
 try {
   const saved = JSON.parse(localStorage.getItem(VSEARCH_KEY) || "null");
   if (saved?.q && Array.isArray(saved.results)) {
-    vSearch = saved;
-    formClip.link.value = saved.q;
-    renderVideos();
+    vSearch = { q: saved.q, results: saved.results, gifs: Array.isArray(saved.gifs) ? saved.gifs : [] };
+    formClip.q.value = saved.q;
   }
 } catch {}
-fetchLinkBtn.addEventListener("click", () => {
-  const v = formClip.link.value.trim();
-  if (!v) return formClip.link.focus();
-  if (isLink(v)) fetchClipLink(v);
-  else searchClipVideos(v);
-});
-$('[data-action="search-gif"]', dlgClip).addEventListener("click", async (e) => {
-  const btn = e.currentTarget;
-  const q = formClip.gifq.value.trim();
-  if (!q) return formClip.gifq.focus();
-  btn.disabled = true;
-  clipGifs.replaceChildren();
-  let results = [];
-  try {
-    results = await invoke("search_images", { query: q });
-  } catch (err) {
-    toast(String(err), true);
-  }
-  btn.disabled = false;
-  if (!results.length) {
-    const note = document.createElement("p");
-    note.className = "hint";
-    note.textContent = "Aucun GIF trouvé.";
-    return clipGifs.replaceChildren(note);
-  }
-  clipGifs.replaceChildren(...results.map((r) => {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.setAttribute("role", "option");
-    b.title = r.title || "GIF";
-    const img = document.createElement("img");
-    img.src = r.anim;
-    img.alt = r.title || "GIF";
-    img.loading = "lazy";
-    b.append(img);
-    b.addEventListener("click", async () => {
-      clipGifs.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
-      b.dataset.progress = "Récupération…"; b.classList.add("loading");
-      try {
-        showClipMedia(await invoke("clip_from_gif", { url: r.big || r.anim }));
-      } catch (err) {
-        toast(String(err), true);
-      }
-      b.classList.remove("loading");
-    });
-    return b;
-  }));
-});
-// Entrée dans un champ : lance l'action au lieu de fermer la fenêtre.
+renderSearchHint();
+if (vSearch.q) { renderGifs(); renderVideos(); }
+searchBtn.addEventListener("click", runSendSearch);
+// Entrée dans un champ : lance l'action.
 formClip.addEventListener("keydown", (e) => {
   if (e.key !== "Enter" || e.target.tagName !== "INPUT") return;
   e.preventDefault();
-  if (e.target.name === "link") $('[data-action="fetch-link"]', dlgClip).click();
-  else if (e.target.name === "gifq") $('[data-action="search-gif"]', dlgClip).click();
-  // Entrée après le texte : envoie (avant, il ne se passait rien).
-  else if (e.target.name === "title" && clipMedia) $('[data-action="send"]', dlgClip).click();
+  if (e.target.name === "q") runSendSearch();
+  else if (e.target.name === "title" && clipMedia) sendBtn.click();
 });
 formClip.title.addEventListener("input", clipUi);
 formClip.sound.addEventListener("change", () => { stopClipListen(); clipUi(); });
@@ -3924,13 +4052,24 @@ clipVideo.addEventListener("timeupdate", () => {
   const a = Number(formClip.start.value), b = Number(formClip.end.value);
   if (clipVideo.currentTime >= b || clipVideo.currentTime < a - 0.3) clipVideo.currentTime = a;
 });
-$('[data-action="send"]', dlgClip).addEventListener("click", async (e) => {
-  const btn = e.currentTarget;
-  if (!clipMedia) return;
-  if (!room.members.length && formClip.to.value !== "*moi") return toast("Aucun pote en ligne dans le salon pour l'instant : choisis « Tout le salon et moi » pour tester seul", true);
-  btn.disabled = true;
-  btn.textContent = "Envoi… (jusqu'à 1 min)";
+// État de l'envoi, à côté du bouton (il reste affiché jusqu'au prochain).
+function setSendStatus(text, kind = "") {
+  sendStatus.textContent = text;
+  sendStatus.className = "send-status" + (kind ? ` ${kind}` : "");
+}
+sendBtn.addEventListener("click", async () => {
+  if (!clipMedia || sendBtn.classList.contains("busy")) return;
+  if (!state.config.settings.room_code) return toast("Rejoins d'abord un salon avec tes potes : Réglages → Potes", true);
+  if (!room.members.length && formClip.to.value !== "*moi") {
+    setSendStatus("Aucun pote en ligne : choisis « Tout le salon et moi » pour tester seul", "err");
+    return formClip.to.focus();
+  }
   const to = formClip.to.value || null;
+  const who = to === "*moi" ? "au salon et à toi" : (room.members.find((m) => m.id === to)?.name ? `à ${room.members.find((m) => m.id === to).name}` : "au salon");
+  sendBtn.classList.add("busy");
+  sendBtn.disabled = true;
+  sendBtn.textContent = "Envoi…";
+  setSendStatus(`Envoi ${who}… (jusqu'à 1 min pour une vidéo)`, "busy");
   try {
     await invoke("send_clip", {
       media: clipMedia.path,
@@ -3941,30 +4080,18 @@ $('[data-action="send"]', dlgClip).addEventListener("click", async (e) => {
       endS: clipMedia.kind === "video" ? Number(formClip.end.value) || null : null,
       volume: clipMedia.kind === "video" ? Number(formClip.cvol.value) : null,
     });
+    const at = new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+    setSendStatus(`✓ Envoyé ${who} à ${at}`, "ok");
+    if (!sendOpen) toast(`🎬 Extrait envoyé ${who}`);
+    renderClipRecents();
   } catch (err) {
-    return toast(String(err), true);
+    setSendStatus(`✗ ${err}`, "err");
+    if (!sendOpen) toast(String(err), true);
   } finally {
-    btn.textContent = "Envoyer";
-    btn.disabled = !clipMedia;
+    sendBtn.classList.remove("busy");
+    sendBtn.textContent = "Envoyer";
+    clipUi();
   }
-  const who = room.members.find((m) => m.id === to)?.name;
-  toast(to === "*moi" ? "🎬 Extrait envoyé : il va aussi s'afficher chez toi dans quelques secondes" : `🎬 Extrait envoyé ${who ? `à ${who}` : "au salon"}`);
-  dlgClip.close();
-});
-$('[data-action="close"]', dlgClip).addEventListener("click", () => dlgClip.close());
-dlgClip.addEventListener("close", () => {
-  stopClipListen();
-  formClip.cvol.value = "1";
-  clipVideo.pause();
-  clipVideo.removeAttribute("src");
-  clipImg.removeAttribute("src");
-  clipMedia = null;
-  formClip.title.value = "";
-  formClip.title.placeholder = "Ex. : QUAND KEVIN RATE SON TIR";
-  clipTrimFrom = 0;
-  for (const r of [formClip.start, formClip.end]) r.max = "15";
-  formClip.start.value = "0";
-  formClip.end.value = "15";
 });
 invoke("room_status").then((r) => {
   room = r;
