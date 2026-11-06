@@ -3889,7 +3889,7 @@ function renderGifs(loading = false) {
   box.hidden = !vSearch.q;
   $("[data-count]", box).textContent = vSearch.gifs.length ? `· ${vSearch.gifs.length}` : "";
   clipGifs.replaceChildren(...vSearch.gifs.map(gifTile));
-  if (!state.config.settings.giphy_key) {
+  if (!state?.config?.settings?.giphy_key) {
     resultNote("gif", "Pour chercher des GIF, ajoute ta clé GIPHY gratuite.", {
       label: "Ajouter la clé",
       run: () => openSettings().then(() => showSettingsTab("general")),
@@ -3972,8 +3972,14 @@ try {
     formClip.q.value = saved.q;
   }
 } catch {}
-renderSearchHint();
-if (vSearch.q) { renderGifs(); renderVideos(); }
+// Au lancement, l'état de l'appli n'est pas encore chargé : une erreur ici
+// arrêtait tout le reste du script (recherche, envoi, retour aux sons).
+try {
+  renderSearchHint();
+  if (vSearch.q) { renderGifs(); renderVideos(); }
+} catch (err) {
+  console.error(err);
+}
 searchBtn.addEventListener("click", runSendSearch);
 // Entrée dans un champ : lance l'action.
 formClip.addEventListener("keydown", (e) => {

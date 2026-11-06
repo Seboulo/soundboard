@@ -1,6 +1,9 @@
 Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
 Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
+Nouveautés de la 2.4.1 :
+- Correctif : l'onglet « 🎬 Envoyer » restait bloqué (recherche et envoi sans effet, impossible de revenir aux sons) quand une recherche était gardée de la fois d'avant.
+
 Nouveautés de la 2.4 :
 - Nouvel onglet « 🎬 Envoyer » à la place de la fenêtre : choisir, régler, envoyer, en 3 étapes. L'état de l'envoi reste affiché à côté du bouton.
 - N'importe quelle vidéo, même longue : seul le passage voulu est récupéré (l'outil vidéo ffmpeg s'installe tout seul la première fois, environ 90 Mo).
