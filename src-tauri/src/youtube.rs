@@ -286,18 +286,49 @@ pub fn download_video(exe: &Path, url: &str, work_dir: &Path, on_progress: impl 
     if !is_web_link(url) {
         return Err("colle un lien qui commence par https://".into());
     }
-    let _ = fs::remove_dir_all(work_dir);
-    fs::create_dir_all(work_dir).map_err(|e| e.to_string())?;
+    // Récupération rapide (4 morceaux à la fois, avancement en %) ; si yt-dlp
+    // la refuse sur ce PC (« [Errno 22] Invalid argument » vu sous Windows),
+    // on refait la récupération simple d'avant, sans ces options.
+    let title = match run_video(exe, url, work_dir, true, &on_progress) {
+        Ok(t) => t,
+        Err(line) if line.contains("Unsupported URL") => return Err("ce site n'est pas pris en charge".into()),
+        Err(_) => run_video(exe, url, work_dir, false, &on_progress).map_err(|line| {
+            if line.contains("Unable to download") || line.contains("connect") {
+                return "vidéo injoignable, vérifie le lien et ta connexion".to_string();
+            }
+            if line.contains("Unsupported URL") {
+                return "ce site n'est pas pris en charge".to_string();
+            }
+            let short: String = line.chars().take(200).collect();
+            format!("vidéo : {short}")
+        })?,
+    };
+    let files: Vec<PathBuf> = fs::read_dir(work_dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| !p.to_string_lossy().ends_with(".part"))
+        .collect();
+    let ext_is = |p: &PathBuf, exts: &[&str]| p.extension().and_then(|e| e.to_str()).is_some_and(|e| exts.contains(&e));
+    let audio = files.iter().find(|p| ext_is(p, &["m4a", "mp3", "aac"])).cloned();
+    let video = files
+        .iter()
+        .find(|p| ext_is(p, &["mp4", "webm"]))
+        .cloned()
+        .ok_or("vidéo trop lourde (8 Mo au plus) : prends une vidéo plus courte")?;
+    Ok(WebVideo { video, audio, title: title.chars().take(60).collect() })
+}
+
+/// Lance yt-dlp pour `download_video` ; renvoie le titre, ou la dernière
+/// ligne d'erreur. `fast` : morceaux en parallèle et avancement en %.
+fn run_video(exe: &Path, url: &str, work_dir: &Path, fast: bool, on_progress: &impl Fn(f32)) -> Result<String, String> {
     use std::io::{BufRead, BufReader, Read};
     use std::process::Stdio;
-    let mut child = command(exe)
-        .args([
-            "--no-playlist",
-            "--no-warnings",
-            "--quiet",
-            "--no-simulate",
-            "--print",
-            "title",
+    let _ = fs::remove_dir_all(work_dir);
+    fs::create_dir_all(work_dir).map_err(|e| e.to_string())?;
+    let mut cmd = command(exe);
+    cmd.args(["--no-playlist", "--no-warnings", "--quiet", "--no-simulate", "--print", "title"]);
+    if fast {
+        cmd.args([
             // Avancement, une ligne par étape, sur la sortie standard.
             "--progress",
             "--newline",
@@ -306,15 +337,16 @@ pub fn download_video(exe: &Path, url: &str, work_dir: &Path, on_progress: impl 
             // Plusieurs morceaux à la fois : YouTube bride une connexion seule.
             "-N",
             "4",
-            "-f",
-            VIDEO_FORMATS,
-            "--max-filesize",
-            "8M",
-            "-o",
-        ])
+        ]);
+    }
+    let mut child = cmd
+        .args(["-f", VIDEO_FORMATS, "--max-filesize", "8M", "-o"])
         .arg(work_dir.join("video.%(format_id)s.%(ext)s"))
         .arg("--")
         .arg(url.trim())
+        // L'appli n'a pas de console : sans entrée explicite, yt-dlp hérite
+        // d'une entrée invalide.
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -341,29 +373,9 @@ pub fn download_video(exe: &Path, url: &str, work_dir: &Path, on_progress: impl 
     let err = err_reader.join().unwrap_or_default();
     if !status.success() {
         let line = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("erreur inconnue");
-        let line = line.trim().trim_start_matches("ERROR: ");
-        if line.contains("Unable to download") || line.contains("connect") {
-            return Err("vidéo injoignable, vérifie le lien et ta connexion".into());
-        }
-        if line.contains("Unsupported URL") {
-            return Err("ce site n'est pas pris en charge".into());
-        }
-        let short: String = line.chars().take(200).collect();
-        return Err(format!("vidéo : {short}"));
+        return Err(line.trim().trim_start_matches("ERROR: ").to_string());
     }
-    let files: Vec<PathBuf> = fs::read_dir(work_dir)
-        .map_err(|e| e.to_string())?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| !p.to_string_lossy().ends_with(".part"))
-        .collect();
-    let ext_is = |p: &PathBuf, exts: &[&str]| p.extension().and_then(|e| e.to_str()).is_some_and(|e| exts.contains(&e));
-    let audio = files.iter().find(|p| ext_is(p, &["m4a", "mp3", "aac"])).cloned();
-    let video = files
-        .iter()
-        .find(|p| ext_is(p, &["mp4", "webm"]))
-        .cloned()
-        .ok_or("vidéo trop lourde (8 Mo au plus) : prends une vidéo plus courte")?;
-    Ok(WebVideo { video, audio, title: title.chars().take(60).collect() })
+    Ok(title)
 }
 
 /// Une vidéo trouvée par mots-clés.
