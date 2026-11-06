@@ -675,18 +675,30 @@ pub async fn send_clip(
 }
 
 /// Télécharge la vidéo d'un extrait reçu par lien, rangée dans `dir` sous
-/// `<id>.<ext>` (et `<id>-son.<ext>` quand le son est à part).
-async fn fetch_link(app: &AppHandle, url: &str, dir: &Path, id: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+/// `<id>.<ext>` (et `<id>-son.<ext>` quand le son est à part). Si la vidéo
+/// entière est trop lourde ici (formats différents chez le pote) et que
+/// ffmpeg est déjà là, seul le passage est pris : le dernier élément dit
+/// alors où commence le fichier (ms) dans la vidéo d'origine.
+async fn fetch_link(app: &AppHandle, url: &str, dir: &Path, id: &str, start_ms: u64) -> Result<(PathBuf, Option<PathBuf>, u64), String> {
     if !youtube::is_shareable_link(url) {
         return Err("lien non accepté".into());
     }
     let state = app.state::<AppState>();
     let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
-    let exe = youtube::ensure(&data_dir.join("tools"), |_| {}).await?;
+    let tools = data_dir.join("tools");
+    let exe = youtube::ensure(&tools, |_| {}).await?;
     let work = data_dir.join(format!("extrait-recu-{id}"));
     let (url, dir, id) = (url.to_string(), dir.to_path_buf(), id.to_string());
     tauri::async_runtime::spawn_blocking(move || {
-        let res = youtube::download_video(&exe, &url, &work, None, |_| {}).and_then(|got| {
+        let mut offset = 0;
+        let mut res = youtube::download_video(&exe, &url, &work, None, |_| {});
+        if res.as_ref().err().is_some_and(|e| e == youtube::TOO_BIG) {
+            if let Some(ffmpeg) = youtube::ffmpeg_ready(&tools) {
+                offset = start_ms;
+                res = youtube::download_video(&exe, &url, &work, Some((start_ms as f64 / 1000.0, ffmpeg.as_path())), |_| {});
+            }
+        }
+        let res = res.and_then(|got| {
             let ext = |p: &Path| p.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_lowercase();
             let media = dir.join(format!("{id}.{}", ext(&got.video)));
             fs::copy(&got.video, &media).map_err(|e| e.to_string())?;
@@ -698,7 +710,7 @@ async fn fetch_link(app: &AppHandle, url: &str, dir: &Path, id: &str) -> Result<
                 }
                 None => None,
             };
-            Ok((media, sound))
+            Ok((media, sound, offset))
         });
         let _ = fs::remove_dir_all(&work);
         res
@@ -760,9 +772,9 @@ pub async fn receive(
                 };
                 Some((m, s))
             });
-            let (media, sound) = match have {
-                Some(f) => f,
-                None => match fetch_link(app, &l.url, &dir, &id).await {
+            let (media, sound, offset) = match have {
+                Some((m, s)) => (m, s, 0),
+                None => match fetch_link(app, &l.url, &dir, &id, l.start_ms).await {
                     Ok(f) => {
                         journal::write(&format!("Extrait de {name} : vidéo téléchargée par lien en {} s", got.elapsed().as_secs()));
                         f
@@ -773,7 +785,8 @@ pub async fn receive(
                     }
                 },
             };
-            ("video", media, sound, l.start_ms, l.end_ms, l.volume)
+            // Passage seul : il commence au début du fichier.
+            ("video", media, sound, l.start_ms - offset, l.end_ms.map(|e| e.saturating_sub(offset)), l.volume)
         }
         (None, Some(url)) => {
             let data = match room::fetch(&url).await {

@@ -1,6 +1,18 @@
 Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
 Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
+Nouveautés de la 2.4 :
+- Nouvel onglet « 🎬 Envoyer » à la place de la fenêtre : choisir, régler, envoyer, en 3 étapes. L'état de l'envoi reste affiché à côté du bouton.
+- N'importe quelle vidéo, même longue : seul le passage voulu est récupéré (l'outil vidéo ffmpeg s'installe tout seul la première fois, environ 90 Mo).
+- Une vidéo YouTube, TikTok… part par son lien : l'appli du pote la récupère elle-même. Plus d'erreur 413 du relais. Si un pote a encore une ancienne version, la vidéo lui part en fichier, comme avant.
+- Un fichier déjà envoyé (son demandé par un pote, extrait renvoyé) n'est plus renvoyé pendant 2 h 30 : il part tout de suite et compte moins dans la limite du relais.
+- Récupération plus fiable : Deno vraiment utilisé par yt-dlp, récupération de secours si la rapide échoue (erreur « Errno 22 »), et une raison claire quand une vidéo est refusée (privée, réservée aux adultes, bloquée…).
+- Historique : un extrait reçu peut maintenant être renvoyé, écouté ou prévisualisé.
+- « Tout arrêter » d'un pote empêche aussi l'extrait qui était encore en train d'arriver de s'afficher.
+- Après une petite coupure, le salon ne perd plus les messages envoyés entre-temps.
+- Les sons de tes potes démarrent plus vite chez toi, et une vidéo que tu as déjà n'est pas retéléchargée.
+- Dans l'extrait reçu, l'image attend le son : plus de décalage. Entrée dans le texte de l'extrait l'envoie.
+
 Nouveautés de la 2.3 :
 - Extraits jusqu'à 30 secondes (au lieu de 15). Tes potes doivent aussi être en 2.3 pour les voir en entier.
 - Nouvel onglet « 🕘 Historique » : tes 20 derniers extraits envoyés et reçus, à revoir ou renvoyer en un clic.
