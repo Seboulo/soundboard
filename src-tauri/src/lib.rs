@@ -214,7 +214,7 @@ fn phone_request(app: &AppHandle, req: phone::Request) -> Result<serde_json::Val
             Ok(serde_json::to_value(pick).map_err(|e| e.to_string())?)
         }
         phone::Request::ClipLink(url) => {
-            let pick = tauri::async_runtime::block_on(clip::clip_from_link(app.clone(), url))?;
+            let pick = tauri::async_runtime::block_on(clip::clip_from_link(app.clone(), url, None, None))?;
             Ok(serde_json::to_value(pick).map_err(|e| e.to_string())?)
         }
         phone::Request::ClipUpload { ext, data } => {

@@ -24,6 +24,9 @@ pub struct Extras {
     pub(crate) last_sent: Mutex<Option<Instant>>,
     /// Son en cours joué de la part de chaque pote.
     playing_from: Mutex<HashMap<String, String>>,
+    /// Mesure du niveau des sons reçus des potes, par empreinte (un son
+    /// rejoué n'est pas remesuré : il part tout de suite).
+    received_levels: Mutex<HashMap<String, config::Analysis>>,
 }
 
 fn data_dir(state: &AppState) -> PathBuf {
@@ -639,7 +642,23 @@ fn play_msg(state: &AppState, sound: &Sound, to: String, hash: String) -> Msg {
         end_ms: sound.end_ms,
         volume: sound.volume,
         fx: sound.fx,
+        size: fs::metadata(&sound.path).map_or(0, |m| m.len()),
     }
+}
+
+/// Le son de cette empreinte, s'il est déjà dans la soundboard. Seuls les
+/// fichiers de la bonne taille sont lus (pas toute la soundboard).
+fn find_local(state: &AppState, hash: &str, size: u64) -> Option<Sound> {
+    let sounds = state.config.lock().unwrap().sounds.clone();
+    sounds.into_iter().find(|s| {
+        if let Some(k) = &s.pack_key {
+            return k == hash;
+        }
+        if size > 0 && fs::metadata(&s.path).map_or(true, |m| m.len() != size) {
+            return false;
+        }
+        sound_key(state, s).is_ok_and(|k| k == hash)
+    })
 }
 
 /// Demande au pote choisi de jouer ce son chez lui.
@@ -689,9 +708,11 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
             }
             let msg = play_msg(&state, &sound, from, hash.clone());
             let file = format!("{hash}.{}", sound.path.extension().and_then(|e| e.to_str()).unwrap_or("mp3"));
-            state.extras.room.publish_file(&msg, &file, data).await
+            // Déjà envoyé à un autre pote il y a peu : il est encore sur le
+            // relais, on ne le renvoie pas.
+            state.extras.room.send_file(&msg, &hash, &file, || Ok(data)).await
         }
-        Msg::Play { from, name, hash, title, ext, start_ms, end_ms, volume, fx, .. } => {
+        Msg::Play { from, name, hash, title, ext, start_ms, end_ms, volume, fx, size, .. } => {
             journal::write(&format!(
                 "Salon : « {title} » reçu de {name}{}",
                 if inc.attachment.is_some() { " (avec le fichier)" } else { "" }
@@ -717,9 +738,17 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
             let ext = if AUDIO_EXTENSIONS.contains(&ext.as_str()) { ext } else { "mp3".into() };
             let hash: String = hash.chars().filter(|c| c.is_ascii_hexdigit()).take(32).collect();
             let cache = data_dir(&state).join("salon").join(format!("{hash}.{ext}"));
-            // Le son est-il déjà là ? Dans la soundboard, ou reçu avant.
-            let sounds = state.config.lock().unwrap().sounds.clone();
-            let local = sounds.into_iter().find(|s| sound_key(&state, s).is_ok_and(|k| k == hash));
+            // Le son est-il déjà là ? Reçu avant (le plus courant, et sans
+            // rien lire), ou dans la soundboard (lu à côté, sans bloquer).
+            let local = if cache.exists() {
+                None
+            } else {
+                let (app2, h2) = (app.clone(), hash.clone());
+                tauri::async_runtime::spawn_blocking(move || find_local(&app2.state::<AppState>(), &h2, size))
+                    .await
+                    .map_err(|e| e.to_string())?
+            };
+            let known = local.as_ref().and_then(|s| s.analysis).or_else(|| state.extras.received_levels.lock().unwrap().get(&hash).copied());
             let path = match (local, &inc.attachment) {
                 (Some(s), _) => s.path,
                 (None, _) if cache.exists() => cache,
@@ -738,10 +767,21 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
                     return state.extras.room.publish(&msg).await;
                 }
             };
-            let p2 = path.clone();
-            let analysis = tauri::async_runtime::spawn_blocking(move || analysis::analyze(&p2))
-                .await
-                .map_err(|e| e.to_string())??;
+            let analysis = match known {
+                Some(a) => a,
+                None => {
+                    let p2 = path.clone();
+                    let a = tauri::async_runtime::spawn_blocking(move || analysis::analyze(&p2))
+                        .await
+                        .map_err(|e| e.to_string())??;
+                    let mut levels = state.extras.received_levels.lock().unwrap();
+                    if levels.len() > 200 {
+                        levels.clear();
+                    }
+                    levels.insert(hash.clone(), a);
+                    a
+                }
+            };
             let mut sound = store_like(&path, analysis);
             sound.id = format!("salon-{hash}");
             sound.start_ms = start_ms;
@@ -769,9 +809,10 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
             journal::write("Salon : un pote a arrêté son envoi");
             Ok(())
         }
-        Msg::Clip { from, name, title, to } => {
+        Msg::Clip { from, name, title, to, link, start_ms, end_ms, volume } => {
             let direct = !to.is_empty() && to == state.extras.room.my_id();
-            clip::receive(app, from, name, title, inc.attachment, direct).await
+            let link = (!link.is_empty()).then_some(clip::LinkClip { url: link, start_ms, end_ms, volume: volume.unwrap_or(1.0) });
+            clip::receive(app, from, name, title, inc.attachment, direct, link).await
         }
         _ => Ok(()),
     }
