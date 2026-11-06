@@ -1,6 +1,9 @@
 Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
 Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
+Nouveautés de la 2.4.2 :
+- Les vidéos longues (dont seul un passage est pris) partent aussi par leur lien : l'appli du pote récupère le même passage elle-même. Fini l'erreur « le relais refuse ce fichier » pour ces vidéos. Ton pote doit aussi être en 2.4.2 (sinon elles lui partent en fichier, comme avant).
+
 Nouveautés de la 2.4.1 :
 - Correctif : l'onglet « 🎬 Envoyer » restait bloqué (recherche et envoi sans effet, impossible de revenir aux sons) quand une recherche était gardée de la fois d'avant.
 

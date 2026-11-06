@@ -81,6 +81,10 @@ pub struct Recent {
     /// Lien d'origine (vidéo d'un site) : renvoyée par lien, sans fichier.
     #[serde(default)]
     pub link: Option<String>,
+    /// Passage seul d'une vidéo longue : où le fichier commence dans la
+    /// vidéo du lien (ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut_ms: Option<u64>,
 }
 
 /// Vidéo reçue par son lien : l'appli la télécharge elle-même.
@@ -89,6 +93,8 @@ pub struct LinkClip {
     pub start_ms: u64,
     pub end_ms: Option<u64>,
     pub volume: f32,
+    /// Vidéo longue : ne récupérer que le passage.
+    pub cut: bool,
 }
 
 /// Extraits gardés dans l'historique (envoyés, et reçus).
@@ -125,12 +131,13 @@ fn load_recents(state: &AppState) -> Vec<Recent> {
     load_list(&recents_file(state))
 }
 
-/// Lien d'où vient une vidéo préparée (cette session, ou l'historique).
-fn link_for(state: &AppState, path: &str) -> Option<String> {
+/// Lien d'où vient une vidéo préparée (cette session, ou l'historique), et
+/// pour un passage seul, où il commence dans la vidéo (ms).
+fn link_for(state: &AppState, path: &str) -> Option<(String, Option<u64>)> {
     if let Some(l) = state.clips.links.lock().unwrap().get(path) {
-        return Some(l.clone());
+        return Some((l.clone(), state.clips.cuts.lock().unwrap().get(path).copied()));
     }
-    load_recents(state).into_iter().find(|r| r.path == path).and_then(|r| r.link)
+    load_recents(state).into_iter().find(|r| r.path == path).and_then(|r| Some((r.link?, r.cut_ms)))
 }
 
 fn add_recent(state: &AppState, recent: Recent) {
@@ -161,6 +168,8 @@ pub struct Clips {
     audio_discord: AtomicBool,
     /// Fichier préparé → lien d'où il vient.
     links: Mutex<HashMap<String, String>>,
+    /// Fichier préparé qui n'est qu'un passage → où il commence (ms).
+    cuts: Mutex<HashMap<String, u64>>,
     /// Dernier « Tout arrêter » de chaque pote : un extrait encore en train
     /// d'arriver de sa part ne s'affiche plus.
     stopped: Mutex<HashMap<String, Instant>>,
@@ -196,8 +205,14 @@ fn sendable(state: &AppState, media: &str) -> Result<PathBuf, String> {
         }
     }
     let key = media.to_string_lossy().into_owned();
-    if let Some(link) = load_list(&received_file(state)).into_iter().find(|r| r.path == key).and_then(|r| r.link) {
-        state.clips.links.lock().unwrap().insert(copy.to_string_lossy().into_owned(), link);
+    if let Some(r) = load_list(&received_file(state)).into_iter().find(|r| r.path == key) {
+        let copy_key = copy.to_string_lossy().into_owned();
+        if let Some(cut) = r.cut_ms {
+            state.clips.cuts.lock().unwrap().insert(copy_key.clone(), cut);
+        }
+        if let Some(link) = r.link {
+            state.clips.links.lock().unwrap().insert(copy_key, link);
+        }
     }
     Ok(copy)
 }
@@ -205,12 +220,21 @@ fn sendable(state: &AppState, media: &str) -> Result<PathBuf, String> {
 /// La vidéo de ce lien, si on l'a déjà (envoyée ou reçue) : pas besoin de
 /// la retélécharger. Renvoie le fichier et son son à part.
 fn already_have(state: &AppState, link: &str) -> Option<(PathBuf, Option<PathBuf>)> {
-    let from_session: Vec<String> =
-        state.clips.links.lock().unwrap().iter().filter(|(_, l)| *l == link).map(|(p, _)| p.clone()).collect();
+    // Seulement une vidéo entière (pas un passage seul).
+    let cuts = state.clips.cuts.lock().unwrap().clone();
+    let from_session: Vec<String> = state
+        .clips
+        .links
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(p, l)| *l == link && !cuts.contains_key(*p))
+        .map(|(p, _)| p.clone())
+        .collect();
     let from_lists = load_recents(state).into_iter().chain(load_list(&received_file(state)));
     let media = from_session
         .into_iter()
-        .chain(from_lists.filter(|r| r.link.as_deref() == Some(link)).map(|r| r.path))
+        .chain(from_lists.filter(|r| r.link.as_deref() == Some(link) && r.cut_ms.is_none()).map(|r| r.path))
         .map(PathBuf::from)
         .find(|p| p.exists())?;
     let side = video_sound(media.parent()?, &media);
@@ -465,10 +489,11 @@ pub async fn clip_from_link(app: AppHandle, url: String, start_s: Option<f64>, c
         let (video, audio) = files?;
         let mut pick = keep_for_sending(&app, &video, &ext, got.title, audio)?;
         pick.cut = was_cut;
-        // Un passage découpé part en fichier : le pote ne pourrait pas
-        // retrouver le même passage depuis le lien.
-        if !was_cut {
-            state.clips.links.lock().unwrap().insert(pick.path.clone(), url.clone());
+        // Un passage seul part aussi par lien : le pote récupère le même
+        // passage (ffmpeg chez lui aussi), sans passer par le relais.
+        state.clips.links.lock().unwrap().insert(pick.path.clone(), url.clone());
+        if was_cut {
+            state.clips.cuts.lock().unwrap().insert(pick.path.clone(), (start * 1000.0) as u64);
         }
         Ok(pick)
     }
@@ -545,9 +570,12 @@ pub async fn send_clip(
     let link = (kind_of(&media_ext) == Some("video") && sound_id.as_deref().unwrap_or("").is_empty())
         .then(|| link_for(&state, &path_key))
         .flatten()
-        .filter(|l| youtube::is_shareable_link(l))
-        .filter(|_| state.extras.room.links_ok(receivers));
-    if let Some(link) = link {
+        .filter(|(l, _)| youtube::is_shareable_link(l))
+        .filter(|(_, cut)| match cut {
+            Some(_) => state.extras.room.cut_links_ok(receivers),
+            None => state.extras.room.links_ok(receivers),
+        });
+    if let Some((link, cut_ms)) = link {
         // Vidéo d'un site : seul le lien et le passage partent.
         let room = &state.extras.room;
         let with_me = to.as_deref() == Some(ME_TOO);
@@ -557,15 +585,18 @@ pub async fn send_clip(
         }
         let title: String = title.trim().chars().take(60).collect();
         let start_ms = (start_s.unwrap_or(0.0).clamp(0.0, 36_000.0) * 1000.0) as u64;
+        // Passage seul : les temps sont donnés dans la vidéo du lien.
+        let offset = cut_ms.unwrap_or(0);
         let msg = Msg::Clip {
             from: room.my_id(),
             name: room.my_name(),
             to,
             title: title.clone(),
             link: link.clone(),
-            start_ms,
-            end_ms: video_end(start_ms, end_s),
+            start_ms: start_ms + offset,
+            end_ms: video_end(start_ms, end_s).map(|e| e + offset),
             volume: Some(volume.unwrap_or(1.0).clamp(0.0, 2.0)),
+            cut: cut_ms.is_some(),
         };
         if with_me {
             room.expect_echo();
@@ -585,6 +616,7 @@ pub async fn send_clip(
             sound: None,
             at: now_s(),
             link: Some(link),
+            cut_ms,
         });
         return Ok(());
     }
@@ -641,7 +673,7 @@ pub async fn send_clip(
     let title: String = title.trim().chars().take(60).collect();
     let msg_title = title.clone();
     let to_all = to.is_empty();
-    let msg = Msg::Clip { from: room.my_id(), name: room.my_name(), to, title, link: String::new(), start_ms: 0, end_ms: None, volume: None };
+    let msg = Msg::Clip { from: room.my_id(), name: room.my_name(), to, title, link: String::new(), start_ms: 0, end_ms: None, volume: None, cut: false };
     if with_me {
         room.expect_echo();
     }
@@ -670,6 +702,7 @@ pub async fn send_clip(
         sound: None,
         at: now_s(),
         link: None,
+        cut_ms: None,
     });
     Ok(())
 }
@@ -679,7 +712,7 @@ pub async fn send_clip(
 /// entière est trop lourde ici (formats différents chez le pote) et que
 /// ffmpeg est déjà là, seul le passage est pris : le dernier élément dit
 /// alors où commence le fichier (ms) dans la vidéo d'origine.
-async fn fetch_link(app: &AppHandle, url: &str, dir: &Path, id: &str, start_ms: u64) -> Result<(PathBuf, Option<PathBuf>, u64), String> {
+async fn fetch_link(app: &AppHandle, url: &str, dir: &Path, id: &str, start_ms: u64, cut: bool) -> Result<(PathBuf, Option<PathBuf>, u64), String> {
     if !youtube::is_shareable_link(url) {
         return Err("lien non accepté".into());
     }
@@ -687,15 +720,27 @@ async fn fetch_link(app: &AppHandle, url: &str, dir: &Path, id: &str, start_ms: 
     let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
     let tools = data_dir.join("tools");
     let exe = youtube::ensure(&tools, |_| {}).await?;
+    // Vidéo longue : ffmpeg (installé la première fois) pour n'en prendre
+    // que le passage.
+    let ffmpeg = if cut { Some(youtube::ensure_ffmpeg(&tools, |_| {}).await?) } else { None };
     let work = data_dir.join(format!("extrait-recu-{id}"));
     let (url, dir, id) = (url.to_string(), dir.to_path_buf(), id.to_string());
+    let rt = tauri::async_runtime::handle();
     tauri::async_runtime::spawn_blocking(move || {
+        let section = |ff: &Path| youtube::download_video(&exe, &url, &work, Some((start_ms as f64 / 1000.0, ff)), |_| {});
         let mut offset = 0;
-        let mut res = youtube::download_video(&exe, &url, &work, None, |_| {});
-        if res.as_ref().err().is_some_and(|e| e == youtube::TOO_BIG) {
-            if let Some(ffmpeg) = youtube::ffmpeg_ready(&tools) {
+        let mut res = match &ffmpeg {
+            Some(ff) => {
                 offset = start_ms;
-                res = youtube::download_video(&exe, &url, &work, Some((start_ms as f64 / 1000.0, ffmpeg.as_path())), |_| {});
+                section(ff)
+            }
+            None => youtube::download_video(&exe, &url, &work, None, |_| {}),
+        };
+        if ffmpeg.is_none() && res.as_ref().err().is_some_and(|e| e == youtube::TOO_BIG) {
+            // Trop lourde entière ici : le passage seul.
+            if let Ok(ff) = rt.block_on(youtube::ensure_ffmpeg(&tools, |_| {})) {
+                offset = start_ms;
+                res = section(&ff);
             }
         }
         let res = res.and_then(|got| {
@@ -754,6 +799,7 @@ pub async fn receive(
     let id = uuid::Uuid::new_v4().simple().to_string();
     let got = Instant::now();
     let link_url = link.as_ref().map(|l| l.url.clone());
+    let mut cut_ms = None;
     let (kind, media_path, sound_path, start_ms, end_ms, volume) = match (link, url) {
         (Some(l), _) => {
             // Vidéo déjà là (son propre extrait « moi compris », ou déjà
@@ -774,7 +820,7 @@ pub async fn receive(
             });
             let (media, sound, offset) = match have {
                 Some((m, s)) => (m, s, 0),
-                None => match fetch_link(app, &l.url, &dir, &id, l.start_ms).await {
+                None => match fetch_link(app, &l.url, &dir, &id, l.start_ms, l.cut).await {
                     Ok(f) => {
                         journal::write(&format!("Extrait de {name} : vidéo téléchargée par lien en {} s", got.elapsed().as_secs()));
                         f
@@ -786,6 +832,7 @@ pub async fn receive(
                 },
             };
             // Passage seul : il commence au début du fichier.
+            cut_ms = (offset > 0).then_some(offset);
             ("video", media, sound, l.start_ms - offset, l.end_ms.map(|e| e.saturating_sub(offset)), l.volume)
         }
         (None, Some(url)) => {
@@ -844,6 +891,7 @@ pub async fn receive(
         sound: show.sound.clone(),
         at: now_s(),
         link: link_url,
+        cut_ms,
     });
     let _ = app.emit("clip-received", (&show.from, &show.title));
     show_window(app, show)
