@@ -2481,7 +2481,7 @@ pub fn run() {
             extras::set_friend_blocked,
             clip::send_clip,
             clip::clip_pending,
-            clip::clip_accept,
+            clip::clip_fit,
             clip::clip_close,
         ])
         .run(tauri::generate_context!())
