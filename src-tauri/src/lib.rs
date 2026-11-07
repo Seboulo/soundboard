@@ -296,8 +296,33 @@ fn play_request(state: &AppState, sound: &Sound) -> PlayRequest {
     }
 }
 
+/// Fenêtre cachée (barre des tâches) : on demande à WebView2 de rendre le
+/// plus de mémoire possible ; elle reprend son niveau normal à l'affichage.
+/// Réglage officiel de Microsoft (`MemoryUsageTargetLevel`), sans effet sur
+/// les sons, les raccourcis ni le micro, qui tournent hors de la page.
+#[cfg(windows)]
+fn webview_low_memory(window: &tauri::WebviewWindow, low: bool) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+    };
+    use windows::core::Interface;
+    let _ = window.with_webview(move |wv| unsafe {
+        let Ok(core) = wv.controller().CoreWebView2() else { return };
+        let Ok(core) = core.cast::<ICoreWebView2_19>() else { return };
+        let level = if low {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+        } else {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+        };
+        let _ = core.SetMemoryUsageTargetLevel(level);
+    });
+}
+#[cfg(not(windows))]
+fn webview_low_memory(_window: &tauri::WebviewWindow, _low: bool) {}
+
 fn show_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        webview_low_memory(&window, false);
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -2377,6 +2402,8 @@ pub fn run() {
             // Lancé avec Windows : on reste discret près de l'horloge.
             if !std::env::args().any(|a| a == MINIMIZED_ARG) {
                 show_window(app.handle());
+            } else if let Some(w) = app.get_webview_window("main") {
+                webview_low_memory(&w, true);
             }
             Ok(())
         })
@@ -2391,6 +2418,9 @@ pub fn run() {
                 if to_tray {
                     api.prevent_close();
                     let _ = window.hide();
+                    if let Some(w) = window.app_handle().get_webview_window(window.label()) {
+                        webview_low_memory(&w, true);
+                    }
                 } else {
                     window.app_handle().exit(0);
                 }

@@ -104,8 +104,9 @@ input[type="checkbox"] { width: auto; }
   position: sticky;
   top: 0;
   z-index: 5;
-  background: color-mix(in srgb, var(--panel) 82%, transparent);
-  backdrop-filter: blur(12px);
+  /* Opaque plutôt que flou : le flou est recalculé à chaque image dès que
+     quelque chose bouge dessous (pads qui jouent, défilement). */
+  background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
 .brand { display: flex; align-items: center; gap: 9px; }
@@ -558,7 +559,7 @@ dialog {
 dialog[open] { animation: dlg-in .16s ease-out; }
 @keyframes dlg-in { from { opacity: 0; transform: translateY(8px) scale(.98); } }
 dialog.wide { width: min(640px, 94vw); }
-dialog::backdrop { background: rgba(16, 24, 40, .35); backdrop-filter: blur(2px); }
+dialog::backdrop { background: rgba(16, 24, 40, .4); }
 /* Fenêtre ouverte : la molette ne fait plus défiler la grille derrière,
    ni quand la fenêtre arrive en bas de sa propre liste. */
 html:has(dialog[open]), html:has(dialog[open]) body { overflow: hidden; }
@@ -884,7 +885,9 @@ input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2
 
 /* Image du son (GIF GIPHY ou image du PC). */
 .pad .icon.image { padding: 0; overflow: hidden; background: var(--chip); }
-.pad .icon.image img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pad .icon.image { position: relative; }
+.pad .icon.image :is(img, canvas) { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pad .icon.image img.anim { position: absolute; inset: 0; }
 .grid:not(.list) .pad .icon.image { width: 72px; height: 72px; border-radius: 18px; }
 
 .illus { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-2); }
@@ -1094,7 +1097,7 @@ main { padding-bottom: 40px; }
 
 /* Liste : lignes plus aérées, pastille de couleur sur l'icône. */
 .grid.list .pad .icon { width: 42px; height: 42px; border-radius: 12px; }
-.grid.list .pad .icon.image img { border-radius: 12px; }
+.grid.list .pad .icon.image :is(img, canvas) { border-radius: 12px; }
 .grid.list .pad .name { font-weight: 600; }
 .grid.list .pad.playing { box-shadow: none; }
 

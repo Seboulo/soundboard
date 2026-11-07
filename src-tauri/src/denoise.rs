@@ -74,6 +74,12 @@ const DF_THRESHOLDS: (f32, f32, f32) = (-100.0, 100.0, 100.0);
 /// Un souffle imperceptible (-64 dBFS, que DeepFilterNet retire ensuite de
 /// 30 dB) le garde toujours au travail.
 const DF_DITHER: f32 = 0.0011;
+/// Micro qui rend un silence numérique (filtré par Windows ou le casque) :
+/// après une seconde de silence complet, DeepFilterNet n'est plus appelé,
+/// ce qui libère le processeur tant que tu ne parles pas. Il a vu passer
+/// cette seconde de silence et repart donc d'un état propre au premier son.
+const DF_IDLE_RMS: f32 = 1e-5;
+const DF_IDLE_FRAMES: u32 = 100;
 /// RNNoise n'a pas de limite : il peut retirer 60 dB et plus, ce qui donne
 /// le son « sous l'eau » sur les fins de mots. On remet donc une part du son
 /// d'origine, comme DeepFilterNet : au plus 30 dB de réduction (la porte
@@ -177,6 +183,8 @@ pub struct MicProcessor {
     atten_db: f32,
     lsnr: f32,
     frames: u32,
+    /// Trames de silence complet d'affilée (voir `DF_IDLE_FRAMES`).
+    silent_frames: u32,
     deep_in: Vec<f32>,
     deep_out: Vec<f32>,
     /// Trames en attente : la porte décide sur le son qui entre et
@@ -386,6 +394,7 @@ impl MicProcessor {
             atten_db: DF_ATTEN_LIMIT_DB,
             lsnr: -15.0,
             frames: 0,
+            silent_frames: 0,
             deep_in: vec![0.0; FRAME],
             deep_out: vec![0.0; FRAME],
             delay: VecDeque::with_capacity(delay_frames + 1),
@@ -486,14 +495,21 @@ impl MicProcessor {
             let enhanced = ArrayViewMut2::from_shape((1, FRAME), &mut self.deep_out).expect("trame");
             self.dry_hist.push_back(self.frame_in.clone());
             let dry = if self.dry_hist.len() > DF_LAG_FRAMES { self.dry_hist.pop_front() } else { None };
-            match df.0.process(noisy, enhanced) {
-                Ok(lsnr) => {
-                    self.lsnr = lsnr;
-                    self.deep_out.iter().map(|s| s * 32768.0).collect()
-                }
-                Err(_) => {
-                    self.lsnr = -15.0;
-                    dry.unwrap_or_else(|| vec![0.0; FRAME])
+            self.silent_frames = if input_rms < DF_IDLE_RMS { self.silent_frames.saturating_add(1) } else { 0 };
+            if self.silent_frames > DF_IDLE_FRAMES {
+                // Rien à nettoyer : l'IA rendrait le même silence.
+                self.lsnr = -15.0;
+                vec![0.0; FRAME]
+            } else {
+                match df.0.process(noisy, enhanced) {
+                    Ok(lsnr) => {
+                        self.lsnr = lsnr;
+                        self.deep_out.iter().map(|s| s * 32768.0).collect()
+                    }
+                    Err(_) => {
+                        self.lsnr = -15.0;
+                        dry.unwrap_or_else(|| vec![0.0; FRAME])
+                    }
                 }
             }
         } else {
@@ -1048,6 +1064,22 @@ mod tests {
             longest = longest.max(run_len);
         }
         assert!(longest < 48, "trou de {longest} échantillons");
+    }
+
+    #[test]
+    fn deep_filter_rests_on_digital_silence_and_wakes_up() {
+        let filters = MicFilters { denoise: true, strong: true, ..OFF };
+        let mut p = MicProcessor::new(1, 48_000, filters, VoiceEffect::None, Default::default());
+        let mut out = Vec::new();
+        p.process(std::iter::repeat_n(0.0, 48_000 * 3), &mut out);
+        assert!(p.silent_frames > DF_IDLE_FRAMES, "l'IA tourne encore sur le silence");
+        out.clear();
+        p.process(tone(300.0, 0.03, 24_000).into_iter(), &mut out);
+        assert_eq!(p.silent_frames, 0);
+        let rms = |o: &[f32]| (o[9600..].iter().map(|v| v * v).sum::<f32>() / (o.len() - 9600) as f32).sqrt();
+        // Même son sur un micro qui n'a jamais été au repos.
+        let fresh = run(filters, 48_000, 1, &tone(300.0, 0.03, 24_000));
+        assert!(rms(&out) > rms(&fresh) * 0.5, "la voix revient mal après le silence : {} / {}", rms(&out), rms(&fresh));
     }
 
     #[test]
