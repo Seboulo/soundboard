@@ -3,6 +3,10 @@ Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Dis
 
 Nouveautés de la 2.4.2 :
 - Les vidéos longues (dont seul un passage est pris) partent aussi par leur lien : l'appli du pote récupère le même passage elle-même. Fini l'erreur « le relais refuse ce fichier » pour ces vidéos. Ton pote doit aussi être en 2.4.2 (sinon elles lui partent en fichier, comme avant).
+- Affichage des extraits vidéo revu : la vidéo est préparée en coulisses (bon moment, première image, son prêt) puis apparaît d'un coup. Fini l'image qui démarre, se fige et repart, et la fenêtre qui change de taille devant toi.
+- La fenêtre prend la forme de la vidéo : une vidéo verticale (Shorts, TikTok) s'affiche en carte verticale, sans grandes bandes noires.
+- L'image reste calée sur le son pendant tout l'extrait.
+- Une vidéo envoyée en fichier est d'abord convertie au format que tout PC lit (H.264 + AAC, 720p au plus) et coupée au passage choisi : elle démarre tout de suite chez le pote et pèse moins lourd. Il faut ffmpeg (il s'installe tout seul au premier envoi de vidéo s'il n'est pas déjà là) ; sinon la vidéo part telle quelle, comme avant.
 
 Nouveautés de la 2.4.1 :
 - Correctif : l'onglet « 🎬 Envoyer » restait bloqué (recherche et envoi sans effet, impossible de revenir aux sons) quand une recherche était gardée de la fois d'avant.

@@ -176,6 +176,8 @@ pub struct Clips {
     /// Niveau du passage écouté (fichier, début, fin) : « Écouter » et
     /// « Aperçu » relancés partent tout de suite.
     levels: Mutex<Vec<((PathBuf, u64, u64), crate::config::Analysis)>>,
+    /// ffmpeg déjà demandé cette session (pour convertir les vidéos envoyées).
+    ffmpeg_asked: AtomicBool,
 }
 
 /// Le fichier à envoyer, rangé dans le dossier d'envoi. Un extrait reçu
@@ -543,6 +545,57 @@ pub async fn clip_listen(
     play_audio(app.clone(), path, start_ms, end_ms, vol, false).await
 }
 
+/// Extraits convertis gardés (un renvoi du même passage repart tout de suite).
+const READY_KEEP: usize = 10;
+
+/// Convertit la vidéo à envoyer en extrait « propre » (voir
+/// `youtube::normalize_clip`). `None` : ffmpeg pas encore là (installé en
+/// arrière-plan pour les prochains envois), conversion ratée ou trop
+/// lourde : la vidéo part alors telle quelle, comme avant.
+async fn prepare_video(app: &AppHandle, dir: &Path, media: &Path, start_s: Option<f64>, end_s: Option<f64>, with_sound: bool) -> Option<PathBuf> {
+    let state = app.state::<AppState>();
+    let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
+    let tools = data_dir.join("tools");
+    let Some(ff) = youtube::ffmpeg_ready(&tools) else {
+        if cfg!(windows) && !state.clips.ffmpeg_asked.swap(true, Ordering::SeqCst) {
+            journal::write("Extrait : installation de ffmpeg pour les prochaines vidéos envoyées");
+            tauri::async_runtime::spawn(async move {
+                let _ = youtube::ensure_ffmpeg(&tools, |_| {}).await;
+            });
+        }
+        return None;
+    };
+    let start_ms = if with_sound { (start_s.unwrap_or(0.0).clamp(0.0, 36_000.0) * 1000.0) as u64 } else { 0 };
+    let end_ms = if with_sound { video_end(start_ms, end_s) } else { None };
+    let dur_ms = end_ms.map(|e| e - start_ms).unwrap_or(30_000);
+    let side = video_sound(dir, media);
+    let side = (side != media).then_some(side);
+    let ready_dir = clips_dir(&state).join("pret");
+    fs::create_dir_all(&ready_dir).ok()?;
+    let stem = media.file_stem().and_then(|s| s.to_str()).unwrap_or("video");
+    let out = ready_dir.join(format!("{stem}-{start_ms}-{dur_ms}{}.mp4", if with_sound { "" } else { "-muet" }));
+    if !out.exists() {
+        let (media, out2) = (media.to_path_buf(), out.clone());
+        let t = Instant::now();
+        let res = tauri::async_runtime::spawn_blocking(move || {
+            youtube::normalize_clip(&ff, &media, side.as_deref(), start_ms as f64 / 1000.0, dur_ms as f64 / 1000.0, with_sound, &out2)
+        })
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r);
+        match res {
+            Ok(()) => journal::write(&format!("Extrait : vidéo préparée en {:.1} s", t.elapsed().as_secs_f32())),
+            Err(e) => {
+                journal::write(&format!("Extrait : vidéo envoyée telle quelle ({e})"));
+                return None;
+            }
+        }
+        trim_dir(&ready_dir, READY_KEEP);
+    }
+    let size = fs::metadata(&out).ok()?.len();
+    (size <= MAX_MEDIA).then_some(out)
+}
+
 /// « Envoyer à » : tout le salon, et soi-même aussi pour tester.
 const ME_TOO: &str = "*moi";
 
@@ -620,7 +673,15 @@ pub async fn send_clip(
         });
         return Ok(());
     }
-    let media_data = fs::read(&media).map_err(|_| "image ou vidéo introuvable, choisis-la à nouveau".to_string())?;
+    // Vidéo convertie avant l'envoi (H.264 + AAC, passage coupé) : elle se
+    // lit sans à-coup chez le pote et commence à 0. Sinon, telle quelle.
+    let pad_sound = sound_id.as_deref().is_some_and(|s| !s.is_empty());
+    let ready = match kind_of(&media_ext) {
+        Some("video") => prepare_video(&app, &dir, &media, start_s, end_s, !pad_sound).await,
+        _ => None,
+    };
+    let media_data = fs::read(ready.as_deref().unwrap_or(&media)).map_err(|_| "image ou vidéo introuvable, choisis-la à nouveau".to_string())?;
+    let media_ext = if ready.is_some() { "mp4".to_string() } else { media_ext };
     let sound = match sound_id.filter(|s| !s.is_empty()) {
         Some(id) => Some(find_sound(&state, &id)?),
         None => None,
@@ -648,7 +709,9 @@ pub async fn send_clip(
             let stem = media.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
             let side = ["m4a", "mp3", "aac"].iter().map(|e| dir.join(format!("{stem}-son.{e}"))).find(|p| p.exists());
             // Une image reçue avec son son (renvoyée depuis l'historique) le garde.
-            match side {
+            match side.filter(|_| ready.is_none()) {
+                // Vidéo convertie : déjà coupée, son compris.
+                _ if ready.is_some() => (Vec::new(), Header { volume: video_volume, ..Default::default() }),
                 Some(p) => {
                     let data = fs::read(&p).map_err(|e| e.to_string())?;
                     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("m4a").to_string();
@@ -897,15 +960,27 @@ pub async fn receive(
     show_window(app, show)
 }
 
-/// Taille de la fenêtre : petite carte pour demander, plus grande pour l'extrait.
-fn window_size(ask: bool) -> (f64, f64) {
-    if ask { (380.0, 132.0) } else { (500.0, 380.0) }
+/// Petite carte pour demander.
+const ASK_SIZE: (f64, f64) = (380.0, 132.0);
+/// Taille de départ de l'extrait, avant de connaître la forme de la vidéo.
+const SHOW_SIZE: (f64, f64) = (500.0, 380.0);
+/// Autour de l'image : marges, bord, en-tête et barre de temps.
+const CHROME: (f64, f64) = (18.0, 70.0);
+
+/// Taille de la fenêtre pour une image ou une vidéo de `w` × `h` : une carte
+/// large pour une vidéo large, haute pour une vidéo verticale (Shorts).
+fn fit_size(w: f64, h: f64) -> (f64, f64) {
+    if !(w > 0.0 && h > 0.0) {
+        return SHOW_SIZE;
+    }
+    let r = (w / h).clamp(0.5, 2.4);
+    let (sw, sh) = if r >= 1.0 { (480.0, (480.0 / r).max(200.0)) } else { ((420.0 * r).max(282.0), 420.0) };
+    ((sw + CHROME.0).round(), (sh + CHROME.1).round())
 }
 
 /// Coin en bas à droite de l'écran principal, au-dessus de la barre des
 /// tâches (en pixels logiques).
-fn corner(app: &AppHandle, ask: bool) -> Option<(f64, f64)> {
-    let (width, height) = window_size(ask);
+fn corner(app: &AppHandle, (width, height): (f64, f64)) -> Option<(f64, f64)> {
     let m = app.primary_monitor().ok().flatten()?;
     let scale = m.scale_factor();
     let area = m.work_area();
@@ -917,10 +992,10 @@ fn corner(app: &AppHandle, ask: bool) -> Option<(f64, f64)> {
 /// Taille et place de la fenêtre déjà ouverte. (Pas de show/hide après la
 /// création : sous Windows, `show()` active la fenêtre et sortirait le
 /// pote de son jeu ; on ferme la fenêtre à la fin et on la recrée.)
-fn place(app: &AppHandle, w: &tauri::WebviewWindow, ask: bool) {
-    let (width, height) = window_size(ask);
+fn place(app: &AppHandle, w: &tauri::WebviewWindow, size: (f64, f64)) {
+    let (width, height) = size;
     let _ = w.set_size(LogicalSize::new(width, height));
-    if let Some((x, y)) = corner(app, ask) {
+    if let Some((x, y)) = corner(app, size) {
         let _ = w.set_position(tauri::LogicalPosition::new(x, y));
     }
 }
@@ -931,13 +1006,17 @@ fn show_window(app: &AppHandle, show: ClipShow) -> Result<(), String> {
     *state.clips.pending.lock().unwrap() = Some(show.clone());
     let current = state.clips.window.lock().unwrap().clone();
     if let Some(w) = current.as_deref().and_then(|l| app.get_webview_window(l)) {
-        place(app, &w, ask);
+        // La fenêtre se met elle-même à la bonne taille (clip_fit), une fois
+        // l'extrait précédent caché : pas de saut visible.
+        warm_level(app, &show);
         return app.emit_to(w.label(), "clip-show", &show).map_err(|e| e.to_string());
     }
     // Une fenêtre neuve à chaque fois : on ne réutilise jamais une fenêtre
     // en train de se fermer.
     let label = format!("{WINDOW_PREFIX}{}", state.clips.counter.fetch_add(1, Ordering::SeqCst) + 1);
-    let (width, height) = window_size(ask);
+    warm_level(app, &show);
+    let size = if ask { ASK_SIZE } else { SHOW_SIZE };
+    let (width, height) = size;
     let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("clip.html".into()))
         .title("Soundboard — extrait")
         .inner_size(width, height)
@@ -951,8 +1030,11 @@ fn show_window(app: &AppHandle, show: ClipShow) -> Result<(), String> {
         // cliquer dessus ne retire pas la main au jeu.
         .focusable(false)
         .focused(false)
+        // Fond transparent dès la création : pas de flash blanc avant que
+        // la page soit chargée.
+        .background_color(tauri::window::Color(0, 0, 0, 0))
         .visible(true);
-    if let Some((x, y)) = corner(app, ask) {
+    if let Some((x, y)) = corner(app, size) {
         builder = builder.position(x, y);
     }
     // La fenêtre se charge puis lit l'extrait en attente (clip_pending).
@@ -983,29 +1065,34 @@ pub async fn clip_audio(app: AppHandle, path: String, start_ms: u64, end_ms: Opt
 /// Son d'un extrait reçu, joué dans le casque et dans Discord.
 const CLIP_SOUND_ID: &str = "extrait-recu";
 
+/// Niveau du passage joué (gardé en mémoire), et sa fin (ms). Seul le
+/// passage est décodé et mesuré (pas toute la vidéo, qui peut durer des
+/// minutes) : moins de calcul, pas d'à-coup.
+fn level_of(state: &AppState, path: &Path, start_ms: u64, end_ms: Option<u64>) -> Result<(crate::config::Analysis, u64), String> {
+    let end = end_ms.unwrap_or(u64::MAX).min(start_ms + 30_500);
+    let cache_key = (path.to_path_buf(), start_ms, end);
+    let known = state.clips.levels.lock().unwrap().iter().find(|(k, _)| *k == cache_key).map(|(_, a)| *a);
+    if let Some(a) = known {
+        return Ok((a, end));
+    }
+    let key = crate::config::SegmentKey { start_ms, end_ms: Some(end), fx: Default::default() };
+    let mut a = analysis::analyze_segment(path, &key)?;
+    a.duration_ms += start_ms;
+    let mut levels = state.clips.levels.lock().unwrap();
+    if !levels.iter().any(|(k, _)| *k == cache_key) {
+        if levels.len() >= 16 {
+            levels.remove(0);
+        }
+        levels.push((cache_key, a));
+    }
+    Ok((a, end))
+}
+
 async fn play_audio(app: AppHandle, path: PathBuf, start_ms: u64, end_ms: Option<u64>, volume: f32, discord: bool) -> Result<(), String> {
     let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app2.state::<AppState>();
-        // Seul le passage joué est décodé et mesuré (pas toute la vidéo,
-        // qui peut durer des minutes) : moins de calcul, pas d'à-coup.
-        let end = end_ms.unwrap_or(u64::MAX).min(start_ms + 30_500);
-        let cache_key = (path.clone(), start_ms, end);
-        let known = state.clips.levels.lock().unwrap().iter().find(|(k, _)| *k == cache_key).map(|(_, a)| *a);
-        let analysis = match known {
-            Some(a) => a,
-            None => {
-                let key = crate::config::SegmentKey { start_ms, end_ms: Some(end), fx: Default::default() };
-                let mut a = analysis::analyze_segment(&path, &key)?;
-                a.duration_ms += start_ms;
-                let mut levels = state.clips.levels.lock().unwrap();
-                if levels.len() >= 16 {
-                    levels.remove(0);
-                }
-                levels.push((cache_key, a));
-                a
-            }
-        };
+        let (analysis, end) = level_of(&state, &path, start_ms, end_ms)?;
         let mut sound = extras::store_like(&path, analysis);
         sound.id = audio::PREVIEW_ID.into();
         sound.start_ms = start_ms;
@@ -1135,13 +1222,29 @@ pub fn clip_pending(state: State<AppState>) -> Option<ClipShow> {
     state.clips.pending.lock().unwrap().clone()
 }
 
-/// « Afficher » : la carte devient l'extrait.
+/// La fenêtre de l'extrait se met à sa taille : la petite carte pour
+/// demander, ou la forme de l'image ou de la vidéo (`width` × `height`).
+/// Appelée pendant que rien n'est affiché : le changement ne se voit pas.
 #[tauri::command]
-pub fn clip_accept(app: AppHandle) {
-    let label = app.state::<AppState>().clips.window.lock().unwrap().clone();
-    if let Some(w) = label.and_then(|l| app.get_webview_window(&l)) {
-        place(&app, &w, false);
+pub fn clip_fit(app: AppHandle, window: tauri::WebviewWindow, ask: Option<bool>, width: Option<f64>, height: Option<f64>) {
+    if !is_clip_window(window.label()) {
+        return;
     }
+    let size = if ask == Some(true) { ASK_SIZE } else { fit_size(width.unwrap_or(0.0), height.unwrap_or(0.0)) };
+    place(&app, &window, size);
+}
+
+/// Mesure à l'avance le niveau du son de l'extrait (pendant que la fenêtre
+/// se charge) : quand la vidéo est prête, le son part tout de suite.
+fn warm_level(app: &AppHandle, show: &ClipShow) {
+    if show.kind != "video" && show.sound.is_none() {
+        return;
+    }
+    let path = PathBuf::from(show.sound.clone().unwrap_or_else(|| show.media.clone()));
+    let (start_ms, end_ms, app) = (show.start_ms, show.end_ms, app.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = level_of(&app.state::<AppState>(), &path, start_ms, end_ms);
+    });
 }
 
 /// Ferme l'extrait (fin, refus, ✕ ou « Tout arrêter »).
@@ -1185,6 +1288,18 @@ pub fn is_clip_window(label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_takes_the_shape_of_the_video() {
+        // Large (16:9) : carte large ; verticale (9:16) : carte haute.
+        assert_eq!(fit_size(1920.0, 1080.0), (498.0, 340.0));
+        let (w, h) = fit_size(1080.0, 1920.0);
+        assert!(h > w && h <= 490.0 && w >= 300.0, "{w}×{h}");
+        // Taille inconnue : la taille de départ.
+        assert_eq!(fit_size(0.0, 0.0), SHOW_SIZE);
+        // Formes extrêmes bornées.
+        assert_eq!(fit_size(10_000.0, 10.0), fit_size(2.4, 1.0));
+    }
 
     #[test]
     fn video_end_keeps_15_seconds_at_most() {
