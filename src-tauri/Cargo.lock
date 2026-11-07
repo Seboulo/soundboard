@@ -4786,6 +4786,7 @@ dependencies = [
  "tiny_http",
  "uuid",
  "wasapi",
+ "webview2-com",
  "windows 0.62.2",
  "zip 2.6.1",
 ]

@@ -747,13 +747,24 @@ function renderPlaying() {
     if (!pad) return;
     const p = byId.get(id);
     pad.classList.toggle("playing", !!p);
-    const img = $(".icon.image img", pad);
-    const sound = img && soundById(id);
-    // Seulement quand l'image change : remettre la même adresse 10 fois par
-    // seconde fait redémarrer le GIF (il « vibre »).
-    const animate = p && !reducedMotion();
-    const src = sound?.image && fileSrc(animate ? sound.image : sound.image_still || sound.image);
-    if (src && img.getAttribute("src") !== src) img.src = src;
+    const icon = $(".icon.image", pad);
+    const sound = icon && soundById(id);
+    // L'image animée n'existe que pendant que le son joue : au repos, une
+    // vignette fixe (un GIF qui tourne en boucle sur chaque pad occupe le
+    // processeur en permanence). Créée une seule fois : remettre la même
+    // adresse 10 fois par seconde fait redémarrer le GIF (il « vibre »).
+    const animate = p && !reducedMotion() && sound?.image;
+    let anim = icon && $("img.anim", icon);
+    if (animate && !anim) {
+      anim = document.createElement("img");
+      anim.className = "anim";
+      anim.alt = "";
+      anim.draggable = false;
+      anim.src = fileSrc(sound.image);
+      icon.append(anim);
+    } else if (!animate && anim) {
+      anim.remove();
+    }
     let ratio = 0;
     if (p && p.duration_ms) {
       ratio = p.looping ? (p.elapsed_ms % p.duration_ms) / p.duration_ms : Math.min(1, p.elapsed_ms / p.duration_ms);
@@ -767,6 +778,57 @@ function renderPlaying() {
 const { convertFileSrc } = window.__TAURI__.core;
 const fileSrc = (path) => convertFileSrc(path);
 const soundById = (id) => state.config.sounds.find((s) => s.id === id);
+
+// Vignettes des pads : chaque image est décodée une fois, réduite à la
+// taille du pad (une photo de 4000 px gardée entière pèse ~50 Mo de
+// mémoire), puis dessinée sur un canvas fixe. Un GIF n'y montre que sa
+// première image et ne tourne donc pas en boucle.
+const THUMB = 192;
+const thumbs = new Map();
+function thumbOf(path) {
+  let t = thumbs.get(path);
+  if (!t) {
+    t = new Promise((resolve, reject) => {
+      const im = new Image();
+      im.decoding = "async";
+      im.onload = () => {
+        const w = im.naturalWidth, h = im.naturalHeight;
+        const side = Math.min(w, h);
+        // Recadrée au centre comme `object-fit: cover`.
+        createImageBitmap(im, (w - side) / 2, (h - side) / 2, side, side, {
+          resizeWidth: Math.min(THUMB, side),
+          resizeHeight: Math.min(THUMB, side),
+          resizeQuality: "high",
+        }).then(resolve, reject);
+      };
+      im.onerror = reject;
+      im.src = fileSrc(path);
+    });
+    t.catch(() => thumbs.delete(path));
+    thumbs.set(path, t);
+  }
+  return t;
+}
+function stillCanvas(path) {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = THUMB;
+  thumbOf(path).then(
+    (bmp) => {
+      canvas.width = bmp.width;
+      canvas.height = bmp.height;
+      canvas.getContext("2d").drawImage(bmp, 0, 0);
+    },
+    () => {
+      // Navigateur sans createImageBitmap ou image illisible : l'image telle quelle.
+      const img = document.createElement("img");
+      img.alt = "";
+      img.draggable = false;
+      img.src = fileSrc(path);
+      canvas.replaceWith(img);
+    },
+  );
+  return canvas;
+}
 
 // Mot du nom du son → emoji, quand le son n'a ni image ni emoji choisi.
 const AUTO_EMOJIS = [
@@ -941,12 +1003,7 @@ function padElement(sound, index) {
   if (sound.image_still) {
     // Image fixe au repos, animée pendant que le son joue (voir renderPlaying).
     icon.className = "icon image";
-    const img = document.createElement("img");
-    img.alt = "";
-    img.draggable = false;
-    img.loading = "lazy";
-    img.src = fileSrc(sound.image_still);
-    icon.append(img);
+    icon.append(stillCanvas(sound.image_still));
   } else {
     icon.className = "icon" + (emoji ? " emoji" : " note");
     // Sans emoji : une note dans la couleur du son (des initiales se
