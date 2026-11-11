@@ -16,6 +16,8 @@
     .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
       box-shadow: 0 8px 24px rgba(16, 24, 40, .22); overflow: hidden; animation: pop .18s ease-out; }
     @keyframes pop { from { transform: translateY(12px); opacity: 0; } }
+    /* Extrait en préparation : chargé et calé en coulisses, montré d'un coup. */
+    #show.prep { opacity: 0; animation: none; }
     .head { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 12px; }
     .who { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .who small { color: var(--muted); }

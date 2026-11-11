@@ -36,22 +36,48 @@
       <symbol id="i-phone" viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M11 17.5h2"/></symbol>
       <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/></symbol>
       <symbol id="i-note" viewBox="0 0 24 24"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></symbol>
-      <symbol id="i-logo" viewBox="0 0 24 24"><path d="M5 10v4M9 7v10M13 4v16M17 8v8M21 11v2"/></symbol>
+      <symbol id="i-logo" viewBox="0 0 64 64"><path d="M32 2C9 2 2 9 2 32s7 30 30 30 30-7 30-30S55 2 32 2z" fill="#1d1d1f" stroke="none"/><rect x="15" y="15" width="15" height="15" rx="4.5" fill="#fff" fill-opacity=".9" stroke="none"/><rect x="34" y="15" width="15" height="15" rx="4.5" fill="#fff" fill-opacity=".35" stroke="none"/><rect x="15" y="34" width="15" height="15" rx="4.5" fill="#fff" fill-opacity=".35" stroke="none"/><rect x="34" y="34" width="15" height="15" rx="4.5" fill="#0a84ff" stroke="none"/></symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="M4 12 20 4l-5 16-3.5-6.5z"/><path d="M11.5 13.5 20 4"/></symbol>
+      <symbol id="i-dice" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="4"/><circle cx="9" cy="9" r="1.3" fill="currentColor" stroke="none"/><circle cx="15" cy="15" r="1.3" fill="currentColor" stroke="none"/><circle cx="15" cy="9" r="1.3" fill="currentColor" stroke="none"/><circle cx="9" cy="15" r="1.3" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="i-rewind" viewBox="0 0 24 24"><path d="M11 7 5 12l6 5zM19 7l-6 5 6 5z"/></symbol>
+      <symbol id="i-speech" viewBox="0 0 24 24"><path d="M5 5h14a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 16h-7l-4.5 3.5V16H5a1.5 1.5 0 0 1-1.5-1.5v-8A1.5 1.5 0 0 1 5 5z"/><path d="M8 9.5h8M8 12.5h5"/></symbol>
+      <symbol id="i-film" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M3.5 9h17M3.5 15h17M8 5v4M16 5v4M8 15v4M16 15v4"/></symbol>
+      <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+      <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M4 13.5 6.5 6h11l2.5 7.5V18a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18z"/><path d="M4 13.5h4.5l1.5 2h4l1.5-2H20"/></symbol>
+      <symbol id="i-people" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.2"/><path d="M3 19a6 6 0 0 1 12 0"/><circle cx="17" cy="9.5" r="2.5"/><path d="M16.5 14.2A4.8 4.8 0 0 1 21 19"/></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></symbol>
     </defs>
   </svg>
-  <header class="topbar">
-    <div class="brand"><span class="logo"><svg class="ico"><use href="#i-logo"/></svg></span><h1>Soundboard</h1></div>
-    <button id="cable-status" class="pill" type="button" title="État du câble virtuel"></button>
-    <button id="mic-toggle" class="pill" type="button" hidden></button>
-    <div class="room-wrap" hidden>
+  <aside class="sidebar" aria-label="Onglets">
+    <div class="brand"><span class="logo"><svg viewBox="0 0 64 64" aria-hidden="true"><use href="#i-logo"/></svg></span><h1>Soundboard</h1></div>
+    <nav class="side-nav">
+      <div id="tabs" class="tabs"></div>
+      <button id="tab-send" type="button" class="tab tab-send" title="Envoyer un GIF, une image ou une vidéo sur l'écran d'un pote du salon"><svg class="ico"><use href="#i-send"/></svg><span class="tab-name">Envoyer</span></button>
+      <button id="btn-new-tab" type="button" class="tab tab-add" title="Créer un onglet pour ranger tes sons"><svg class="ico"><use href="#i-plus"/></svg><span class="tab-name">Nouvel onglet</span></button>
+    </nav>
+    <div class="side-foot">
+      <button id="cable-status" class="pill" type="button" title="État du câble virtuel"></button>
+      <button id="mic-toggle" class="pill" type="button" hidden></button>
+      <div class="room-wrap" hidden>
       <button id="room-pill" class="pill" type="button" aria-haspopup="menu" aria-expanded="false" title="Salon entre potes : choisis chez qui tes sons sont joués"></button>
       <div id="room-menu" class="menu" role="menu" hidden></div>
     </div>
+    </div>
+  </aside>
+  <div class="app-main">
+  <header class="topbar">
+    <div class="view-toggle" role="group" aria-label="Affichage">
+      <button type="button" data-view="grid" title="Affichage en grille"><svg class="ico"><use href="#i-grid"/></svg></button>
+      <button type="button" data-view="list" title="Affichage en liste"><svg class="ico"><use href="#i-list"/></svg></button>
+    </div>
+    <button id="btn-random" type="button" title="Jouer un son au hasard de cet onglet"><svg class="ico"><use href="#i-shuffle"/></svg><span class="lbl">Au hasard</span></button>
+    <button id="surprise-toggle" type="button" title="Mode Surprise : des sons qui partent tout seuls, au hasard"><svg class="ico dice" aria-hidden="true"><use href="#i-dice"/></svg><span class="lbl">Surprise</span></button>
+    <button id="btn-stop" type="button" class="danger" title="Tout arrêter"><svg class="ico"><use href="#i-stop"/></svg><span class="lbl">Stop</span></button>
     <div class="spacer"></div>
-    <label class="search-box"><svg class="ico"><use href="#i-search"/></svg><input id="search" type="search" placeholder="Rechercher un son… (tape n'importe où)" autocomplete="off"></label>
+    <label class="search-box"><svg class="ico"><use href="#i-search"/></svg><input id="search" type="search" placeholder="Rechercher…" title="Rechercher un son (tu peux taper n'importe où dans la fenêtre)" autocomplete="off"></label>
     <button id="btn-online" type="button" title="Chercher des sons sur internet"><svg class="ico"><use href="#i-globe"/></svg><span class="lbl">En ligne</span></button>
     <button id="btn-add" type="button" class="primary" title="Ajouter des fichiers audio"><svg class="ico"><use href="#i-plus"/></svg><span class="lbl">Ajouter</span></button>
-    <button id="btn-stop" type="button" class="danger" title="Tout arrêter"><svg class="ico"><use href="#i-stop"/></svg><span class="lbl">Stop</span></button>
+    <span class="tb-sep" aria-hidden="true"></span>
     <button id="btn-stats" type="button" class="icon ghost" title="Statistiques"><svg class="ico"><use href="#i-chart"/></svg></button>
     <button id="btn-theme" type="button" class="icon ghost"><svg class="ico"><use href="#i-auto"/></svg></button>
     <button id="btn-settings" type="button" class="icon ghost" title="Réglages"><svg class="ico"><use href="#i-sliders"/></svg></button>
@@ -67,11 +93,10 @@
   <div id="warnings" class="warnings" hidden></div>
 
   <nav class="tabbar">
-    <div id="tabs" class="tabs"></div>
-    <button id="tab-send" type="button" class="tab tab-send" title="Envoyer un GIF, une image ou une vidéo sur l'écran d'un pote du salon"><span class="emo" aria-hidden="true">🎬</span>Envoyer</button>
+    <div class="view-title"><h2 id="view-title">Tous</h2><span id="view-count"></span></div>
     <div class="spacer"></div>
     <select id="sort" title="Ordre des sons">
-      <option value="favorites">★ Favoris en premier</option>
+      <option value="favorites">★ Favoris d'abord</option>
       <option value="manual">Mon ordre</option>
       <option value="name">Nom (A → Z)</option>
       <option value="plays">Les plus joués</option>
@@ -79,13 +104,7 @@
       <option value="duration">Les plus courts</option>
       <option value="color">Par couleur</option>
     </select>
-    <div class="view-toggle" role="group" aria-label="Affichage">
-      <button type="button" data-view="grid" title="Affichage en grille"><svg class="ico"><use href="#i-grid"/></svg></button>
-      <button type="button" data-view="list" title="Affichage en liste"><svg class="ico"><use href="#i-list"/></svg></button>
-    </div>
-    <label class="size" title="Taille des pads"><input id="pad-size" type="range" min="100" max="220" step="10"></label>
-    <button id="btn-random" type="button" title="Jouer un son au hasard de cet onglet"><svg class="ico"><use href="#i-shuffle"/></svg><span class="lbl">Au hasard</span></button>
-    <button id="surprise-toggle" type="button" title="Mode Surprise : des sons qui partent tout seuls, au hasard"><span class="dice" aria-hidden="true">🎲</span><span class="lbl">Surprise</span></button>
+    <label class="size" title="Taille des pads"><svg class="ico sz-s" aria-hidden="true"><use href="#i-grid"/></svg><input id="pad-size" type="range" min="100" max="220" step="10" aria-label="Taille des pads"><svg class="ico sz-l" aria-hidden="true"><use href="#i-grid"/></svg></label>
     <div class="more">
       <button id="btn-more" type="button" class="icon" title="Plus d'actions" aria-haspopup="menu" aria-expanded="false"><svg class="ico"><use href="#i-more"/></svg></button>
       <div id="more-menu" class="menu" role="menu" hidden>
@@ -93,13 +112,13 @@
         <button id="btn-export" type="button" role="menuitem" title="Exporter : enregistrer les sons de cet onglet dans un .zip à partager"><svg class="ico"><use href="#i-upload"/></svg>Exporter en .zip</button>
         <button id="btn-import" type="button" role="menuitem" title="Importer : ajouter les sons d'un pack .zip"><svg class="ico"><use href="#i-download"/></svg>Importer un pack .zip</button>
         <hr>
-        <button id="btn-replay" type="button" role="menuitem" title="Fait un son de ce qui s'est dit dans Discord ces 30 dernières secondes (raccourci dans Réglages)"><span class="emo" aria-hidden="true">⏪</span>Rejouer les 30 dernières secondes</button>
-        <button id="btn-record" type="button" role="menuitem" title="Enregistre un son avec ton micro"><span class="emo" aria-hidden="true">🎙️</span>Enregistrer au micro</button>
-        <button id="btn-tts" type="button" role="menuitem" title="Une voix de Windows lit ce que tu écris"><span class="emo" aria-hidden="true">🗣️</span>Texte → voix</button>
-        <button id="btn-clip" type="button" role="menuitem" title="Une image, un GIF ou une vidéo qui s'affiche sur l'écran d'un pote du salon"><span class="emo" aria-hidden="true">🎬</span>Envoyer un extrait à un pote</button>
+        <button id="btn-replay" type="button" role="menuitem" title="Fait un son de ce qui s'est dit dans Discord ces 30 dernières secondes (raccourci dans Réglages)"><svg class="ico" aria-hidden="true"><use href="#i-rewind"/></svg>Rejouer les 30 dernières secondes</button>
+        <button id="btn-record" type="button" role="menuitem" title="Enregistre un son avec ton micro"><svg class="ico" aria-hidden="true"><use href="#i-mic"/></svg>Enregistrer au micro</button>
+        <button id="btn-tts" type="button" role="menuitem" title="Une voix de Windows lit ce que tu écris"><svg class="ico" aria-hidden="true"><use href="#i-speech"/></svg>Texte → voix</button>
+        <button id="btn-clip" type="button" role="menuitem" title="Une image, un GIF ou une vidéo qui s'affiche sur l'écran d'un pote du salon"><svg class="ico" aria-hidden="true"><use href="#i-film"/></svg>Envoyer un extrait à un pote</button>
         <hr>
-        <button id="btn-publish" type="button" role="menuitem" title="Tes potes reçoivent les sons de cet onglet, et ceux que tu y ajoutes ensuite"><span class="emo" aria-hidden="true">🔗</span>Partager cet onglet par lien</button>
-        <button id="btn-follow" type="button" role="menuitem" title="Colle le lien du pack d'un pote : ses nouveaux sons arrivent tout seuls"><span class="emo" aria-hidden="true">📥</span>Suivre le pack d'un pote</button>
+        <button id="btn-publish" type="button" role="menuitem" title="Tes potes reçoivent les sons de cet onglet, et ceux que tu y ajoutes ensuite"><svg class="ico" aria-hidden="true"><use href="#i-link"/></svg>Partager cet onglet par lien</button>
+        <button id="btn-follow" type="button" role="menuitem" title="Colle le lien du pack d'un pote : ses nouveaux sons arrivent tout seuls"><svg class="ico" aria-hidden="true"><use href="#i-inbox"/></svg>Suivre le pack d'un pote</button>
       </div>
     </div>
   </nav>
@@ -127,6 +146,10 @@
       <p class="big">Aucun son joué pour l'instant</p>
       <p>Les 12 derniers sons que tu joues apparaîtront ici.</p>
     </div>
+    <div id="fav-empty" class="empty" hidden>
+      <p class="big">Aucun favori pour l'instant</p>
+      <p>Clique sur l'étoile d'un son (ou « ⋯ » puis « Mettre en favori ») pour le retrouver ici.</p>
+    </div>
     <div id="tab-empty" class="empty" hidden>
       <p class="big">Cet onglet est vide</p>
       <p>Glisse des sons sur son nom dans la barre des onglets, ou ajoute-en avec « Ajouter ».</p>
@@ -143,11 +166,13 @@
     <!-- Onglet « Envoyer » : un extrait sur l'écran d'un pote, en 3 étapes -->
     <section id="dlg-clip" class="send-view no-media" hidden aria-label="Envoyer un extrait">
       <form class="send-form" autocomplete="off">
+        <div class="send-steps-row"><span id="send-step-label" class="step-label">Étape 1 sur 3</span>
         <ol class="send-steps">
           <li data-goto="pick"><button type="button"><span class="num">1</span>Choisir</button></li>
           <li data-goto="adjust"><button type="button"><span class="num">2</span>Ajuster</button></li>
           <li data-goto="send"><button type="button"><span class="num">3</span>Envoyer</button></li>
         </ol>
+        </div>
 
         <div class="send-noroom" hidden>
           <p class="big">Rejoins d'abord un salon avec tes potes</p>
@@ -258,35 +283,79 @@
 
   <datalist id="tick-100"><option value="1"></option></datalist>
   <footer id="version" class="version"></footer>
+  </div>
 
   <div id="drop-overlay" class="drop-overlay" hidden><p>Lâche tes fichiers pour les ajouter</p></div>
   <div id="toast" class="toast" hidden></div>
 
   <!-- Édition d'un son -->
-  <dialog id="dlg-sound" class="wide">
+  <dialog id="dlg-sound" class="wide sheet">
     <form method="dialog" class="form">
-      <h2>Modifier le son</h2>
-      <label>Nom <input name="sound_name" required maxlength="60"></label>
-      <div class="emoji-row">
+      <header class="sheet-head">
+        <button value="save" class="primary">Enregistrer</button>
+        <h2>Modifier le son</h2>
+        <button value="cancel" formnovalidate>Annuler</button>
+      </header>
+      <div class="sheet-body">
+        <div class="sheet-col">
+          <h3 class="grp-title">Apparence</h3>
+          <div class="grp">
+            <label>Nom <input name="sound_name" required maxlength="60"></label>
+            <div class="emoji-row">
         <label>Emoji <input name="emoji" maxlength="16" placeholder="🙂" class="emoji-input"></label>
         <div id="emoji-picks" class="emoji-picks"></div>
       </div>
-      <p class="hint">Choisis-en un ou tape celui que tu veux (Windows + . ouvre le clavier d'emojis).</p>
-      <div class="row2">
+            <p class="hint">Choisis-en un ou tape celui que tu veux (Windows + . ouvre le clavier d'emojis).</p>
+            <div class="row2">
         <label>Onglet
           <input name="category" list="categories" maxlength="30" placeholder="Aucun (seulement dans « Tous »)">
         </label>
-        <label>Couleur <input name="color" type="color"></label>
+        <div class="color-field"><span class="color-lbl">Couleur</span>
+          <div class="swatches"><span id="swatches" class="swatches"></span><label class="swatch swatch-other" title="Autre couleur…"><input name="color" type="color" aria-label="Autre couleur"></label></div>
+        </div>
       </div>
-      <datalist id="categories"></datalist>
-      <label>Raccourci global
+            <datalist id="categories"></datalist>
+            <div class="illus">
+        <div class="illus-head">
+          <div id="image-preview" class="image-preview"></div>
+          <div class="illus-text">
+            <span class="label">Image du son</span>
+            <span class="hint">Fixe sur le pad, animée pendant que le son joue. Elle passe avant l'emoji.</span>
+            <div class="illus-actions">
+              <button type="button" data-action="image-search">🔎 Chercher un GIF</button>
+              <button type="button" data-action="image-file">Image du PC…</button>
+              <button type="button" data-action="image-clear">Retirer</button>
+            </div>
+          </div>
+        </div>
+        <div id="image-search" class="image-search" hidden>
+          <div class="image-search-bar">
+            <input id="image-query" placeholder="Mots-clés (en anglais, ça trouve plus)">
+            <button type="button" data-action="image-go">Chercher</button>
+          </div>
+          <div id="image-results" class="image-results"></div>
+          <span class="hint powered">Images fournies par GIPHY</span>
+        </div>
+      </div>
+          </div>
+          <h3 class="grp-title">Lecture</h3>
+          <div class="grp">
+            <label>Raccourci global
         <input name="hotkey" class="hotkey" readonly placeholder="Clique puis appuie sur une touche">
       </label>
-      <p class="hint">Astuce : le pavé numérique (Num 1, Num 2…) ou F13–F24 évitent les conflits avec les jeux. Retour arrière pour effacer.</p>
-      <label>Volume <span class="value" data-for="volume"></span>
+            <p class="hint">Astuce : le pavé numérique (Num 1, Num 2…) ou F13–F24 évitent les conflits avec les jeux. Retour arrière pour effacer.</p>
+            <label>Volume <span class="value" data-for="volume"></span>
         <input name="volume" type="range" list="tick-100" min="0" max="2" step="0.05">
       </label>
-      <div class="trim">
+            <label class="set-row"><span class="txt"><b>Jouer en boucle</b><small>Avec un fondu au début et à la fin. Clique à nouveau sur le son pour l'arrêter.</small></span><input name="looping" type="checkbox" class="switch"></label>
+            <label class="set-row"><span class="txt"><b>Ne jamais être coupé par les autres sons</b><small>Pratique pour une musique de fond.</small></span><input name="keep_playing" type="checkbox" class="switch"></label>
+          </div>
+        </div>
+        <div class="sheet-col">
+          <div class="grp-wrap">
+          <h3 class="grp-title">Découpe</h3>
+          <div class="grp">
+            <div class="trim">
         <div class="trim-head">
           <span class="label">Découpe <small>glisse les poignées, ou ← → pour affiner</small></span>
           <div class="spacer"></div>
@@ -304,14 +373,17 @@
           <button type="button" data-action="reset-trim">Tout garder</button>
         </div>
       </div>
-      <details class="fx">
+          </div>
+          </div>
+          <h3 class="grp-title">Effets</h3>
+          <div class="grp">
+            <details class="fx" open>
         <summary class="fx-head"><span class="label">Effets</span><span id="fx-state" class="fx-state"></span></summary>
         <div class="fx-sub">
           <span class="hint">Le fichier d'origine n'est jamais modifié.</span>
-          <div class="spacer"></div>
-          <button type="button" data-action="fx-reset">Sans effet</button>
         </div>
         <div class="fx-presets">
+          <button type="button" data-action="fx-reset">Sans effet</button>
           <button type="button" data-preset="chipmunk">🐿️ Écureuil</button>
           <button type="button" data-preset="demon">😈 Démon</button>
           <button type="button" data-preset="slow">🐢 Ralenti</button>
@@ -349,36 +421,14 @@
         </div>
         <label class="set-row"><span class="txt"><b>À l'envers</b><small>Le passage découpé est joué de la fin vers le début.</small></span><input type="checkbox" class="switch" data-fx="reverse"></label>
       </details>
-      <div class="illus">
-        <div class="illus-head">
-          <div id="image-preview" class="image-preview"></div>
-          <div class="illus-text">
-            <span class="label">Image du son</span>
-            <span class="hint">Fixe sur le pad, animée pendant que le son joue. Elle passe avant l'emoji.</span>
-            <div class="illus-actions">
-              <button type="button" data-action="image-search">🔎 Chercher un GIF</button>
-              <button type="button" data-action="image-file">Image du PC…</button>
-              <button type="button" data-action="image-clear">Retirer</button>
-            </div>
           </div>
-        </div>
-        <div id="image-search" class="image-search" hidden>
-          <div class="image-search-bar">
-            <input id="image-query" placeholder="Mots-clés (en anglais, ça trouve plus)">
-            <button type="button" data-action="image-go">Chercher</button>
-          </div>
-          <div id="image-results" class="image-results"></div>
-          <span class="hint powered">Images fournies par GIPHY</span>
         </div>
       </div>
-      <label class="set-row"><span class="txt"><b>Jouer en boucle</b><small>Avec un fondu au début et à la fin. Clique à nouveau sur le son pour l'arrêter.</small></span><input name="looping" type="checkbox" class="switch"></label>
-      <label class="set-row"><span class="txt"><b>Ne jamais être coupé par les autres sons</b><small>Pratique pour une musique de fond.</small></span><input name="keep_playing" type="checkbox" class="switch"></label>
-      <div class="actions">
-        <button type="button" class="danger" data-action="delete">Supprimer</button>
+      <footer class="sheet-foot">
+        <button type="button" class="danger" data-action="delete">Supprimer ce son</button>
         <div class="spacer"></div>
-        <button value="cancel" formnovalidate>Annuler</button>
-        <button value="save" class="primary">Enregistrer</button>
-      </div>
+        <small class="muted">Rien n'est changé tant que tu n'as pas cliqué sur Enregistrer.</small>
+      </footer>
     </form>
   </dialog>
 
@@ -391,7 +441,7 @@
           <button type="button" data-tab="sound" class="on"><svg class="ico"><use href="#i-volume"/></svg> Sons</button>
           <button type="button" data-tab="mic"><svg class="ico"><use href="#i-mic"/></svg> Micro</button>
           <button type="button" data-tab="keys"><svg class="ico"><use href="#i-keyboard"/></svg> Raccourcis</button>
-          <button type="button" data-tab="friends"><span class="emo" aria-hidden="true">👥</span> Potes</button>
+          <button type="button" data-tab="friends"><svg class="ico"><use href="#i-people"/></svg> Potes</button>
           <button type="button" data-tab="remote"><svg class="ico"><use href="#i-phone"/></svg> Téléphone</button>
           <button type="button" data-tab="general"><svg class="ico"><use href="#i-gear"/></svg> Général</button>
           <label class="adv-toggle" title="Montre les réglages techniques (filtres du micro, normalisation, clés…)"><input type="checkbox" class="switch" data-action="advanced"> Réglages avancés</label>
@@ -485,7 +535,7 @@
           <label class="advanced set-field">Seuil manuel de détection de la voix <span class="value" data-for="gate_threshold"></span>
             <input name="gate_threshold" type="range" min="0.1" max="0.95" step="0.05">
           </label>
-          <div class="set-row"><span class="txt"><b>🎙️ Tester et calibrer ma voix</b><small>10 secondes : 5 de silence, puis 5 où tu parles. L'app mesure ta pièce et ton micro, se règle toute seule et garde un enregistrement avant/après.</small></span><button type="button" data-action="calibrate">Lancer le test</button></div>
+          <div class="set-row"><span class="txt"><b>Tester et calibrer ma voix</b><small>10 secondes : 5 de silence, puis 5 où tu parles. L'app mesure ta pièce et ton micro, se règle toute seule et garde un enregistrement avant/après.</small></span><button type="button" data-action="calibrate">Lancer le test</button></div>
           <div class="calib" id="calib" hidden>
             <div class="calib-step" data-step></div>
             <ul data-advice></ul>
@@ -515,7 +565,7 @@
           <div class="set-card">
             <p class="hint">Avec le même code, tes potes peuvent jouer un de leurs sons chez toi (il part dans Discord par ton micro), et toi chez eux. Choisis chez qui jouer avec le bouton « 👥 » en haut.</p>
             <label class="set-field">Code du salon
-              <span class="room-code-row"><input name="room_code" autocomplete="off" spellcheck="false" placeholder="Vide : pas de salon"><button type="button" data-action="room-new">Créer un code</button><button type="button" data-action="room-copy">Copier</button></span>
+              <span class="room-code-row"><input name="room_code" autocomplete="off" spellcheck="false" placeholder="Pas encore de code"><button type="button" data-action="room-new">Créer un code</button><button type="button" data-action="room-copy">Copier</button></span>
             </label>
             <label class="set-field">Ton nom dans le salon
               <input name="room_name" maxlength="32" autocomplete="off" placeholder="Ton pseudo">
@@ -569,6 +619,8 @@
           <div class="set-card">
           <label class="set-row"><span class="txt"><b>Taille de l'interface</b><small>Aussi avec Ctrl + et Ctrl − (Ctrl 0 pour revenir à 100 %).</small></span>
             <select data-pref="zoom"><option value="1">100 %</option><option value="1.1">110 %</option><option value="1.25">125 %</option><option value="1.5">150 %</option></select></label>
+          <label class="set-row"><span class="txt"><b>Style des tuiles</b><small>Douces : couleurs pastel. Vives : couleurs pleines. Classiques : l'ancien rendu, emoji au centre.</small></span>
+            <select data-pref="tiles"><option value="douces">Douces</option><option value="vives">Vives</option><option value="classiques">Classiques</option></select></label>
           <label class="set-row"><span class="txt"><b>Contraste renforcé</b><small>Texte plus foncé et bordures plus nettes.</small></span><input data-pref="contrast" type="checkbox" class="switch"></label>
           <label class="set-row"><span class="txt"><b>Réduire les animations</b><small>GIF figés et pas de clignotement. Suit aussi l'option de Windows « Afficher les animations ».</small></span><input data-pref="reduceMotion" type="checkbox" class="switch"></label>
           </div>
@@ -595,7 +647,7 @@
           <h3>Aide</h3>
           <div class="set-card">
             <div class="set-row"><span class="txt"><b>Mises à jour</b><small id="update-status">Version actuelle : …</small></span><button type="button" data-action="check-update">Rechercher</button></div>
-            <div class="set-row"><span class="txt"><b>Diagnostic</b><small>Vérifie VB-Cable, le micro, Discord et les raccourcis, et te dit quoi régler.</small></span><button type="button" data-action="diagnose-settings">🩺 Lancer</button></div>
+            <div class="set-row"><span class="txt"><b>Diagnostic</b><small>Vérifie VB-Cable, le micro, Discord et les raccourcis, et te dit quoi régler.</small></span><button type="button" data-action="diagnose-settings">Lancer</button></div>
             <div class="set-row"><span class="txt"><b>Assistant de configuration</b><small>VB-Cable, réglages de Discord, test du micro.</small></span><button type="button" data-action="wizard">Revoir l'assistant</button></div>
           </div>
         </section>
@@ -621,7 +673,7 @@
         <input name="q" type="search" placeholder="bruh, airhorn, rire, fail…" autocomplete="off" required>
         <button class="primary">Rechercher</button>
       </form>
-      <label class="volume-row">🔊 Volume des écoutes
+      <label class="volume-row">Volume des écoutes
         <input id="online-volume" type="range" min="0" max="1" step="0.05">
         <span class="value" id="online-volume-value"></span>
       </label>
@@ -643,7 +695,7 @@
   <!-- Diagnostic -->
   <dialog id="dlg-diag" class="wide">
     <div class="form">
-      <h2>🩺 Diagnostic</h2>
+      <h2>Diagnostic</h2>
       <p class="hint">Tout ce qui peut empêcher tes sons ou ta voix d'arriver dans Discord, et quoi faire.</p>
       <div id="diag-list" class="checks"></div>
       <div class="listen-box">
@@ -662,7 +714,7 @@
   <!-- Mode Surprise -->
   <dialog id="dlg-surprise">
     <form class="form" method="dialog">
-      <h2>🎲 Mode Surprise</h2>
+      <h2>Mode Surprise</h2>
       <p class="hint">De temps en temps, un son de ta liste part tout seul vers Discord, à un moment au hasard.</p>
       <label class="set-row"><span class="txt"><b>Activer</b><small>S'arrête quand tu fermes l'app.</small></span><input name="on" type="checkbox" class="switch"></label>
       <div class="set-row"><span class="txt"><b>Attente entre deux sons</b><small>Tirée au hasard à chaque fois.</small></span>
@@ -681,7 +733,7 @@
   <!-- Enregistrer au micro -->
   <dialog id="dlg-record">
     <div class="form">
-      <h2>🎙️ Enregistrer au micro</h2>
+      <h2>Enregistrer au micro</h2>
       <p class="hint">Ta voix est enregistrée telle que tes potes l'entendent (bruits filtrés). Une minute au plus.</p>
       <div class="rec-box">
         <button type="button" class="rec-btn" data-action="rec" aria-label="Commencer l'enregistrement"><span></span></button>
@@ -698,7 +750,7 @@
   <!-- Texte → voix -->
   <dialog id="dlg-tts">
     <form class="form" method="dialog">
-      <h2>🗣️ Texte → voix</h2>
+      <h2>Texte → voix</h2>
       <textarea name="text" rows="3" maxlength="1000" placeholder="Écris ce que la voix doit dire…"></textarea>
       <label class="set-field">Voix
         <select name="voice"></select>
@@ -719,7 +771,7 @@
   <!-- Suivre le pack d'un pote -->
   <dialog id="dlg-follow">
     <form class="form" method="dialog">
-      <h2>📥 Suivre le pack d'un pote</h2>
+      <h2>Suivre le pack d'un pote</h2>
       <p class="hint">Colle le lien que ton pote t'a donné (OneDrive, Dropbox, Google Drive…). Ses sons arrivent dans un onglet, et ceux qu'il ajoute ensuite aussi.</p>
       <label class="set-field">Lien du pack
         <input name="url" type="url" required autocomplete="off" placeholder="https://…">
@@ -738,7 +790,7 @@
   <!-- Partager un onglet par lien -->
   <dialog id="dlg-publish">
     <div class="form">
-      <h2>🔗 Partager l'onglet « <span data-tab-name></span> »</h2>
+      <h2>Partager l'onglet « <span data-tab-name></span> »</h2>
       <div data-step="pick">
         <p class="hint">L'app range le pack dans un dossier synchronisé et le tient à jour. Tu crées ensuite un lien de partage vers ce fichier, une seule fois.</p>
         <div id="cloud-list" class="cloud-list"></div>
@@ -773,12 +825,19 @@
       </div>
     </form>
   </dialog>
+  <dialog id="dlg-ask" class="ask">
+    <form class="form" method="dialog">
+      <h2></h2>
+      <p class="ask-text"></p>
+      <div class="actions"></div>
+    </form>
+  </dialog>
   <div id="ctx-menu" class="menu ctx-menu" role="menu" hidden></div>
 
   <!-- Statistiques -->
   <dialog id="dlg-stats" class="wide">
     <div class="form">
-      <h2>📊 Statistiques</h2>
+      <h2>Statistiques</h2>
       <div id="stats-tiles" class="stat-tiles"></div>
       <h3 class="stats-h">Les plus joués</h3>
       <div id="stats-top" class="stats-top"></div>

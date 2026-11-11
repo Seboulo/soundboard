@@ -1,6 +1,6 @@
 [package]
 name = "soundboard"
-version = "2.4.1"
+version = "3.0.2"
 description = "Soundboard pour Discord : joue des sons dans ton micro via un câble audio virtuel"
 authors = ["Sébastien"]
 license = "MIT"
@@ -43,6 +43,8 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # Windows : capter le son de Discord (rejouer, baisse auto) et voix de Windows.
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.26"
+# Fenêtre cachée dans la barre des tâches : WebView2 libère sa mémoire.
+webview2-com = "0.39"
 windows = { version = "0.62", features = [
     "Foundation",
     "Foundation_Collections",

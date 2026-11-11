@@ -611,6 +611,7 @@ impl Engine {
         thread::Builder::new()
             .name("micro".into())
             .spawn(move || {
+                raise_thread_priority();
                 // S'arrête tout seul quand le micro est fermé (raw_tx lâché).
                 while let Ok(chunk) = raw_rx.recv() {
                     let mut cleaned = Vec::with_capacity(chunk.len());
@@ -1360,6 +1361,28 @@ impl<S: Source<Item = f32>> Source for Fader<S> {
         self.inner.total_duration()
     }
 }
+
+/// Passe le fil courant en priorité haute. Le nettoyage du micro (IA
+/// comprise) doit rendre 10 ms de son toutes les 10 ms : en priorité
+/// normale, un jeu qui occupe tous les cœurs le fait attendre, et la voix
+/// a des micro-coupures. Il ne consomme pas plus pour autant.
+#[cfg(windows)]
+fn raise_thread_priority() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentThread() -> *mut std::ffi::c_void;
+        fn SetThreadPriority(thread: *mut std::ffi::c_void, priority: i32) -> i32;
+    }
+    const THREAD_PRIORITY_HIGHEST: i32 = 2;
+    // SAFETY: deux fonctions de base de Windows, sur le fil courant ; un
+    // refus (valeur 0) laisse simplement la priorité normale.
+    unsafe {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    }
+}
+
+#[cfg(not(windows))]
+fn raise_thread_priority() {}
 
 /// Coupures du son capté depuis le lancement (micro ou écoute du câble) :
 /// tampon vide (le son manque) ou trop plein (on a jeté du son). Chacune

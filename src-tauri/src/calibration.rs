@@ -3,7 +3,7 @@
 //! crêtes et sa couleur, pour régler le micro et conseiller l'égaliseur.
 
 use crate::config::{MicCalibration, VoiceEq};
-use crate::denoise::{Biquad, EQ_BANDS_HZ, RATE};
+use crate::denoise::{Biquad, EQ_BANDS_HZ, EQ_MAX_DB, RATE};
 use serde::Serialize;
 use std::fs;
 use std::path::Path;
@@ -115,7 +115,7 @@ pub fn analyze(raw: &[f32]) -> Result<(MicCalibration, VoiceReport), String> {
     if peak_db > -1.0 {
         advice.push("Ta voix sature le micro : baisse son volume dans Windows (Paramètres > Son > ton micro), sinon elle grésille.".into());
     }
-    if speech_db < -42.0 {
+    if speech_db < -36.0 {
         advice.push("Ta voix arrive faible : rapproche le micro ou monte son volume dans Windows.".into());
     }
     if speech_db - noise_db < 20.0 {
@@ -140,18 +140,19 @@ pub fn analyze(raw: &[f32]) -> Result<(MicCalibration, VoiceReport), String> {
 const REFERENCE_DB: [f32; 6] = [-2.0, 0.0, -5.5, -11.0, -13.5, -17.0];
 
 /// Corrections qui rapprochent la voix mesurée de la référence, comme un
-/// égaliseur d'appariement en studio : on ne corrige que les trois quarts de
-/// l'écart (chaque voix a sa couleur), jamais plus de 8 dB (6 dB pour les
-/// aigus extrêmes), et on ne remonte jamais le grave (ronflement).
+/// égaliseur d'appariement en studio : on ne corrige que la moitié de
+/// l'écart (chaque voix a sa couleur, et 5 s de parole ne disent pas tout :
+/// le résultat dépend des mots prononcés), jamais plus de 4 dB (3 dB pour
+/// les aigus extrêmes), et on ne remonte jamais le grave (ronflement).
 fn match_eq(band_db: &[f32]) -> [f32; 6] {
     let deviation: Vec<f32> = band_db.iter().zip(REFERENCE_DB).map(|(m, r)| m - r).collect();
     // Le niveau global ne compte pas : on se cale sur les médiums.
     let center = (deviation[1] + deviation[2] + deviation[3]) / 3.0;
     let mut eq = [0.0f32; 6];
     for (i, g) in eq.iter_mut().enumerate() {
-        let max = if i == 5 { 6.0 } else { 8.0 };
-        let min = -8.0;
-        let wanted = -(deviation[i] - center) * 0.75;
+        let max = if i == 5 { EQ_MAX_DB - 1.0 } else { EQ_MAX_DB };
+        let min = -EQ_MAX_DB;
+        let wanted = -(deviation[i] - center) * 0.5;
         let wanted = if i == 0 { wanted.min(0.0) } else { wanted };
         *g = (wanted.clamp(min, max) * 2.0).round() / 2.0;
     }
@@ -238,7 +239,8 @@ mod tests {
         let measured = [2.0, 0.0, -13.0, -21.0, -33.0, -40.0];
         let eq = match_eq(&measured);
         assert!(eq[0] <= 0.0, "jamais de grave en plus");
-        assert!(eq[4] >= 6.0 && eq[5] >= 5.0, "{eq:?}");
+        assert!(eq[4] == 4.0 && eq[5] == 3.0, "{eq:?}");
+        assert!(eq.iter().all(|g| g.abs() <= EQ_MAX_DB), "{eq:?}");
         // Une voix déjà équilibrée ne bouge pas.
         assert!(match_eq(&REFERENCE_DB).iter().all(|g| g.abs() < 0.5));
     }

@@ -126,17 +126,133 @@ const FFMPEG_ZIP: &str = "ffmpeg-master-latest-win64-gpl-shared.zip";
 const FFMPEG_MAX: usize = 200 * 1024 * 1024;
 static FFMPEG_LOCK: tauri::async_runtime::Mutex<()> = tauri::async_runtime::Mutex::const_new(());
 
-/// Dossier de ffmpeg s'il est déjà installé.
-pub fn ffmpeg_ready(tools_dir: &Path) -> Option<PathBuf> {
+/// ffmpeg essayé cette session : `Some(true)` il démarre, `Some(false)`
+/// Windows refuse de le lancer (DLL abîmée, ou bloquée par la sécurité de
+/// Windows, « Contrôle intelligent des applications »).
+static FFMPEG_WORKS: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
+/// Réinstallation déjà tentée cette session (une seule fois : si Windows
+/// bloque ffmpeg, retélécharger 90 Mo n'y change rien).
+static FFMPEG_RETRIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Message quand ffmpeg est là mais ne démarre pas.
+/// Fichier posé dans `tools/ffmpeg` quand même un ffmpeg neuf ne démarre pas.
+const BLOCKED_MARK: &str = "bloque-par-windows.txt";
+pub const FFMPEG_BLOCKED: &str = "Windows refuse de lancer l'outil vidéo ffmpeg (souvent le « Contrôle intelligent des applications » de Sécurité Windows) : la vidéo part telle quelle";
+
+fn ffmpeg_installed(tools_dir: &Path) -> Option<PathBuf> {
     let dir = tools_dir.join("ffmpeg");
     let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
     dir.join(exe).exists().then_some(dir)
+}
+
+/// Lance `ffmpeg -version` une fois par session pour savoir s'il démarre
+/// vraiment (une DLL abîmée ou bloquée ne se voit qu'au lancement).
+fn ffmpeg_starts(dir: &Path) -> bool {
+    if let Some(ok) = *FFMPEG_WORKS.lock().unwrap() {
+        return ok;
+    }
+    let exe = dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
+    let ok = command(&exe)
+        .arg("-version")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !ok {
+        crate::journal::write("ffmpeg ne démarre pas (DLL abîmée ou bloquée par Windows)");
+    }
+    *FFMPEG_WORKS.lock().unwrap() = Some(ok);
+    ok
+}
+
+/// Dossier de ffmpeg s'il est installé et qu'il démarre.
+pub fn ffmpeg_ready(tools_dir: &Path) -> Option<PathBuf> {
+    let dir = ffmpeg_installed(tools_dir)?;
+    ffmpeg_starts(&dir).then_some(dir)
+}
+
+/// Plus grand côté d'un extrait converti (720p, en large ou en hauteur).
+const NORMALIZE_LONG_SIDE: u32 = 1280;
+
+/// Réglages de ffmpeg pour un extrait « propre », que tout PC lit sans
+/// à-coup : H.264 (couleurs yuv420p) + AAC dans un MP4, une image clé par
+/// seconde, index au début du fichier (`+faststart`), 720p au plus et débit
+/// plafonné (30 s tiennent dans le relais). Le passage choisi est coupé ici :
+/// chez le pote, la vidéo commence à 0, sans saut à faire.
+pub fn normalize_args(video: &Path, audio: Option<&Path>, start_s: f64, dur_s: f64, with_sound: bool, out: &Path) -> Vec<std::ffi::OsString> {
+    let n = NORMALIZE_LONG_SIDE;
+    let start = format!("{:.3}", start_s.max(0.0));
+    let dur = format!("{:.3}", dur_s.clamp(0.5, 30.0));
+    let mut a: Vec<std::ffi::OsString> = Vec::new();
+    let mut push = |x: &str| a.push(x.into());
+    for x in ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-ss", &start, "-t", &dur, "-i"] {
+        push(x);
+    }
+    a.push(video.into());
+    let sidecar = audio.filter(|_| with_sound);
+    if let Some(s) = sidecar {
+        for x in ["-ss", &start, "-t", &dur, "-i"] {
+            a.push(x.into());
+        }
+        a.push(s.into());
+    }
+    let scale = format!("scale=w='if(gt(iw\\,ih)\\,min({n}\\,iw)\\,-2)':h='if(gt(iw\\,ih)\\,-2\\,min({n}\\,ih))'");
+    let mut push = |x: &str| a.push(x.into());
+    push("-map");
+    push("0:v:0");
+    if with_sound {
+        push("-map");
+        push(if sidecar.is_some() { "1:a:0" } else { "0:a:0?" });
+    }
+    for x in [
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-maxrate", "2M", "-bufsize", "4M", "-pix_fmt", "yuv420p", "-vf", &scale,
+        "-force_key_frames", "expr:gte(t,n_forced*1)",
+    ] {
+        push(x);
+    }
+    if with_sound {
+        for x in ["-c:a", "aac", "-b:a", "128k", "-ac", "2"] {
+            push(x);
+        }
+    } else {
+        push("-an");
+    }
+    for x in ["-movflags", "+faststart", "-f", "mp4"] {
+        push(x);
+    }
+    a.push(out.into());
+    a
+}
+
+/// Convertit le passage d'une vidéo en extrait « propre » (voir
+/// `normalize_args`) dans `out`.
+pub fn normalize_clip(ffmpeg_dir: &Path, video: &Path, audio: Option<&Path>, start_s: f64, dur_s: f64, with_sound: bool, out: &Path) -> Result<(), String> {
+    let exe = ffmpeg_dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
+    let _ = fs::remove_file(out);
+    let res = command(&exe)
+        .args(normalize_args(video, audio, start_s, dur_s, with_sound, out))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("ffmpeg ne démarre pas ({e})"))?;
+    // Un début après la fin de la vidéo donne un MP4 vide sans erreur.
+    let size = fs::metadata(out).map(|m| m.len()).unwrap_or(0);
+    if !res.status.success() || size < 2048 {
+        let _ = fs::remove_file(out);
+        let why = String::from_utf8_lossy(&res.stderr).lines().last().unwrap_or("").to_string();
+        return Err(format!("conversion impossible ({why})"));
+    }
+    Ok(())
 }
 
 /// Installe ffmpeg à côté de yt-dlp (une seule fois) et renvoie son dossier.
 pub async fn ensure_ffmpeg(tools_dir: &Path, on_status: impl Fn(&str)) -> Result<PathBuf, String> {
     if let Some(dir) = ffmpeg_ready(tools_dir) {
         return Ok(dir);
+    }
+    // Installé mais il ne démarre pas : on le retélécharge une fois (fichier
+    // abîmé). S'il ne démarre toujours pas, Windows le bloque : inutile
+    // d'insister.
+    let blocked_before = ffmpeg_installed(tools_dir).is_some_and(|d| d.join(BLOCKED_MARK).exists());
+    if blocked_before || ffmpeg_installed(tools_dir).is_some() && FFMPEG_RETRIED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err(FFMPEG_BLOCKED.into());
     }
     if !cfg!(windows) {
         return Err("ffmpeg n'est installé tout seul que sous Windows".into());
@@ -159,7 +275,16 @@ pub async fn ensure_ffmpeg(tools_dir: &Path, on_status: impl Fn(&str)) -> Result
         Err(e) => format!("ffmpeg non installé ({e})"),
     });
     res?;
-    ffmpeg_ready(tools_dir).ok_or_else(|| "ffmpeg introuvable après l'installation".into())
+    *FFMPEG_WORKS.lock().unwrap() = None;
+    let installed = ffmpeg_installed(tools_dir).ok_or("ffmpeg introuvable après l'installation")?;
+    ffmpeg_ready(tools_dir).ok_or_else(|| {
+        // Même neuf, il ne démarre pas : Windows le bloque. On le note dans
+        // son dossier pour ne pas le retélécharger à chaque lancement
+        // (supprimer le dossier relance un essai).
+        FFMPEG_RETRIED.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = fs::write(installed.join(BLOCKED_MARK), "");
+        FFMPEG_BLOCKED.to_string()
+    })
 }
 
 /// Vérifie l'archive de ffmpeg puis garde ffmpeg.exe, ffprobe.exe et leurs DLL
@@ -596,6 +721,40 @@ pub fn search(exe: &Path, query: &str, start: u32, count: u32) -> Result<Vec<Fou
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Avec un ffmpeg sur la machine (Linux de test), la conversion donne
+    /// bien un MP4 H.264 + AAC, à la bonne taille et coupé au passage.
+    #[test]
+    fn normalized_clip_is_h264_aac_720p() {
+        let Some(bin) = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"].into_iter().map(Path::new).find(|p| p.exists()) else { return };
+        let ff = bin.parent().unwrap();
+        let dir = std::env::temp_dir().join(format!("sb-norm-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("haute.webm");
+        let ok = Command::new(bin)
+            .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=1080x1920:rate=30", "-f", "lavfi", "-i", "sine=frequency=440"])
+            .args(["-t", "8", "-c:v", "libvpx-vp9", "-deadline", "realtime", "-c:a", "libopus"])
+            .arg(&src)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let out = dir.join("pret.mp4");
+        normalize_clip(ff, &src, None, 2.0, 4.0, true, &out).unwrap();
+        let probe = Command::new(ff.join("ffprobe"))
+            .args(["-v", "error", "-show_entries", "stream=codec_name,width,height,pix_fmt:format=duration", "-of", "default=nw=1"])
+            .arg(&out)
+            .output()
+            .unwrap();
+        let info = String::from_utf8_lossy(&probe.stdout).to_string();
+        assert!(info.contains("codec_name=h264") && info.contains("codec_name=aac"), "{info}");
+        assert!(info.contains("width=720") && info.contains("height=1280") && info.contains("pix_fmt=yuv420p"), "{info}");
+        let d: f64 = info.lines().find_map(|l| l.strip_prefix("duration=")).unwrap().parse().unwrap();
+        assert!((d - 4.0).abs() < 0.2, "{d}");
+        // Début après la fin : erreur claire, pas de fichier vide.
+        assert!(normalize_clip(ff, &src, None, 20.0, 4.0, true, &out).is_err());
+        assert!(!out.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn recognizes_youtube_links() {

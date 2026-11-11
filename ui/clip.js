@@ -10,9 +10,18 @@ const IMAGE_MS = 6000; // une image sans son reste 6 s
 
 const img = $(".stage img");
 const video = $(".stage video");
+const show = $("#show");
 let audio = null;
 let timer = null;
 let current = null;
+let syncId = 0;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Deux images à l'écran, ou 120 ms au plus : si Windows juge la fenêtre
+// cachée (jeu en plein écran), les images n'arrivent jamais et l'extrait
+// resterait bloqué.
+const frames = () =>
+  Promise.race([new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))), sleep(120)]);
 
 function bar(el, ms) {
   el.style.transition = "none";
@@ -22,24 +31,35 @@ function bar(el, ms) {
   el.style.transform = "scaleX(0)";
 }
 
+function stopSync() {
+  if (syncId && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(syncId);
+  syncId = 0;
+  video.playbackRate = 1;
+}
+
 function reset() {
   clearTimeout(timer);
-  video.onended = video.onerror = video.onloadedmetadata = video.onplaying = img.onerror = null;
+  stopSync();
+  video.onended = video.onerror = video.onloadedmetadata = img.onerror = img.onload = null;
   video.pause();
   video.removeAttribute("src");
+  video.load();
   img.removeAttribute("src");
   if (audio) {
     audio.pause();
     audio = null;
   }
   $("#ask").hidden = true;
-  $("#show").hidden = true;
+  show.hidden = true;
+  show.classList.add("prep");
 }
 
-function close() {
+// `why` : raison notée dans le journal quand l'extrait n'a pas pu être lu.
+function close(why) {
+  const media = current ? current.media : null;
   reset();
   current = null;
-  invoke("clip_close");
+  invoke("clip_close", { media, why: typeof why === "string" ? why : null });
 }
 
 function fill(root, c) {
@@ -48,30 +68,197 @@ function fill(root, c) {
   if (t) t.textContent = c.title ? `« ${c.title} »` : "";
 }
 
-function ask(c) {
+// La fenêtre prend sa taille pendant que rien n'est affiché : le changement
+// ne se voit pas. On laisse deux images à l'écran pour que la page suive.
+async function fit(args) {
+  await invoke("clip_fit", args).catch(() => {});
+  await frames();
+}
+
+async function ask(c) {
+  await fit({ ask: true });
+  if (current !== c) return;
   fill($("#ask"), c);
   $("#ask").hidden = false;
   bar($("#ask .bar"), ASK_MS);
-  timer = setTimeout(close, ASK_MS);
+  timer = setTimeout(() => close(), ASK_MS);
 }
 
-// Le son part dans le casque choisi dans l'appli (moteur audio) ; si ça
-// échoue, l'élément joue le son lui-même (sortie par défaut de Windows).
-// Renvoie une promesse tenue quand le son est parti (ou a échoué).
+// Le son part dans le casque choisi dans l'appli (moteur audio). Renvoie
+// true quand il est parti. S'il échoue, l'élément joue le son lui-même
+// (sortie par défaut de Windows) et on renvoie false.
 function playSound(c, path, startMs, endMs, el) {
-  return invoke("clip_audio", { path, startMs: Math.round(startMs), endMs: endMs ?? null, volume: c.volume ?? 1 }).catch(() => {
+  return invoke("clip_audio", { path, startMs: Math.round(startMs), endMs: endMs ?? null, volume: c.volume ?? 1 }).then(
+    () => true,
+    () => {
+      if (current !== c) return false;
+      el.muted = false;
+      if (el.paused && el !== video) el.play().catch(() => {});
+      return false;
+    },
+  );
+}
+
+// Le son mène, l'image suit (comme les lecteurs vidéo pros) : à chaque image
+// affichée, on compare sa position à celle du son. Petit écart : la vidéo
+// accélère ou ralentit à peine (invisible) ; gros écart (PC qui rame) : on
+// la recale d'un coup.
+function followSound(from, soundAt) {
+  if (!video.requestVideoFrameCallback) return;
+  // Un recalage d'un coup coûte cher (la vidéo se fige le temps du saut) :
+  // pas plus d'un toutes les 2 s et 3 par extrait, sinon une vidéo lente à
+  // sauter se recalerait en boucle et saccaderait. Entre deux, la vitesse
+  // rattrape l'écart (jusqu'à 8 %, l'image est muette : ça ne s'entend pas).
+  let jumps = 0;
+  let lastJump = -Infinity;
+  const step = (now, meta) => {
+    if (video.paused) return;
+    if (video.seeking) {
+      syncId = video.requestVideoFrameCallback(step);
+      return;
+    }
+    const expected = from + (meta.expectedDisplayTime - soundAt) / 1000;
+    const drift = meta.mediaTime - expected;
+    if (Math.abs(drift) > 0.4 && jumps < 3 && now - lastJump > 2000) {
+      jumps += 1;
+      lastJump = now;
+      video.currentTime = Math.max(0, expected + 0.08);
+      video.playbackRate = 1;
+    } else if (Math.abs(drift) > 0.04) {
+      video.playbackRate = Math.min(1.08, Math.max(0.92, 1 - drift * 0.5));
+    } else {
+      video.playbackRate = 1;
+    }
+    syncId = video.requestVideoFrameCallback(step);
+  };
+  syncId = video.requestVideoFrameCallback(step);
+}
+
+function reveal(ms) {
+  show.classList.remove("prep");
+  bar($("#show .bar"), ms);
+  clearTimeout(timer);
+  timer = setTimeout(() => close(), ms + 300);
+}
+
+function playVideo(c, vol) {
+  img.hidden = true;
+  video.hidden = false;
+  video.volume = vol;
+  // Image muette ici : le son passe par le casque (voir playSound).
+  video.muted = true;
+  video.preload = "auto";
+  video.onerror = () => {
+    const e = video.error;
+    close(`vidéo illisible sur ce PC${e ? ` : code ${e.code} ${e.message || ""}` : ""}`);
+  };
+  video.onended = () => close();
+  // Au pire, l'extrait se ferme si rien ne se charge.
+  timer = setTimeout(() => close("la vidéo ne se charge pas"), 8000);
+  video.onloadedmetadata = async () => {
+    video.onloadedmetadata = null;
     if (current !== c) return;
-    el.muted = false;
-    if (el.paused && el !== video) el.play().catch(() => {});
-  });
+    // Chargée : la suite (taille, première image, son) a son propre délai,
+    // l'ancien ne doit pas fermer l'extrait en pleine préparation.
+    clearTimeout(timer);
+    timer = setTimeout(() => close("la vidéo ne démarre pas"), 8000);
+    const d = video.duration || 0;
+    const askFrom = (c.start_ms || 0) / 1000;
+    const from = askFrom && askFrom < d ? askFrom : 0;
+    const until = Math.min(d || from + 15, c.end_ms ? c.end_ms / 1000 : Infinity, from + MAX_MS / 1000);
+    const showMs = Math.max(2000, Math.min(MAX_MS, (until - from) * 1000));
+    // En coulisses : la fenêtre prend la forme de la vidéo et la première
+    // image du passage est décodée (saut compris) avant d'afficher quoi que ce soit.
+    const ready = new Promise((res) => {
+      if (from) {
+        video.addEventListener("seeked", res, { once: true });
+        video.currentTime = from;
+      } else if (video.readyState >= 2) res();
+      else video.addEventListener("loadeddata", res, { once: true });
+    });
+    await Promise.race([Promise.all([ready, fit({ width: video.videoWidth, height: video.videoHeight })]), sleep(3000)]);
+    if (current !== c) return;
+    let el = video;
+    let path = c.media;
+    if (c.sound) {
+      // Son à part (Shorts) : même départ que l'image.
+      const a = new Audio(convertFileSrc(c.sound));
+      a.muted = true;
+      a.preload = "auto";
+      audio = a;
+      a.addEventListener("loadedmetadata", () => {
+        if (audio === a) a.currentTime = from;
+      }, { once: true });
+      el = a;
+      path = c.sound;
+    }
+    // Le son est prêt presque tout de suite (mesuré pendant le chargement) ;
+    // au pire, l'image part sans lui après une seconde et demie.
+    const sound = playSound(c, path, from * 1000, c.end_ms, el);
+    const engine = await Promise.race([sound, sleep(1500).then(() => null)]);
+    if (current !== c) return;
+    const soundAt = performance.now();
+    reveal(showMs);
+    video.play().catch(() => {});
+    if (engine) followSound(from, soundAt);
+    else if (engine === null) {
+      // Son en retard : on se cale sur lui dès qu'il part.
+      sound.then((ok) => {
+        if (ok && current === c && !video.paused) followSound(video.currentTime, performance.now());
+      });
+    }
+  };
+  video.src = convertFileSrc(c.media);
+}
+
+function playImage(c, vol) {
+  video.hidden = true;
+  img.hidden = false;
+  img.onerror = () => close("image illisible");
+  timer = setTimeout(() => close("l'image ne se charge pas"), 8000);
+  img.onload = async () => {
+    img.onload = null;
+    await Promise.race([fit({ width: img.naturalWidth, height: img.naturalHeight }), sleep(1500)]);
+    if (current !== c) return;
+    if (!c.sound) {
+      reveal(IMAGE_MS);
+      return;
+    }
+    const a = new Audio(convertFileSrc(c.sound));
+    audio = a;
+    a.volume = vol;
+    // Sert à connaître la durée ; joue seulement si le casque échoue.
+    a.muted = true;
+    a.preload = "auto";
+    const start = (c.start_ms || 0) / 1000;
+    const end = c.end_ms ? c.end_ms / 1000 : Infinity;
+    a.ontimeupdate = () => {
+      if (a.currentTime >= end) a.pause();
+    };
+    const known = new Promise((res) => {
+      a.onloadedmetadata = () => {
+        if (audio === a) a.currentTime = start;
+        res(a.duration || 6);
+      };
+      a.onerror = () => res(6);
+    });
+    const duration = await Promise.race([known, sleep(1500).then(() => 6)]);
+    if (current !== c) return;
+    const d = Math.min(MAX_MS, (Math.min(end, duration) - start) * 1000);
+    await Promise.race([playSound(c, c.sound, start * 1000, c.end_ms, a), sleep(1500)]);
+    if (current !== c) return;
+    reveal(Math.max(IMAGE_MS, d));
+  };
+  img.src = convertFileSrc(c.media);
 }
 
 function play(c) {
   clearTimeout(timer);
   $("#ask").hidden = true;
-  fill($("#show"), c);
+  fill(show, c);
   $(".meme").textContent = c.title || "";
-  $("#show").hidden = false;
+  show.classList.add("prep");
+  show.hidden = false;
   $("[data-says]").textContent = c.preview ? "· ce que ton pote verra" : "t'envoie ça";
   const keep = $('[data-action="keep"]');
   // Garder : seulement s'il y a un son (une image seule ne fait pas un pad).
@@ -79,102 +266,8 @@ function play(c) {
   keep.disabled = false;
   keep.textContent = "💾 Garder";
   const vol = Math.min(1, Math.max(0, c.volume ?? 1));
-  let ms = IMAGE_MS;
-  if (c.kind === "video") {
-    img.hidden = true;
-    video.hidden = false;
-    video.volume = vol;
-    // Image muette ici : le son passe par le casque (voir playSound).
-    video.muted = true;
-    video.src = convertFileSrc(c.media);
-    const from = (c.start_ms || 0) / 1000;
-    if (from) video.currentTime = from;
-    video.onended = close;
-    video.onerror = close;
-    let showMs = MAX_MS;
-    const startTimer = () => {
-      bar($("#show .bar"), showMs);
-      clearTimeout(timer);
-      timer = setTimeout(close, showMs + 300);
-    };
-    video.onloadedmetadata = () => {
-      if (current !== c) return;
-      if (from && from < video.duration) video.currentTime = from;
-      const until = Math.min(video.duration || 15, c.end_ms ? c.end_ms / 1000 : Infinity);
-      showMs = Math.max(2000, Math.min(MAX_MS, (until - (from < video.duration ? from : 0)) * 1000));
-      startTimer();
-    };
-    video.onplaying = () => {
-      video.onplaying = null;
-      if (current !== c) return;
-      // L'image attend que le son soit prêt (il est mesuré avant de partir) :
-      // sinon le son arrivait un peu en retard sur l'image.
-      video.pause();
-      const at = video.currentTime;
-      let el = video;
-      let path = c.media;
-      if (c.sound) {
-        // Son à part (Shorts) : même départ que l'image.
-        const a = new Audio(convertFileSrc(c.sound));
-        a.muted = true;
-        audio = a;
-        a.addEventListener("loadedmetadata", () => {
-          if (audio === a) a.currentTime = at;
-        }, { once: true });
-        el = a;
-        path = c.sound;
-      }
-      let resumed = false;
-      const resume = () => {
-        if (resumed || current !== c) return;
-        resumed = true;
-        video.currentTime = at;
-        video.play().catch(() => {});
-        startTimer();
-      };
-      // Au pire, l'image repart sans attendre plus d'une seconde et demie.
-      const safety = setTimeout(resume, 1500);
-      playSound(c, path, at * 1000, c.end_ms, el).then(() => {
-        clearTimeout(safety);
-        resume();
-      });
-    };
-    video.play().catch(() => {});
-    ms = MAX_MS;
-  } else {
-    video.hidden = true;
-    img.hidden = false;
-    img.src = convertFileSrc(c.media);
-    img.onerror = close;
-    if (c.sound) {
-      const a = new Audio(convertFileSrc(c.sound));
-      audio = a;
-      a.volume = vol;
-      const start = (c.start_ms || 0) / 1000;
-      const end = c.end_ms ? c.end_ms / 1000 : Infinity;
-      a.onloadedmetadata = () => {
-        if (audio !== a) return;
-        a.currentTime = start;
-        const d = Math.min(MAX_MS, (Math.min(end, a.duration || 6) - start) * 1000);
-        bar($("#show .bar"), Math.max(IMAGE_MS, d));
-        clearTimeout(timer);
-        timer = setTimeout(close, Math.max(IMAGE_MS, d + 300));
-      };
-      a.ontimeupdate = () => {
-        if (a.currentTime >= end) a.pause();
-      };
-      // Sert à connaître la durée ; joue seulement si le casque échoue.
-      a.muted = true;
-      a.preload = "auto";
-      a.addEventListener("loadedmetadata", () => {
-        if (audio === a) a.currentTime = start;
-      }, { once: true });
-      playSound(c, c.sound, start * 1000, c.end_ms, a);
-      ms = MAX_MS;
-    }
-  }
-  bar($("#show .bar"), ms);
-  timer = setTimeout(close, ms);
+  if (c.kind === "video") playVideo(c, vol);
+  else playImage(c, vol);
 }
 
 function start(c) {
@@ -185,16 +278,15 @@ function start(c) {
   else play(c);
 }
 
-$('[data-action="accept"]').addEventListener("click", async () => {
-  await invoke("clip_accept");
+$('[data-action="accept"]').addEventListener("click", () => {
   if (current) play(current);
 });
-$('[data-action="refuse"]').addEventListener("click", close);
+$('[data-action="refuse"]').addEventListener("click", () => close());
 $('[data-action="block"]').addEventListener("click", async () => {
   if (current) await invoke("set_friend_blocked", { id: current.from_id, name: current.from, blocked: true }).catch(() => {});
   close();
 });
-$('[data-action="close"]').addEventListener("click", close);
+$('[data-action="close"]').addEventListener("click", () => close());
 $('[data-action="keep"]').addEventListener("click", async (e) => {
   const btn = e.currentTarget;
   btn.disabled = true;
