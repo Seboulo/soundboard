@@ -74,6 +74,24 @@ const DF_THRESHOLDS: (f32, f32, f32) = (-100.0, 100.0, 100.0);
 /// Un souffle imperceptible (-64 dBFS, que DeepFilterNet retire ensuite de
 /// 30 dB) le garde toujours au travail.
 const DF_DITHER: f32 = 0.0011;
+/// Micro qui rend un silence numérique (filtré par Windows ou le casque) :
+/// après une seconde de silence complet, DeepFilterNet n'est plus appelé,
+/// ce qui libère le processeur tant que tu ne parles pas. Il a vu passer
+/// cette seconde de silence et repart donc d'un état propre au premier son.
+const DF_IDLE_RMS: f32 = 1e-5;
+const DF_IDLE_FRAMES: u32 = 100;
+/// DeepFilterNet reconnaît mal une voix qui arrive très bas (micro réglé
+/// faible dans Windows) : mesuré sur un vrai micro à -41 dBFS, il écrasait le
+/// premier mot après un silence de 23 dB (toute sa réduction), puis mettait
+/// près d'une seconde à laisser passer la voix. Avec le même son 12 dB plus
+/// fort, le premier mot passe intact. On monte donc le son avant l'IA pour
+/// que la voix lui arrive vers -27 dBFS (jamais plus de 24 dB, jamais de
+/// baisse), et on le redescend d'autant à la sortie : le reste de la chaîne
+/// ne voit aucune différence de volume.
+const DF_INPUT_TARGET_DB: f32 = -27.0;
+const DF_PREGAIN_MAX_DB: f32 = 24.0;
+/// Le gain d'avant l'IA bouge de 0,2 dB par trame au plus (20 dB/s).
+const DF_PREGAIN_STEP_DB: f32 = 0.2;
 /// RNNoise n'a pas de limite : il peut retirer 60 dB et plus, ce qui donne
 /// le son « sous l'eau » sur les fins de mots. On remet donc une part du son
 /// d'origine, comme DeepFilterNet : au plus 30 dB de réduction (la porte
@@ -177,8 +195,17 @@ pub struct MicProcessor {
     atten_db: f32,
     lsnr: f32,
     frames: u32,
+    /// Trames de silence complet d'affilée (voir `DF_IDLE_FRAMES`).
+    silent_frames: u32,
     deep_in: Vec<f32>,
     deep_out: Vec<f32>,
+    /// Niveau de la voix à l'entrée (dBFS, inconnu = NaN), nombre de trames
+    /// de voix déjà mesurées, gain d'avant l'IA (dB) et gains des dernières
+    /// trames, à retirer à la sortie (voir `DF_INPUT_TARGET_DB`).
+    in_speech_db: f32,
+    in_speech_frames: u32,
+    pregain_db: f32,
+    pregains: VecDeque<f32>,
     /// Trames en attente : la porte décide sur le son qui entre et
     /// s'applique au son qui sort un peu plus tard.
     delay: VecDeque<Vec<f32>>,
@@ -281,13 +308,17 @@ impl Biquad {
 /// Bandes de l'égaliseur sur mesure : un plateau grave, quatre cloches,
 /// un plateau aigu (fréquences centrales en Hz).
 pub const EQ_BANDS_HZ: [f32; 6] = [150.0, 300.0, 800.0, 2000.0, 4000.0, 8000.0];
+/// Correction maximale d'une bande de l'égaliseur sur mesure, en dB.
+pub const EQ_MAX_DB: f32 = 4.0;
 
 /// Les réglages de chaque couleur de voix : des corrections douces (3 dB au
 /// plus), comme un ingénieur du son sur une voix parlée.
 fn equalizer(eq: VoiceEq, calibration: Option<MicCalibration>) -> Vec<Biquad> {
     match eq {
         VoiceEq::Custom => {
-            let gains = calibration.map(|c| c.eq_db).unwrap_or_default();
+            // Plafonné ici aussi : un test de voix fait avec une ancienne
+            // version pouvait demander jusqu'à 8 dB.
+            let gains = calibration.map(|c| c.eq_db).unwrap_or_default().map(|g| g.clamp(-EQ_MAX_DB, EQ_MAX_DB));
             let last = EQ_BANDS_HZ.len() - 1;
             EQ_BANDS_HZ
                 .iter()
@@ -366,6 +397,10 @@ impl MicProcessor {
             (true, true) => 3,
         };
         let voice_lag = inner_lag + delay_frames;
+        // Niveau de voix connu d'avance (test de voix) : l'IA est bien
+        // réglée dès le premier mot.
+        let in_speech_db = filters.calibration.map_or(f32::NAN, |c| c.speech_db);
+        let pregain_db = if in_speech_db.is_nan() { 0.0 } else { (DF_INPUT_TARGET_DB - in_speech_db).clamp(0.0, DF_PREGAIN_MAX_DB) };
         Self {
             filters,
             effect: Effect::new(effect),
@@ -386,8 +421,13 @@ impl MicProcessor {
             atten_db: DF_ATTEN_LIMIT_DB,
             lsnr: -15.0,
             frames: 0,
+            silent_frames: 0,
             deep_in: vec![0.0; FRAME],
             deep_out: vec![0.0; FRAME],
+            in_speech_db,
+            in_speech_frames: if in_speech_db.is_nan() { 0 } else { 1000 },
+            pregain_db,
+            pregains: VecDeque::with_capacity(DF_LAG_FRAMES + 1),
             delay: VecDeque::with_capacity(delay_frames + 1),
             delay_frames,
             voices: VecDeque::with_capacity(voice_lag + 1),
@@ -474,26 +514,60 @@ impl MicProcessor {
         let input_rms =
             (self.frame_in.iter().map(|s| (s / 32768.0).powi(2)).sum::<f32>() / FRAME as f32).sqrt();
 
+        // Gain d'avant l'IA : la voix lui arrive toujours à un niveau normal.
+        let (mut pre, mut post) = (1.0, 1.0);
+        if self.deep.is_some() && self.filters.denoise {
+            let in_db = 20.0 * input_rms.max(1e-6).log10();
+            if voice >= 0.5 && in_db > -60.0 {
+                // Les premières trames comptent beaucoup (moyenne simple),
+                // puis la mesure devient lente (~3 s).
+                if self.in_speech_db.is_nan() {
+                    self.in_speech_db = in_db;
+                }
+                self.in_speech_frames = self.in_speech_frames.saturating_add(1);
+                let rate = (1.0 / (self.in_speech_frames as f32 + 4.0)).max(0.003);
+                self.in_speech_db += (in_db - self.in_speech_db) * rate;
+            }
+            if !self.in_speech_db.is_nan() {
+                let wanted = (DF_INPUT_TARGET_DB - self.in_speech_db).clamp(0.0, DF_PREGAIN_MAX_DB);
+                self.pregain_db += (wanted - self.pregain_db).clamp(-DF_PREGAIN_STEP_DB, DF_PREGAIN_STEP_DB);
+            }
+            pre = 10f32.powf(self.pregain_db / 20.0);
+            // L'IA rend le son trois trames plus tard : on retire le gain
+            // qui avait été mis à ce moment-là.
+            self.pregains.push_back(pre);
+            if self.pregains.len() > DF_LAG_FRAMES {
+                post = self.pregains.pop_front().unwrap_or(1.0);
+            }
+        }
+
         let mut source = if !self.filters.denoise {
             self.frame_in.clone()
         } else if let Some(df) = self.deep.as_mut() {
             for (d, s) in self.deep_in.iter_mut().zip(&self.frame_in) {
                 self.dither = self.dither.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                 let white = (self.dither >> 8) as f32 / (1 << 23) as f32 - 1.0;
-                *d = s / 32768.0 + white * DF_DITHER;
+                *d = s / 32768.0 * pre + white * DF_DITHER;
             }
             let noisy = ArrayView2::from_shape((1, FRAME), &self.deep_in).expect("trame");
             let enhanced = ArrayViewMut2::from_shape((1, FRAME), &mut self.deep_out).expect("trame");
             self.dry_hist.push_back(self.frame_in.clone());
             let dry = if self.dry_hist.len() > DF_LAG_FRAMES { self.dry_hist.pop_front() } else { None };
-            match df.0.process(noisy, enhanced) {
-                Ok(lsnr) => {
-                    self.lsnr = lsnr;
-                    self.deep_out.iter().map(|s| s * 32768.0).collect()
-                }
-                Err(_) => {
-                    self.lsnr = -15.0;
-                    dry.unwrap_or_else(|| vec![0.0; FRAME])
+            self.silent_frames = if input_rms < DF_IDLE_RMS { self.silent_frames.saturating_add(1) } else { 0 };
+            if self.silent_frames > DF_IDLE_FRAMES {
+                // Rien à nettoyer : l'IA rendrait le même silence.
+                self.lsnr = -15.0;
+                vec![0.0; FRAME]
+            } else {
+                match df.0.process(noisy, enhanced) {
+                    Ok(lsnr) => {
+                        self.lsnr = lsnr;
+                        self.deep_out.iter().map(|s| s * 32768.0 / post).collect()
+                    }
+                    Err(_) => {
+                        self.lsnr = -15.0;
+                        dry.unwrap_or_else(|| vec![0.0; FRAME])
+                    }
                 }
             }
         } else {
@@ -524,8 +598,8 @@ impl MicProcessor {
         }
         let ai_voice = self.deep.is_some() && self.filters.denoise && self.lsnr >= DF_KEEP_LSNR_DB;
 
-        let target = if !self.filters.gate {
-            1.0
+        let gate_open = if !self.filters.gate {
+            true
         } else {
             let open = if self.filters.gate_auto {
                 self.auto_gate(voice, input_rms) || (self.hold > 0 && ai_voice)
@@ -540,12 +614,11 @@ impl MicProcessor {
             } else {
                 self.hold = self.hold.saturating_sub(1);
             }
-            if self.hold > 0 {
-                1.0
-            } else {
-                0.0
-            }
+            self.hold > 0
         };
+        // Fermée, la porte coupe tout : une porte qui ne ferait que baisser
+        // laisserait passer le clavier ou la télé entre deux phrases.
+        let target = if gate_open { 1.0 } else { 0.0 };
 
         if self.delay_frames > 0 {
             self.delay.push_back(source);
@@ -568,7 +641,7 @@ impl MicProcessor {
         let level = ((20.0 * rms.max(1e-6).log10() + 60.0) / 60.0).clamp(0.0, 1.0);
         self.meter.level.store(level.to_bits(), Ordering::Relaxed);
         self.meter.voice.store(voice.to_bits(), Ordering::Relaxed);
-        self.meter.open.store(target > 0.0, Ordering::Relaxed);
+        self.meter.open.store(gate_open, Ordering::Relaxed);
 
         // Pauses : la voix qui entre (en avance) et celle qui sort sont
         // toutes deux absentes depuis 100 ms, et l'IA n'entend pas de voix
@@ -688,6 +761,8 @@ fn to_db(power: f32) -> f32 {
 /// Le plafond de sécurité est à part (`Limiter`) et toujours actif.
 struct VoiceLeveler {
     speech_db: f32,
+    /// Trames de voix déjà mesurées (les premières comptent davantage).
+    measured: u32,
     gain_db: f32,
     /// Gain du début et de la fin de la trame en cours (linéaire).
     from: f32,
@@ -708,6 +783,9 @@ struct VoiceLeveler {
 const LEVEL_TARGET_DB: f32 = -20.0;
 const LEVEL_MIN_DB: f32 = -6.0;
 const LEVEL_MAX_DB: f32 = 18.0;
+/// Vitesse de la mesure de la voix par le volume automatique, par trame de
+/// 10 ms (~3 s).
+const LEVEL_TRACK: f32 = 0.003;
 /// Le dé-esseur agit quand l'aigu (bande large autour de 7 kHz) dépasse
 /// -6 dB de l'énergie totale (une voyelle est vers -25 dB, un S vers -3 dB)
 /// et qu'il est audible.
@@ -723,11 +801,14 @@ impl VoiceLeveler {
     /// `speech_db` : niveau de ta voix s'il est déjà connu (test de voix),
     /// pour que le premier mot sorte déjà au bon volume.
     fn new(speech_db: Option<f32>) -> Self {
+        // Niveau connu (test de voix) : pas de démarrage rapide.
+        let measured = if speech_db.is_some() { 1000 } else { 0 };
         let speech_db = speech_db.unwrap_or(LEVEL_TARGET_DB);
         let gain_db = (LEVEL_TARGET_DB - speech_db).clamp(LEVEL_MIN_DB, LEVEL_MAX_DB);
         let gain = 10f32.powf(gain_db / 20.0);
         Self {
             speech_db,
+            measured,
             gain_db,
             from: gain,
             to: gain,
@@ -746,8 +827,14 @@ impl VoiceLeveler {
     fn begin_frame(&mut self, rms: f32, speaking: bool) {
         let db = 20.0 * rms.max(1e-6).log10();
         if speaking && db > -55.0 {
-            // ~0,5 s : suit ta façon de parler, pas chaque syllabe.
-            self.speech_db += (db - self.speech_db) * 0.02;
+            // ~3 s : suit ta façon de parler, pas chaque mot. Plus rapide,
+            // un rire ou un cri faisait baisser la suite de la phrase (le
+            // compresseur et le limiteur s'occupent des éclats eux-mêmes).
+            // Sans test de voix, la première seconde de parole règle le
+            // volume (moyenne simple) : pas besoin d'attendre 3 s au lancement.
+            self.measured = self.measured.saturating_add(1);
+            let rate = (1.0 / (self.measured as f32 + 20.0)).max(LEVEL_TRACK);
+            self.speech_db += (db - self.speech_db) * rate;
         }
         let wanted = (LEVEL_TARGET_DB - self.speech_db).clamp(LEVEL_MIN_DB, LEVEL_MAX_DB);
         self.gain_db += (wanted - self.gain_db) * 0.03;
@@ -964,7 +1051,8 @@ mod tests {
     fn leveled(amp: f32) -> f32 {
         let mut l = VoiceLeveler::new(None);
         let mut out = Vec::new();
-        for f in 0..500 {
+        // 15 s : le volume automatique prend quelques secondes pour monter.
+        for f in 0..1500 {
             let frame: Vec<f32> = (0..FRAME).map(|i| ((f * FRAME + i) as f32 * 0.03).sin() * amp).collect();
             l.begin_frame(rms(&frame), true);
             out.extend(frame.iter().map(|&x| l.process(x, x)));
@@ -986,6 +1074,22 @@ mod tests {
 
     fn tone(freq: f32, amp: f32, n: usize) -> Vec<f32> {
         (0..n).map(|i| (i as f32 * freq / RATE as f32 * std::f32::consts::TAU).sin() * amp).collect()
+    }
+
+    #[test]
+    fn voice_leveler_does_not_pump_after_a_shout() {
+        // Voix normale, 1 s de cri (+14 dB), puis voix normale : une seconde
+        // après le cri, le gain a peu bougé (avant : environ -5 dB).
+        let mut l = VoiceLeveler::new(None);
+        let mut gain_after = 0.0;
+        for f in 0..700 {
+            let amp = if (400..500).contains(&f) { 0.7 } else { 0.14 };
+            l.begin_frame(amp / 2f32.sqrt(), true);
+            if f == 600 {
+                gain_after = l.gain_db;
+            }
+        }
+        assert!(gain_after > -3.5, "gain après le cri : {gain_after} dB");
     }
 
     #[test]
@@ -1023,11 +1127,12 @@ mod tests {
 
     #[test]
     fn custom_equalizer_follows_calibration() {
-        let calibration = MicCalibration { noise_db: -70.0, speech_db: -30.0, eq_db: [-6.0, 0.0, 0.0, 3.0, 8.0, 6.0] };
+        // Un ancien test de voix (jusqu'à 8 dB) est ramené à 4 dB au plus.
+        let calibration = MicCalibration { noise_db: -70.0, speech_db: -30.0, eq_db: [-6.0, 0.0, 0.0, 3.0, 8.0, 3.0] };
         let mut eq = equalizer(VoiceEq::Custom, Some(calibration));
-        assert!(gain_db(&mut eq, 50.0) < -5.0);
-        assert!((gain_db(&mut eq, 4000.0) - 8.0).abs() < 2.0, "{}", gain_db(&mut eq, 4000.0));
-        assert!(gain_db(&mut eq, 14_000.0) > 5.0);
+        assert!((gain_db(&mut eq, 50.0) + 4.0).abs() < 0.5);
+        assert!((gain_db(&mut eq, 4000.0) - 4.0).abs() < 1.5, "{}", gain_db(&mut eq, 4000.0));
+        assert!(gain_db(&mut eq, 14_000.0) > 2.5);
         // Sans test de voix, rien ne change.
         assert!(equalizer(VoiceEq::Custom, None).is_empty());
     }
@@ -1048,6 +1153,40 @@ mod tests {
             longest = longest.max(run_len);
         }
         assert!(longest < 48, "trou de {longest} échantillons");
+    }
+
+    #[test]
+    fn deep_filter_rests_on_digital_silence_and_wakes_up() {
+        let filters = MicFilters { denoise: true, strong: true, ..OFF };
+        let mut p = MicProcessor::new(1, 48_000, filters, VoiceEffect::None, Default::default());
+        let mut out = Vec::new();
+        p.process(std::iter::repeat_n(0.0, 48_000 * 3), &mut out);
+        assert!(p.silent_frames > DF_IDLE_FRAMES, "l'IA tourne encore sur le silence");
+        out.clear();
+        p.process(tone(300.0, 0.03, 24_000).into_iter(), &mut out);
+        assert_eq!(p.silent_frames, 0);
+        let rms = |o: &[f32]| (o[9600..].iter().map(|v| v * v).sum::<f32>() / (o.len() - 9600) as f32).sqrt();
+        // Même son sur un micro qui n'a jamais été au repos.
+        let fresh = run(filters, 48_000, 1, &tone(300.0, 0.03, 24_000));
+        assert!(rms(&out) > rms(&fresh) * 0.5, "la voix revient mal après le silence : {} / {}", rms(&out), rms(&fresh));
+    }
+
+    #[test]
+    fn gain_before_deep_filter_is_undone_after_it() {
+        // Micro faible connu par le test de voix : +15 dB avant l'IA.
+        let calibration = MicCalibration { noise_db: -70.0, speech_db: -42.0, eq_db: [0.0; 6] };
+        let boosted = MicFilters { denoise: true, strong: true, calibration: Some(calibration), ..OFF };
+        let mut input = tone(300.0, 0.01, 48_000);
+        input.iter_mut().zip(noise(48_000, 0.001)).for_each(|(s, n)| *s += n);
+        let mut p = MicProcessor::new(1, 48_000, boosted, VoiceEffect::None, Default::default());
+        assert!((p.pregain_db - 15.0).abs() < 0.01);
+        let mut out = Vec::new();
+        p.process(input.iter().copied(), &mut out);
+        // Jamais plus fort qu'à l'entrée : le gain est bien retiré à la
+        // sortie. (L'effet sur le premier mot ne se mesure que sur une vraie
+        // voix : -23 dB sans ce gain, -2 dB avec, sur un micro à -41 dBFS.)
+        let db = 20.0 * (rms(&out[24_000..]) / rms(&input[24_000..])).log10();
+        assert!(db < 0.5, "sortie {db} dB au-dessus de l'entrée");
     }
 
     #[test]

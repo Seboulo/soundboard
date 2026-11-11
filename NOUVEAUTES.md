@@ -1,6 +1,57 @@
 Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
 Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
+Nouveautés de la 3.0.2 :
+- Une vidéo envoyée par un pote ne te fait plus sortir de ton jeu : si Windows donne quand même la main à la fenêtre de l'extrait, l'appli la rend aussitôt au jeu.
+- Plus de boîte d'erreur Windows « ffmpeg.exe - Image incorrecte » : si ffmpeg est abîmé, l'appli le retélécharge une fois ; si Windows le bloque (Contrôle intelligent des applications), la vidéo part telle quelle, sans message.
+- Vidéos reçues : fini les saccades en boucle quand la vidéo est lente à se caler sur le son (elle rattrape en douceur au lieu de sauter sans arrêt).
+- Vidéos reçues : un extrait qui arrive pile quand le précédent se ferme n'est plus perdu ; la demande « Afficher / Refuser » ne reste plus bloquée derrière un jeu en plein écran ; une vidéo longue à charger n'est plus fermée en pleine préparation.
+- Une vidéo illisible sur ton PC est notée dans le journal (Réglages → « Copier le rapport ») au lieu de disparaître sans trace.
+- Téléphone : si le port est déjà pris par un autre programme, l'appli en choisit un libre toute seule (rescanne le QR code).
+
+Nouveautés de la 3.0.1 :
+- « Favoris » dans la barre de gauche : tous tes sons favoris au même endroit, quel que soit leur onglet.
+- Bouton « ⋯ » au survol d'une tuile : Modifier, Jouer, Favori, Choisir un raccourci, Ranger dans un onglet, Supprimer, sans ouvrir la fiche du son.
+- Sur les tuiles, le nom est tout en bas. « + Raccourci » passe dans le menu « ⋯ ».
+- Dans « Modifier le son », Échap demande confirmation avant d'abandonner des modifications.
+- Textes qui ne sont plus coupés quand la fenêtre est étroite (état du micro, recherche, tri).
+- Petites tuiles : elles ne se chevauchent plus quand la taille est réglée au minimum.
+- Les questions (abandonner des modifications, restaurer une sauvegarde, remettre les stats à zéro, ne plus suivre un pack) s'affichent dans le style de l'appli, avec des boutons qui disent ce qu'ils font : « Garder les sons » ou « Supprimer les sons » au lieu de OK/Annuler.
+- Fenêtre étroite : chaque onglet montre ses deux premières lettres dans la barre de gauche (avant, ils avaient tous le même dossier). « Stop » garde son nom plus longtemps.
+- Mode Surprise : quand il est activé, le bouton devient bleu plein avec « Surprise activée », impossible de l'oublier. Son icône est dessinée comme les autres.
+- Le curseur de taille des pads a une petite et une grande grille de chaque côté.
+- « Modifier le son » : la couleur se choisit en un clic parmi les teintes de l'appli (la pastille arc-en-ciel ouvre toutes les couleurs). « Sans effet » est le premier choix des effets et s'allume quand aucun effet n'est mis.
+- Dans « Tous », un favori reste dans son onglet (marqué d'une étoile, en tête avec le tri « Favoris d'abord ») : les nombres de sons sont les mêmes à gauche et sur la page. Tous les favoris restent réunis dans « Favoris », à gauche.
+- Menu « ⋯ » : des icônes dessinées partout, plus de mélange avec des emojis.
+- Vue liste : l'étoile et les boutons de chaque son sont alignés avec les colonnes.
+- Une page vide n'affiche plus « 0 son » à côté du titre.
+- Tuiles : le raccourci d'un son s'affiche en petit en haut à droite, donc tous les noms restent alignés en bas.
+- Des icônes dessinées remplacent les derniers emojis de l'interface (rubrique « Potes », titres des fenêtres). Ceux de tes sons et des effets ne changent pas.
+- Réglages : l'interrupteur « Réglages avancés » est juste sous les rubriques.
+- Salon entre potes : « Copier » est grisé tant qu'il n'y a pas de code.
+- Micro : le nettoyage de la voix passe en priorité haute, pour éviter les micro-coupures quand un jeu occupe tout le processeur.
+- Micro : le volume automatique réagit plus calmement (en 3 s environ). Après un rire ou un cri, la suite de la phrase ne baisse presque plus.
+- Micro faible : la réduction de bruit forte ne mange plus le premier mot après un silence (mesuré sur un vrai micro : le premier mot sortait 23 dB trop bas). Le test de voix conseille plus tôt de monter le volume du micro dans Windows.
+- Volume automatique : sans test de voix, il se règle dès la première seconde de parole.
+- Test de voix : l'égaliseur sur mesure corrige au plus 4 dB (8 avant), pour garder la couleur de ta voix.
+
+Nouveautés de la 3.0 :
+- Nouvelle interface, plus claire et plus calme. Les onglets passent dans une barre à gauche (Tous, Récents, Les plus joués, Envoyer, puis tes onglets avec leur nombre de sons). « + Nouvel onglet » est toujours visible.
+- Une seule barre d'outils en haut, tous les boutons restent sous la main. Stop ne devient rouge que pendant qu'un son joue.
+- Un grand titre indique l'onglet ouvert et son nombre de sons. Le tri, la taille des pads et le menu ⋯ sont juste à côté.
+- Nouvelles tuiles : l'emoji en haut à gauche, le nom en bas, plus de sons à l'écran. Réglages → Général → « Style des tuiles » : Douces (pastel), Vives (couleurs pleines) ou Classiques (l'ancien rendu).
+- La fenêtre « Modifier le son » tient sur deux colonnes (Apparence, Lecture, Découpe, Effets) : presque plus besoin de défiler. Annuler et Enregistrer sont en haut, et rien ne change tant que tu n'as pas enregistré. Chaque curseur affiche sa valeur.
+- Onglet Envoyer : « Étape 1 sur 3 » et un sélecteur d'étapes plus compact.
+- Nouveau logo, plus sobre.
+- L'appli consomme moins quand elle tourne en fond : l'anti-bruit se met au repos dans les silences, les images des pads ne tournent plus en boucle, et la fenêtre cachée près de l'horloge se fait légère.
+
+Nouveautés de la 2.4.2 :
+- Les vidéos longues (dont seul un passage est pris) partent aussi par leur lien : l'appli du pote récupère le même passage elle-même. Fini l'erreur « le relais refuse ce fichier » pour ces vidéos. Ton pote doit aussi être en 2.4.2 (sinon elles lui partent en fichier, comme avant).
+- Affichage des extraits vidéo revu : la vidéo est préparée en coulisses (bon moment, première image, son prêt) puis apparaît d'un coup. Fini l'image qui démarre, se fige et repart, et la fenêtre qui change de taille devant toi.
+- La fenêtre prend la forme de la vidéo : une vidéo verticale (Shorts, TikTok) s'affiche en carte verticale, sans grandes bandes noires.
+- L'image reste calée sur le son pendant tout l'extrait.
+- Une vidéo envoyée en fichier est d'abord convertie au format que tout PC lit (H.264 + AAC, 720p au plus) et coupée au passage choisi : elle démarre tout de suite chez le pote et pèse moins lourd. Il faut ffmpeg (il s'installe tout seul au premier envoi de vidéo s'il n'est pas déjà là) ; sinon la vidéo part telle quelle, comme avant.
+
 Nouveautés de la 2.4.1 :
 - Correctif : l'onglet « 🎬 Envoyer » restait bloqué (recherche et envoi sans effet, impossible de revenir aux sons) quand une recherche était gardée de la fois d'avant.
 

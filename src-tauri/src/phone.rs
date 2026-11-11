@@ -46,7 +46,7 @@ impl PhoneServer {
     pub fn start(port: u16, token: String, handler: Handler) -> Result<Self, String> {
         let server = Arc::new(
             Server::http(("0.0.0.0", port))
-                .map_err(|e| format!("téléphone : le port {port} est indisponible ({e})"))?,
+                .map_err(|e| format!("le port {port} est déjà pris par un autre programme ({e})"))?,
         );
         let srv = server.clone();
         let thread = thread::Builder::new()

@@ -83,6 +83,10 @@ pub enum Msg {
         end_ms: Option<u64>,
         #[serde(default)]
         volume: Option<f32>,
+        /// Vidéo longue : le pote ne récupère que le passage (ffmpeg), qui
+        /// commence à `start_ms` dans la vidéo du lien.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        cut: bool,
     },
 }
 
@@ -96,8 +100,10 @@ fn is_zero(n: &u64) -> bool {
 
 /// L'appli sait recevoir une vidéo par son seul lien (et la télécharger).
 pub const CAP_LINK: u32 = 1;
+/// L'appli sait ne récupérer que le passage d'une vidéo longue reçue par lien.
+pub const CAP_CUT: u32 = 2;
 /// Ce que cette version sait faire.
-const MY_CAPS: u32 = CAP_LINK;
+const MY_CAPS: u32 = CAP_LINK | CAP_CUT;
 /// Un fichier déjà envoyé au relais y reste 3 h : pendant 2 h 30, on renvoie
 /// son adresse au lieu de le renvoyer (ça ne compte pas dans la limite
 /// d'envois du relais, et ça part tout de suite).
@@ -225,8 +231,18 @@ impl Room {
     /// Tous ceux qui vont recevoir (`to`, ou tout le salon si vide)
     /// savent-ils télécharger une vidéo à partir de son lien ?
     pub fn links_ok(&self, to: &str) -> bool {
+        self.all_can(to, CAP_LINK)
+    }
+
+    /// Tous ceux qui vont recevoir savent-ils ne prendre que le passage
+    /// d'une vidéo longue reçue par lien ?
+    pub fn cut_links_ok(&self, to: &str) -> bool {
+        self.all_can(to, CAP_LINK | CAP_CUT)
+    }
+
+    fn all_can(&self, to: &str, caps: u32) -> bool {
         let inner = self.inner.lock().unwrap();
-        let ok = |m: &(String, Instant, u32)| m.2 & CAP_LINK != 0;
+        let ok = |m: &(String, Instant, u32)| m.2 & caps == caps;
         if to.is_empty() {
             inner.members.values().filter(|m| m.1.elapsed() < MEMBER_TTL).all(ok)
         } else {
@@ -623,6 +639,10 @@ mod tests {
         // Un son reçu ne fait pas oublier ce que l'appli sait faire.
         room.inner.lock().unwrap().seen("new", "Léa", None);
         assert!(room.links_ok("new"));
+        // Une 2.4 (lien sans passage seul) reçoit les vidéos longues en fichier.
+        assert!(!room.cut_links_ok("new"));
+        room.inner.lock().unwrap().seen("new", "Léa", Some(CAP_LINK | CAP_CUT));
+        assert!(room.cut_links_ok("new"));
         // Un ancien « Hi » (sans caps) se lit toujours.
         let hi: Msg = serde_json::from_str(r#"{"t":"hi","from":"a","name":"b"}"#).unwrap();
         assert_eq!(hi, Msg::Hi { from: "a".into(), name: "b".into(), reply: false, caps: 0 });

@@ -156,7 +156,21 @@ fn apply_phone(app: &AppHandle) {
     }
     let handle = app.clone();
     let handler: phone::Handler = std::sync::Arc::new(move |req| phone_request(&handle, req));
-    let res = phone::PhoneServer::start(settings.phone_port, settings.phone_token.clone(), handler);
+    // Port déjà pris (vieille copie de l'appli restée ouverte, autre
+    // programme…) : on essaie les suivants et on garde celui qui marche.
+    let first = settings.phone_port;
+    let mut res = phone::PhoneServer::start(first, settings.phone_token.clone(), handler.clone());
+    let mut port = first;
+    while res.is_err() && port < first.saturating_add(20) && port < u16::MAX {
+        port += 1;
+        if let Ok(server) = phone::PhoneServer::start(port, settings.phone_token.clone(), handler.clone()) {
+            journal::write(&format!("Téléphone : port {first} pris, page servie sur le port {port}"));
+            let mut config = state.config.lock().unwrap();
+            config.settings.phone_port = port;
+            let _ = state.save(&config);
+            res = Ok(server);
+        }
+    }
     match res {
         Ok(server) => {
             *state.phone.lock().unwrap() = Some(server);
@@ -296,8 +310,52 @@ fn play_request(state: &AppState, sound: &Sound) -> PlayRequest {
     }
 }
 
+/// Fenêtre cachée (barre des tâches) : on demande à WebView2 de rendre le
+/// plus de mémoire possible ; elle reprend son niveau normal à l'affichage.
+/// Réglage officiel de Microsoft (`MemoryUsageTargetLevel`), sans effet sur
+/// les sons, les raccourcis ni le micro, qui tournent hors de la page.
+#[cfg(windows)]
+fn webview_low_memory(window: &tauri::WebviewWindow, low: bool) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+    };
+    use windows::core::Interface;
+    let _ = window.with_webview(move |wv| unsafe {
+        let Ok(core) = wv.controller().CoreWebView2() else { return };
+        let Ok(core) = core.cast::<ICoreWebView2_19>() else { return };
+        let level = if low {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+        } else {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+        };
+        let _ = core.SetMemoryUsageTargetLevel(level);
+    });
+}
+#[cfg(not(windows))]
+fn webview_low_memory(_window: &tauri::WebviewWindow, _low: bool) {}
+
+/// Pas de boîte d'erreur de Windows (« Image incorrecte », DLL manquante…)
+/// quand un outil lancé par l'appli (ffmpeg, yt-dlp) ne démarre pas : l'appli
+/// voit l'échec et fait sans. Les programmes lancés héritent de ce réglage.
+#[cfg(windows)]
+fn quiet_error_boxes() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetErrorMode(mode: u32) -> u32;
+    }
+    const SEM_FAILCRITICALERRORS: u32 = 0x0001;
+    const SEM_NOOPENFILEERRORBOX: u32 = 0x8000;
+    // SAFETY: simple réglage du processus courant.
+    unsafe {
+        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
+    }
+}
+#[cfg(not(windows))]
+fn quiet_error_boxes() {}
+
 fn show_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        webview_low_memory(&window, false);
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -2300,6 +2358,7 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            quiet_error_boxes();
             journal::init(app.path().app_data_dir()?);
             let config_path = app.path().app_config_dir()?.join("config.json");
             let sounds_dir = app.path().app_data_dir()?.join("sounds");
@@ -2377,10 +2436,18 @@ pub fn run() {
             // Lancé avec Windows : on reste discret près de l'horloge.
             if !std::env::args().any(|a| a == MINIMIZED_ARG) {
                 show_window(app.handle());
+            } else if let Some(w) = app.get_webview_window("main") {
+                webview_low_memory(&w, true);
             }
             Ok(())
         })
         .on_window_event(|window, event| {
+            // L'extrait ne doit jamais prendre la main : on la rend au jeu.
+            if let WindowEvent::Focused(true) = event {
+                if clip::is_clip_window(window.label()) {
+                    clip::give_focus_back();
+                }
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 // La fenêtre des extraits se ferme simplement (sans quitter l'app).
                 if clip::is_clip_window(window.label()) {
@@ -2391,6 +2458,9 @@ pub fn run() {
                 if to_tray {
                     api.prevent_close();
                     let _ = window.hide();
+                    if let Some(w) = window.app_handle().get_webview_window(window.label()) {
+                        webview_low_memory(&w, true);
+                    }
                 } else {
                     window.app_handle().exit(0);
                 }
@@ -2481,7 +2551,7 @@ pub fn run() {
             extras::set_friend_blocked,
             clip::send_clip,
             clip::clip_pending,
-            clip::clip_accept,
+            clip::clip_fit,
             clip::clip_close,
         ])
         .run(tauri::generate_context!())

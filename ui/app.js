@@ -250,7 +250,9 @@ const RECENT_TAB = "\u0000recent";
 // Onglet spécial des sons les plus joués.
 const TOP_TAB = "\u0000top";
 const TOP_COUNT = 20;
-const isSpecialTab = (tab) => tab === RECENT_TAB || tab === TOP_TAB;
+// Onglet spécial des favoris, quel que soit leur onglet.
+const FAV_TAB = "\u0000fav";
+const isSpecialTab = (tab) => tab === RECENT_TAB || tab === TOP_TAB || tab === FAV_TAB;
 const RECENT_KEY = "soundboard.recent";
 let recent = [];
 try {
@@ -288,16 +290,36 @@ function tabCategory() {
 function renderTabs() {
   const cats = categories();
   if (currentTab && !isSpecialTab(currentTab) && !cats.includes(currentTab)) currentTab = null;
-  const tab = (label, value, iconName) => {
+  const tab = (label, value, iconName, count) => {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "tab" + (currentTab === value && !sendOpen ? " active" : "");
     if (iconName) b.append(svgIcon(iconName));
-    b.append(label);
+    // Barre réduite : tes onglets montrent leurs 2 premières lettres au lieu du même dossier.
+    if (iconName === "folder") {
+      const ini = document.createElement("span");
+      ini.className = "tab-initial";
+      const ch = Array.from(label.trim());
+      ini.textContent = (ch[0] || "?").toUpperCase() + (ch[1] && /\p{L}/u.test(ch[1]) ? ch[1].toLowerCase() : "");
+      b.append(ini);
+    }
+    const txt = document.createElement("span");
+    txt.className = "tab-name";
+    txt.textContent = label;
+    b.append(txt);
+    // Barre latérale réduite (petite fenêtre) : le nom reste en info-bulle.
+    b.setAttribute("aria-label", label);
+    if (!b.title) b.title = label;
+    if (count != null) {
+      const n = document.createElement("span");
+      n.className = "tab-count";
+      n.textContent = count;
+      b.append(n);
+    }
     // Un son glissé sur l'onglet y est rangé.
     if (value && !isSpecialTab(value)) {
       b.dataset.cat = value;
-      b.title = "Glisse pour changer l'ordre · clic droit : renommer, supprimer";
+      b.title = `${label} · glisse pour changer l'ordre, clic droit : renommer, supprimer`;
       b.addEventListener("pointerdown", (e) => startTabDrag(e, b, value));
     }
     b.addEventListener("click", () => {
@@ -318,10 +340,17 @@ function renderTabs() {
   // Sans aucun son, les outils de tri et d'affichage ne servent à rien : on les cache.
   const empty = state.config.sounds.length === 0;
   document.body.classList.toggle("no-sounds", empty);
-  const special = empty ? [] : [tab("Tous", null), tab("Récents", RECENT_TAB, "clock"), tab("Top", TOP_TAB, "chart")];
-  // Nom court pour garder les onglets sur une ligne ; le nom complet en info-bulle.
-  if (special.length) special[2].title = "Les plus utilisés : tes 20 sons les plus joués";
-  $("#tabs").replaceChildren(...special, ...cats.map((c) => tab(c, c)));
+  const special = empty
+    ? []
+    : [tab("Tous", null, "grid", state.config.sounds.length), tab("Récents", RECENT_TAB, "clock"), tab("Les plus joués", TOP_TAB, "chart"), tab("Favoris", FAV_TAB, "star", state.config.sounds.filter((s) => s.favorite).length)];
+  if (special.length) special[2].title = "Tes 20 sons les plus joués";
+  // Barre latérale : la bibliothèque, « Envoyer », puis tes onglets.
+  const head = document.createElement("div");
+  head.className = "side-head";
+  head.textContent = "Mes onglets";
+  const count = (c) => state.config.sounds.filter((s) => s.category === c).length;
+  $("#tabs").replaceChildren(...special, $("#tab-send"), ...(cats.length ? [head] : []), ...cats.map((c) => tab(c, c, "folder", count(c))));
+  renderViewTitle();
   // « Récents » et « Les plus utilisés » ont leur propre ordre : le tri n'y sert à rien.
   $("#sort").hidden = currentTab === RECENT_TAB || currentTab === TOP_TAB;
   $("#categories").replaceChildren(...cats.map((c) => new Option(c)));
@@ -335,7 +364,8 @@ function renderStatus() {
   const s = state.config.settings;
   const ok = s.virtual_device && state.devices.outputs.includes(s.virtual_device);
   pill.className = "pill " + (ok ? "ok" : "ko");
-  pill.textContent = ok ? "● Discord : actif" : "● Micro virtuel non configuré";
+  pill.textContent = ok ? "● Discord : actif" : "● Micro à configurer";
+  pill.title = ok ? "Discord : actif" : "Micro à configurer";
 }
 
 /** Bouton adapté à chaque problème : on va droit à ce qui le corrige. */
@@ -416,6 +446,8 @@ function renderGrid() {
   } else if (currentTab === RECENT_TAB) {
     const byId = new Map(state.config.sounds.map((s) => [s.id, s]));
     sounds = recent.map((id) => byId.get(id)).filter((s) => s && matches(s));
+  } else if (currentTab === FAV_TAB) {
+    sounds = sortSounds(state.config.sounds.filter((s) => s.favorite && matches(s)));
   } else {
     sounds = sortSounds(state.config.sounds.filter((s) => (!currentTab || s.category === currentTab) && matches(s)));
   }
@@ -447,14 +479,27 @@ function renderGrid() {
   $("#top-empty").hidden = !(currentTab === TOP_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
   $("#tab-empty").hidden = !(currentTab && !isSpecialTab(currentTab) && sounds.length === 0 && !q);
   $("#recent-empty").hidden = !(currentTab === RECENT_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
+  $("#fav-empty").hidden = !(currentTab === FAV_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
   $("#search-empty").hidden = !(q && sounds.length === 0 && state.config.sounds.length > 0);
   $('#search-empty [data-action="search-online"] span').textContent = `Chercher « ${$("#search").value.trim()} » en ligne`;
   renderPlaying();
+  renderViewTitle(sounds.length);
+}
+
+/** Grand titre au-dessus des sons : l'onglet ouvert et son nombre de sons. */
+let lastShown = 0;
+function renderViewTitle(shown = lastShown) {
+  lastShown = shown;
+  const title = sendOpen ? "Envoyer" : currentTab === RECENT_TAB ? "Récents" : currentTab === TOP_TAB ? "Les plus joués" : currentTab === FAV_TAB ? "Favoris" : currentTab || "Tous";
+  $("#view-title").textContent = title;
+  const n = sendOpen || !shown ? null : shown;
+  $("#view-count").textContent = n == null ? "" : `${n} son${n > 1 ? "s" : ""}`;
 }
 
 // ---------- Groupes de « Tous » ----------
 
-// Dans « Tous » : les favoris en haut, puis un groupe repliable par onglet.
+// Dans « Tous » : un groupe repliable par onglet. Les favoris restent dans leur
+// onglet (ils ont leur entrée « Favoris » à gauche), les nombres sont donc les mêmes.
 const FAV_GROUP = "\u0000fav";
 const NO_TAB_GROUP = "\u0000none";
 const GROUPS_KEY = "soundboard.closedGroups";
@@ -466,8 +511,7 @@ try {
 function soundGroups(sounds, showEmpty) {
   const groups = [];
   const add = (key, label, list, keepEmpty) => (list.length || keepEmpty) && groups.push({ key, label, sounds: list });
-  add(FAV_GROUP, "Favoris", sounds.filter((s) => s.favorite));
-  const rest = sounds.filter((s) => !s.favorite);
+  const rest = sounds;
   // Un onglet tout juste créé reste visible pour qu'on puisse y glisser des sons.
   for (const c of categories()) add(c, c, rest.filter((s) => s.category === c), showEmpty);
   add(NO_TAB_GROUP, "Sans onglet", rest.filter((s) => !s.category));
@@ -623,22 +667,54 @@ dlgTab.addEventListener("close", async () => {
 // Clic droit sur le fond de la grille ou sur la barre des onglets.
 const ctxMenu = $("#ctx-menu");
 const closeCtxMenu = () => (ctxMenu.hidden = true);
+function ctxItem(icon, label, run, danger) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.setAttribute("role", "menuitem");
+  if (danger) b.className = "danger";
+  b.append(svgIcon(icon), label);
+  b.addEventListener("click", () => {
+    closeCtxMenu();
+    run();
+  });
+  return b;
+}
+/** Affiche le menu près du point (x, y), sans sortir de la fenêtre. */
+function showCtxMenu(items, x, y) {
+  ctxMenu.replaceChildren(...items);
+  ctxMenu.hidden = false;
+  const { width, height } = ctxMenu.getBoundingClientRect();
+  ctxMenu.style.left = Math.max(8, Math.min(x, innerWidth - width - 8)) + "px";
+  ctxMenu.style.top = Math.max(8, Math.min(y, innerHeight - height - 8)) + "px";
+  $("button", ctxMenu).focus();
+}
+/** Menu « ⋯ » d'une tuile : les actions courantes sans ouvrir la fiche. */
+function openPadMenu(sound, anchor) {
+  const isPlaying = playing.some((p) => p.id === sound.id);
+  const items = [
+    ctxItem("pencil", "Modifier…", () => openSoundDialog(sound)),
+    ctxItem(isPlaying ? "stop" : "volume", isPlaying ? "Arrêter" : "Jouer", () => playSound(sound.id)),
+    ctxItem("star", sound.favorite ? "Retirer des favoris" : "Mettre en favori", () => call("toggle_favorite", { id: sound.id })),
+    ctxItem("keyboard", sound.hotkey ? "Changer le raccourci" : "Choisir un raccourci", () => {
+      const chip = document.querySelector(`#grid .pad[data-id="${CSS.escape(sound.id)}"] .add-key`);
+      if (chip) captureHotkey(sound, chip);
+      else openSoundDialog(sound);
+    }),
+  ];
+  const move = (category) => call("update_sound", { sound: { ...sound, category } });
+  const others = categories().filter((c) => c !== sound.category);
+  if (others.length || sound.category) items.push(document.createElement("hr"));
+  for (const c of others) items.push(ctxItem("folder", `Ranger dans « ${c} »`, () => move(c)));
+  if (sound.category) items.push(ctxItem("folder", `Sortir de « ${sound.category} »`, () => move(null)));
+  items.push(document.createElement("hr"), ctxItem("trash", "Supprimer", () => deleteSound(sound), true));
+  const r = anchor.getBoundingClientRect();
+  showCtxMenu(items, r.left, r.bottom + 4);
+}
 document.addEventListener("contextmenu", (e) => {
   if (e.target.closest(".pad, dialog, input, textarea, .menu") || !e.target.closest("main, .tabbar")) return;
   e.preventDefault();
   const cat = e.target.closest("[data-cat]")?.dataset.cat || null;
-  const item = (icon, label, run, danger) => {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.setAttribute("role", "menuitem");
-    if (danger) b.className = "danger";
-    b.append(svgIcon(icon), label);
-    b.addEventListener("click", () => {
-      closeCtxMenu();
-      run();
-    });
-    return b;
-  };
+  const item = ctxItem;
   const items = [item("plus", "Nouvel onglet", () => openTabDialog("new"))];
   if (cat) {
     items.push(
@@ -646,13 +722,7 @@ document.addEventListener("contextmenu", (e) => {
       item("trash", `Supprimer « ${cat} »`, () => openTabDialog("delete", cat), true),
     );
   }
-  ctxMenu.replaceChildren(...items);
-  ctxMenu.hidden = false;
-  // Le menu reste dans la fenêtre.
-  const { width, height } = ctxMenu.getBoundingClientRect();
-  ctxMenu.style.left = Math.max(8, Math.min(e.clientX, innerWidth - width - 8)) + "px";
-  ctxMenu.style.top = Math.max(8, Math.min(e.clientY, innerHeight - height - 8)) + "px";
-  $("button", ctxMenu).focus();
+  showCtxMenu(items, e.clientX, e.clientY);
 });
 document.addEventListener("pointerdown", (e) => {
   if (!ctxMenu.hidden && !ctxMenu.contains(e.target)) closeCtxMenu();
@@ -739,6 +809,8 @@ let playing = [];
 let shownPlaying = new Set();
 
 function renderPlaying() {
+  // Stop ne passe au rouge que quand un son joue.
+  document.body.classList.toggle("is-playing", playing.length > 0);
   const byId = new Map(playing.map((p) => [p.id, p]));
   const ids = new Set([...shownPlaying, ...byId.keys()]);
   shownPlaying = new Set(byId.keys());
@@ -747,13 +819,24 @@ function renderPlaying() {
     if (!pad) return;
     const p = byId.get(id);
     pad.classList.toggle("playing", !!p);
-    const img = $(".icon.image img", pad);
-    const sound = img && soundById(id);
-    // Seulement quand l'image change : remettre la même adresse 10 fois par
-    // seconde fait redémarrer le GIF (il « vibre »).
-    const animate = p && !reducedMotion();
-    const src = sound?.image && fileSrc(animate ? sound.image : sound.image_still || sound.image);
-    if (src && img.getAttribute("src") !== src) img.src = src;
+    const icon = $(".icon.image", pad);
+    const sound = icon && soundById(id);
+    // L'image animée n'existe que pendant que le son joue : au repos, une
+    // vignette fixe (un GIF qui tourne en boucle sur chaque pad occupe le
+    // processeur en permanence). Créée une seule fois : remettre la même
+    // adresse 10 fois par seconde fait redémarrer le GIF (il « vibre »).
+    const animate = p && !reducedMotion() && sound?.image;
+    let anim = icon && $("img.anim", icon);
+    if (animate && !anim) {
+      anim = document.createElement("img");
+      anim.className = "anim";
+      anim.alt = "";
+      anim.draggable = false;
+      anim.src = fileSrc(sound.image);
+      icon.append(anim);
+    } else if (!animate && anim) {
+      anim.remove();
+    }
     let ratio = 0;
     if (p && p.duration_ms) {
       ratio = p.looping ? (p.elapsed_ms % p.duration_ms) / p.duration_ms : Math.min(1, p.elapsed_ms / p.duration_ms);
@@ -767,6 +850,57 @@ function renderPlaying() {
 const { convertFileSrc } = window.__TAURI__.core;
 const fileSrc = (path) => convertFileSrc(path);
 const soundById = (id) => state.config.sounds.find((s) => s.id === id);
+
+// Vignettes des pads : chaque image est décodée une fois, réduite à la
+// taille du pad (une photo de 4000 px gardée entière pèse ~50 Mo de
+// mémoire), puis dessinée sur un canvas fixe. Un GIF n'y montre que sa
+// première image et ne tourne donc pas en boucle.
+const THUMB = 192;
+const thumbs = new Map();
+function thumbOf(path) {
+  let t = thumbs.get(path);
+  if (!t) {
+    t = new Promise((resolve, reject) => {
+      const im = new Image();
+      im.decoding = "async";
+      im.onload = () => {
+        const w = im.naturalWidth, h = im.naturalHeight;
+        const side = Math.min(w, h);
+        // Recadrée au centre comme `object-fit: cover`.
+        createImageBitmap(im, (w - side) / 2, (h - side) / 2, side, side, {
+          resizeWidth: Math.min(THUMB, side),
+          resizeHeight: Math.min(THUMB, side),
+          resizeQuality: "high",
+        }).then(resolve, reject);
+      };
+      im.onerror = reject;
+      im.src = fileSrc(path);
+    });
+    t.catch(() => thumbs.delete(path));
+    thumbs.set(path, t);
+  }
+  return t;
+}
+function stillCanvas(path) {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = THUMB;
+  thumbOf(path).then(
+    (bmp) => {
+      canvas.width = bmp.width;
+      canvas.height = bmp.height;
+      canvas.getContext("2d").drawImage(bmp, 0, 0);
+    },
+    () => {
+      // Navigateur sans createImageBitmap ou image illisible : l'image telle quelle.
+      const img = document.createElement("img");
+      img.alt = "";
+      img.draggable = false;
+      img.src = fileSrc(path);
+      canvas.replaceWith(img);
+    },
+  );
+  return canvas;
+}
 
 // Mot du nom du son → emoji, quand le son n'a ni image ni emoji choisi.
 const AUTO_EMOJIS = [
@@ -941,12 +1075,7 @@ function padElement(sound, index) {
   if (sound.image_still) {
     // Image fixe au repos, animée pendant que le son joue (voir renderPlaying).
     icon.className = "icon image";
-    const img = document.createElement("img");
-    img.alt = "";
-    img.draggable = false;
-    img.loading = "lazy";
-    img.src = fileSrc(sound.image_still);
-    icon.append(img);
+    icon.append(stillCanvas(sound.image_still));
   } else {
     icon.className = "icon" + (emoji ? " emoji" : " note");
     // Sans emoji : une note dans la couleur du son (des initiales se
@@ -967,7 +1096,7 @@ function padElement(sound, index) {
   const meta = document.createElement("span");
   meta.className = "meta";
   // Pas d'onglet répété quand l'onglet ouvert ou le groupe le dit déjà.
-  const tabShown = (currentTab && currentTab !== RECENT_TAB && currentTab !== TOP_TAB) || (!currentTab && !sound.favorite && categories().length);
+  const tabShown = (currentTab && !isSpecialTab(currentTab)) || (!currentTab && categories().length);
   meta.textContent = tabShown ? "" : sound.category || "";
   const label = document.createElement("span");
   label.className = "label";
@@ -1000,13 +1129,17 @@ function padElement(sound, index) {
   edit.className = "edit";
   edit.append(svgIcon("pencil"));
   edit.title = "Modifier";
+  const more = document.createElement("span");
+  more.className = "edit more";
+  more.append(svgIcon("more"));
+  more.title = "Plus d'actions";
   const fav = document.createElement("span");
   fav.className = "fav" + (sound.favorite ? " on" : "");
   fav.append(svgIcon("star"));
   fav.title = sound.favorite ? "Retirer des favoris" : "Épingler en haut (favori)";
   const progress = document.createElement("span");
   progress.className = "progress";
-  pad.append(num, eq, icon, label, key, dur, fav, edit, progress);
+  pad.append(num, eq, icon, label, key, dur, fav, edit, more, progress);
 
   const missing = state.missing?.includes(sound.id);
   if (missing) {
@@ -1023,6 +1156,7 @@ function padElement(sound, index) {
   pad.addEventListener("click", (e) => {
     if (reorder.justDropped) return;
     if (selecting || e.ctrlKey || e.metaKey) return toggleSelected(sound.id);
+    if (more.contains(e.target)) return openPadMenu(sound, more);
     if (edit.contains(e.target)) return openSoundDialog(sound);
     if (fav.contains(e.target)) return call("toggle_favorite", { id: sound.id });
     if (addKey?.contains(e.target)) return captureHotkey(sound, addKey);
@@ -1042,7 +1176,8 @@ function padElement(sound, index) {
 /** « + Raccourci » : la prochaine touche appuyée devient le raccourci du son. */
 function captureHotkey(sound, chip) {
   chip.classList.add("listening");
-  chip.textContent = "Appuie sur une touche… (Échap : annuler)";
+  chip.textContent = "Touche ?";
+  toast("Appuie sur la touche du raccourci (Échap pour annuler)");
   const done = () => {
     window.removeEventListener("keydown", onKey, true);
     window.removeEventListener("pointerdown", cancel, true);
@@ -1129,7 +1264,7 @@ function startReorder(e, pad, sound) {
       const to = state.config.sounds.findIndex((s) => s.id === target.dataset.id);
       call("move_sound", { id: sound.id, to }).then((res) => {
         // Dans « Tous », déposé dans le groupe d'un autre onglet : il y passe.
-        if (res && !currentTab && other && !other.favorite && !sound.favorite && other.category !== sound.category) {
+        if (res && !currentTab && other && other.category !== sound.category) {
           moveToCategory([sound.id], other.category ?? "");
         }
       });
@@ -1163,6 +1298,7 @@ function openSoundDialog(sound) {
   formSound.volume.value = sound.volume;
   formSound.volume.update();
   formSound.color.value = sound.color;
+  markSwatch();
   formSound.category.value = sound.category ?? "";
   formSound.looping.checked = !!sound.looping;
   formSound.keep_playing.checked = !!sound.keep_playing;
@@ -1174,10 +1310,11 @@ function openSoundDialog(sound) {
   $("#image-query").value = sound.name;
   setFx(sound.fx);
   // Effets repliés tant qu'il n'y en a pas : la fenêtre reste courte.
-  fxBox.open = $("#fx-state").classList.contains("on");
+  fxBox.open = true;
   dlgSound.returnValue = "";
   dlgSound.showModal();
   openTrim(sound);
+  soundAtOpen = JSON.stringify(editedSound());
 }
 
 // ---------- Image du son ----------
@@ -1592,21 +1729,86 @@ function trimValues() {
 dlgSound.addEventListener("close", () => {
   if (playhead.active) invoke("stop_preview");
   if (dlgSound.returnValue !== "save" || !editing) return;
-  call("update_sound", {
-    sound: {
-      ...editing,
-      name: formSound.sound_name.value.trim() || editing.name,
-      hotkey: formSound.hotkey.dataset.hotkey || null,
-      volume: Number(formSound.volume.value),
-      color: formSound.color.value,
-      category: formSound.category.value.trim() || null,
-      looping: formSound.looping.checked,
-      keep_playing: formSound.keep_playing.checked,
-      emoji: formSound.emoji.value.trim() || null,
-      fx: currentFx(),
-      ...trimValues(),
-    },
+  call("update_sound", { sound: editedSound() });
+});
+
+/** Le son tel qu'il serait enregistré avec ce qui est affiché. */
+function editedSound() {
+  return {
+    ...editing,
+    name: formSound.sound_name.value.trim() || editing.name,
+    hotkey: formSound.hotkey.dataset.hotkey || null,
+    volume: Number(formSound.volume.value),
+    color: formSound.color.value,
+    category: formSound.category.value.trim() || null,
+    looping: formSound.looping.checked,
+    keep_playing: formSound.keep_playing.checked,
+    emoji: formSound.emoji.value.trim() || null,
+    fx: currentFx(),
+    ...trimValues(),
+  };
+}
+
+// Question posée dans le style de l'appli (au lieu de la fenêtre de Windows).
+// Chaque bouton dit ce qu'il fait ; Échap ou clic à côté = le premier choix
+// (toujours le plus prudent). Renvoie la valeur du bouton cliqué.
+function ask(title, text, buttons) {
+  const dlg = $("#dlg-ask");
+  $("h2", dlg).textContent = title;
+  $(".ask-text", dlg).textContent = text || "";
+  $(".ask-text", dlg).hidden = !text;
+  const row = $(".actions", dlg);
+  const safe = buttons[0].value;
+  row.replaceChildren(...buttons.map((b, i) => {
+    const el = document.createElement("button");
+    el.type = "submit";
+    el.value = b.value;
+    el.textContent = b.label;
+    if (b.kind) el.className = b.kind;
+    if (i === 0) el.autofocus = true;
+    return el;
+  }));
+  dlg.returnValue = "";
+  return new Promise((resolve) => {
+    dlg.addEventListener("close", () => resolve(dlg.returnValue || safe), { once: true });
+    dlg.onclick = (e) => { if (e.target === dlg) dlg.close(safe); };
+    dlg.showModal();
   });
+}
+
+// Couleur du pad : les teintes de l'appli en pastilles, la dernière pour en choisir une autre.
+const SWATCHES = [["#ff6b6b", "Rouge"], ["#ffa94d", "Orange"], ["#ffd43b", "Jaune"], ["#69db7c", "Vert"], ["#38d9a9", "Menthe"], ["#4dabf7", "Bleu"], ["#748ffc", "Indigo"], ["#da77f2", "Violet"], ["#f783ac", "Rose"], ["#adb5bd", "Gris"]];
+$("#swatches").replaceChildren(...SWATCHES.map(([c, name]) => {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "swatch";
+  b.style.background = c;
+  b.title = name;
+  b.setAttribute("aria-label", name);
+  b.dataset.color = c;
+  b.addEventListener("click", () => { formSound.color.value = c; markSwatch(); });
+  return b;
+}));
+function markSwatch() {
+  const v = (formSound.color.value || "").toLowerCase();
+  let found = false;
+  for (const b of $$("#swatches .swatch")) { const on = b.dataset.color === v; b.classList.toggle("on", on); found ||= on; }
+  const other = $(".swatch-other");
+  other.classList.toggle("on", !found);
+  other.style.setProperty("--other", found ? "transparent" : v);
+}
+formSound.color.addEventListener("input", markSwatch);
+
+// Échap ferme sans enregistrer : on demande avant de perdre des changements
+// (le bouton Annuler, lui, est un choix clair et ne demande rien).
+let soundAtOpen = "";
+dlgSound.addEventListener("cancel", (e) => {
+  if (!editing || JSON.stringify(editedSound()) === soundAtOpen) return;
+  e.preventDefault();
+  ask("Abandonner les modifications ?", "Ce que tu as changé sur ce son sera perdu.", [
+    { label: "Continuer à modifier", value: "stay" },
+    { label: "Abandonner", value: "drop", kind: "danger" },
+  ]).then((v) => { if (v === "drop") dlgSound.close(); });
 });
 
 $('[data-action="delete"]', dlgSound).addEventListener("click", () => {
@@ -1677,6 +1879,7 @@ function refreshFx() {
   const isDefault = Object.entries(FX_DEFAULT).every(([k, v]) => fx[k] === v);
   const state = $("#fx-state");
   state.textContent = isDefault ? "aucun" : active.length ? active.join(" · ") : "réglages perso";
+  fxBox.querySelector('[data-action="fx-reset"]').classList.toggle("active", isDefault);
   state.classList.toggle("on", !isDefault);
 }
 
@@ -2110,7 +2313,8 @@ $('[data-action="finish"]', dlgWizard).addEventListener("click", async () => {
 // Préférences gardées sur ce PC (comme le thème).
 
 const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
-const PREF_DEFAULTS = { zoom: "1", contrast: false, reduceMotion: false };
+const PREF_DEFAULTS = { zoom: "1", contrast: false, reduceMotion: false, tiles: "douces" };
+const TILE_STYLES = ["vives", "douces", "classiques"];
 const ZOOMS = ["0.9", "1", "1.1", "1.25", "1.5"];
 const prefs = { ...PREF_DEFAULTS };
 try {
@@ -2124,6 +2328,7 @@ function applyDisplay() {
   invoke("set_zoom", { scale: Number(prefs.zoom) || 1 }).catch(() => {});
   root.classList.toggle("contrast", !!prefs.contrast);
   root.classList.toggle("reduce-motion", reducedMotion());
+  root.dataset.tiles = TILE_STYLES.includes(prefs.tiles) ? prefs.tiles : PREF_DEFAULTS.tiles;
   for (const el of $$("[data-pref]", dlgSettings)) {
     if (el.type === "checkbox") el.checked = !!prefs[el.dataset.pref];
     else el.value = prefs[el.dataset.pref];
@@ -2167,7 +2372,11 @@ $('[data-action="backup-import"]', dlgSettings).addEventListener("click", async 
 });
 
 async function restoreBackup(path) {
-  if (!confirm("Remplacer ta soundboard actuelle par celle de la sauvegarde ?\nPense à sauvegarder l'actuelle avant si tu veux la garder.")) return false;
+  const ok = await ask("Restaurer cette sauvegarde ?", "Elle remplace tous tes sons et réglages actuels. Pense à sauvegarder ceux d'aujourd'hui avant si tu veux les garder.", [
+    { label: "Annuler", value: "no" },
+    { label: "Remplacer", value: "yes", kind: "danger" },
+  ]);
+  if (ok !== "yes") return false;
   const res = await call("import_backup", { path });
   if (res) toast(`Sauvegarde restaurée (${res.config.sounds.length} sons)`);
   return !!res;
@@ -2436,7 +2645,7 @@ const formSurprise = $("form", dlgSurprise);
 function renderSurprise() {
   const pill = $("#surprise-toggle");
   const s = state.config.settings;
-  pill.classList.toggle("on", state.surprise_on);
+  pill.classList.toggle("on", !!state.surprise_on);
   pill.querySelector(".lbl").textContent = state.surprise_on ? "Surprise activée" : "Surprise";
   pill.title = state.surprise_on
     ? `Un son au hasard toutes les ${s.surprise_min_minutes} à ${s.surprise_max_minutes} min. Clique pour régler ou arrêter.`
@@ -2604,7 +2813,11 @@ function openStats() {
 
 $('[data-action="close"]', dlgStats).addEventListener("click", () => dlgStats.close());
 $('[data-action="reset"]', dlgStats).addEventListener("click", async () => {
-  if (!confirm("Remettre toutes les statistiques à zéro ?")) return;
+  const ok = await ask("Remettre les statistiques à zéro ?", "Le compteur de lectures de chaque son repart de zéro.", [
+    { label: "Annuler", value: "no" },
+    { label: "Remettre à zéro", value: "yes", kind: "danger" },
+  ]);
+  if (ok !== "yes") return;
   try {
     render(await invoke("reset_stats"));
     renderStats();
@@ -2764,6 +2977,9 @@ async function importPack(path) {
 const sizeInput = $("#pad-size");
 function applyPadSize() {
   $("#grid").style.setProperty("--pad-size", sizeInput.value + "px");
+  // Petites tuiles : pas la place pour trois boutons au survol, l'étoile
+  // passe dans le menu « ⋯ ».
+  $("#grid").classList.toggle("compact", Number(sizeInput.value) < 130);
 }
 try {
   sizeInput.value = localStorage.getItem("soundboard.padSize") || 140;
@@ -3351,7 +3567,13 @@ function renderLinkLists() {
     ...s.subscriptions.map((sub) =>
       linkItem(sub.name || "Pack de potes", sub.error ? `⚠ ${sub.error}` : `${ago(sub.last_check)} · ${sub.url}`, !!sub.error, [
         ["Ne plus suivre", async () => {
-          const remove = confirm(`Ne plus suivre « ${sub.name} ».\n\nSupprimer aussi ses sons ? (OK : supprimer, Annuler : les garder)`);
+          const choice = await ask(`Ne plus suivre « ${sub.name || "Pack de potes"} » ?`, "Tu ne recevras plus ses nouveaux sons. Que faire de ceux que tu as déjà ?", [
+            { label: "Annuler", value: "no" },
+            { label: "Garder les sons", value: "keep" },
+            { label: "Supprimer les sons", value: "remove", kind: "danger" },
+          ]);
+          if (choice === "no") return;
+          const remove = choice === "remove";
           await call("unsubscribe_pack", { url: sub.url, removeSounds: remove });
           renderLinkLists();
         }],
@@ -3527,6 +3749,7 @@ function setSendStep(step) {
   if (step === "adjust" && !clipMedia) step = "pick";
   sendStep = step;
   dlgClip.querySelectorAll(".send-step").forEach((el) => (el.hidden = el.dataset.step !== step));
+  $("#send-step-label").textContent = `Étape ${step === "pick" ? 1 : 2} sur 3`;
   if (step === "pick") {
     stopClipListen();
     clipVideo.pause();
@@ -3619,6 +3842,7 @@ function closeSendView() {
   dlgClip.hidden = true;
 }
 $("#tab-send").addEventListener("click", () => openClipDialog());
+$("#btn-new-tab").addEventListener("click", () => openTabDialog("new"));
 $('[data-action="room-settings"]', dlgClip).addEventListener("click", () => openSettings().then(() => showSettingsTab("friends")));
 formClip.addEventListener("submit", (e) => e.preventDefault());
 
@@ -4163,6 +4387,7 @@ function fillFriendsSettings(s) {
     ? "✓ Discord est capté : la voix de tes potes compte pour « Rejouer » et la baisse auto."
     : "Discord n'est pas capté pour l'instant (lancé ? Windows 10 de mai 2020 ou plus récent ?). « Rejouer » garde quand même ta voix et tes sons.";
   f.room_code.value = s.room_code ?? "";
+  syncRoomCopy();
   f.room_name.value = s.room_name ?? "";
   f.room_accept.checked = s.room_accept ?? true;
   f.clips_mode.value = s.clips_mode || "ask";
@@ -4173,9 +4398,15 @@ function updateDuckRow() {
   formSettings.duck_level.disabled = !formSettings.duck_enabled.checked;
 }
 formSettings.duck_enabled.addEventListener("change", updateDuckRow);
+// « Copier » n'a de sens que s'il y a un code.
+function syncRoomCopy() {
+  $('[data-action="room-copy"]', dlgSettings).disabled = !formSettings.room_code.value.trim();
+}
+formSettings.room_code.addEventListener("input", syncRoomCopy);
 $('[data-action="room-new"]', dlgSettings).addEventListener("click", async () => {
   const code = await call("new_room_code");
   if (code) formSettings.room_code.value = code;
+  syncRoomCopy();
   toast("Code créé : copie-le et donne-le à tes potes, puis enregistre");
 });
 $('[data-action="room-copy"]', dlgSettings).addEventListener("click", async () => {

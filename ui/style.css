@@ -104,8 +104,9 @@ input[type="checkbox"] { width: auto; }
   position: sticky;
   top: 0;
   z-index: 5;
-  background: color-mix(in srgb, var(--panel) 82%, transparent);
-  backdrop-filter: blur(12px);
+  /* Opaque plutôt que flou : le flou est recalculé à chaque image dès que
+     quelque chose bouge dessous (pads qui jouent, défilement). */
+  background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
 .brand { display: flex; align-items: center; gap: 9px; }
@@ -412,7 +413,7 @@ main { padding: 16px; }
 .list-head .num, .grid.list .pad .num, .grid.list .pad .eq { width: 22px; flex-shrink: 0; justify-content: center; text-align: center; }
 .list-head .key, .grid.list .pad .key { width: 170px; flex-shrink: 0; }
 .list-head .dur, .grid.list .pad .dur { width: 44px; flex-shrink: 0; text-align: right; font-variant-numeric: tabular-nums; }
-.list-head .tools { width: 66px; flex-shrink: 0; }
+.list-head .tools { width: 112px; flex-shrink: 0; }
 .grid.list .pad {
   aspect-ratio: auto;
   min-height: 56px;
@@ -558,7 +559,7 @@ dialog {
 dialog[open] { animation: dlg-in .16s ease-out; }
 @keyframes dlg-in { from { opacity: 0; transform: translateY(8px) scale(.98); } }
 dialog.wide { width: min(640px, 94vw); }
-dialog::backdrop { background: rgba(16, 24, 40, .35); backdrop-filter: blur(2px); }
+dialog::backdrop { background: rgba(16, 24, 40, .4); }
 /* Fenêtre ouverte : la molette ne fait plus défiler la grille derrière,
    ni quand la fenêtre arrive en bas de sa propre liste. */
 html:has(dialog[open]), html:has(dialog[open]) body { overflow: hidden; }
@@ -884,7 +885,9 @@ input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2
 
 /* Image du son (GIF GIPHY ou image du PC). */
 .pad .icon.image { padding: 0; overflow: hidden; background: var(--chip); }
-.pad .icon.image img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pad .icon.image { position: relative; }
+.pad .icon.image :is(img, canvas) { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pad .icon.image img.anim { position: absolute; inset: 0; }
 .grid:not(.list) .pad .icon.image { width: 72px; height: 72px; border-radius: 18px; }
 
 .illus { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-2); }
@@ -1094,7 +1097,7 @@ main { padding-bottom: 40px; }
 
 /* Liste : lignes plus aérées, pastille de couleur sur l'icône. */
 .grid.list .pad .icon { width: 42px; height: 42px; border-radius: 12px; }
-.grid.list .pad .icon.image img { border-radius: 12px; }
+.grid.list .pad .icon.image :is(img, canvas) { border-radius: 12px; }
 .grid.list .pad .name { font-weight: 600; }
 .grid.list .pad.playing { box-shadow: none; }
 
@@ -1669,3 +1672,341 @@ body.send-mode #more-menu > :not(#btn-clip):not(hr) { display: none; }
 .clip-ask p { margin: 0; }
 .clip-ask input { width: 110px; text-align: center; font-size: 15px; }
 .clip-ask, .send-results { scroll-margin-bottom: 90px; }
+
+/* ==========================================================================
+   Version 3.0 : interface dans l'esprit des applis Apple.
+   Barre latérale pour les onglets, une seule barre d'outils, grand titre,
+   tuiles façon Raccourcis, fenêtre de modification en deux colonnes.
+   ========================================================================== */
+:root {
+  --side-w: 210px;
+  --bg: #ffffff;
+  --side: #f2f2f5;
+  --panel-2: #f5f5f7;
+  --border: #e3e3e8;
+  --text: #1d1d1f;
+  --muted: #6e6e73;
+  --accent: #0a7cff;
+  --fill: rgba(118, 118, 128, .12);
+  --sheet-bg: #f5f5f7;
+  --wave-mask: rgba(255, 255, 255, .65);
+}
+:root[data-theme="dark"] {
+  --bg: #1c1c1e;
+  --side: #242427;
+  --panel: #2a2a2d;
+  --panel-2: #313135;
+  --border: #3a3a3f;
+  --text: #f2f2f5;
+  --muted: #a1a1a8;
+  --accent: #2f8fff;
+  --fill: rgba(118, 118, 128, .24);
+  --sheet-bg: #202023;
+  --pad-base: #2a2a2d;
+  --wave-mask: rgba(28, 28, 30, .65);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1c1c1e; --side: #242427; --panel: #2a2a2d; --panel-2: #313135; --border: #3a3a3f;
+    --text: #f2f2f5; --muted: #a1a1a8; --accent: #2f8fff; --fill: rgba(118, 118, 128, .24);
+    --sheet-bg: #202023; --pad-base: #2a2a2d; --wave-mask: rgba(28, 28, 30, .65);
+  }
+}
+body { background: var(--bg); }
+
+/* Barre latérale */
+.sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: var(--side-w);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 10px 10px;
+  background: var(--side);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  z-index: 6;
+}
+.app-main { margin-left: var(--side-w); min-width: 0; }
+.sidebar .brand { padding: 2px 8px 14px; gap: 9px; }
+.sidebar .logo { width: 28px; height: 28px; background: none; border: 0; border-radius: 0; }
+.sidebar .logo svg { width: 28px; height: 28px; display: block; }
+.sidebar h1 { font-size: 15px; margin: 0; font-weight: 700; letter-spacing: -.2px; }
+.side-nav { display: flex; flex-direction: column; gap: 2px; }
+.sidebar .tabs { display: flex; flex-direction: column; gap: 2px; flex-wrap: nowrap; }
+.sidebar .tab {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 9px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  box-shadow: none;
+  color: var(--text);
+  font-weight: 500;
+  text-align: left;
+}
+.sidebar .tab .ico { width: 17px; height: 17px; color: var(--accent); flex: none; }
+.sidebar .tab .tab-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar .tab .tab-count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.sidebar .tab:hover { background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text); }
+.sidebar .tab.active { background: color-mix(in srgb, var(--text) 10%, transparent); border: 0; color: var(--text); }
+.sidebar .tab-add, .sidebar .tab-add .ico { color: var(--muted); }
+.sidebar .tab-send { order: 0; }
+.side-head { font-size: 11px; font-weight: 600; color: var(--muted); padding: 14px 10px 4px; }
+.side-foot { margin-top: auto; padding: 10px 2px 0; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
+.side-foot .pill, .side-foot #room-pill { width: 100%; max-width: 100%; justify-content: flex-start; text-align: left; overflow: hidden; text-overflow: ellipsis; }
+.side-foot .room-wrap { display: flex; }
+.side-foot .room-wrap[hidden] { display: none; }
+.side-foot #room-menu { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; }
+
+/* Barre d'outils unique */
+.topbar { gap: 4px; padding: 10px 16px; min-height: 56px; flex-wrap: nowrap; background: var(--bg); }
+.topbar button:not(.primary):not(.pill) { background: none; border-color: transparent; box-shadow: none; color: var(--text); }
+.topbar button:not(.primary):not(.pill):hover { background: var(--fill); }
+.topbar #btn-random .lbl, .topbar #surprise-toggle .lbl, .topbar #btn-online .lbl { display: none; }
+.topbar #btn-random, .topbar #surprise-toggle, .topbar #btn-online { width: 36px; padding: 0; justify-content: center; }
+.topbar #surprise-toggle.on { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.topbar .view-toggle { background: var(--fill); border: 0; border-radius: 9px; padding: 2px; margin-right: 4px; }
+.topbar .view-toggle button { height: 30px !important; border-radius: 7px; }
+.topbar .view-toggle button.on { background: var(--panel) !important; color: var(--text) !important; box-shadow: 0 1px 2px rgba(0, 0, 0, .14) !important; }
+.topbar #btn-stop { color: var(--muted); background: none; border-color: transparent; margin-left: 4px; }
+body.is-playing .topbar #btn-stop { color: var(--danger); background: color-mix(in srgb, var(--danger) 13%, transparent); }
+.topbar .search-box { flex: 0 1 220px; min-width: 90px; margin-right: 2px; }
+.topbar .search-box #search { background: var(--fill); border-color: transparent; }
+.topbar .search-box #search:focus { background: var(--panel); border-color: var(--accent); }
+.tb-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; flex: none; }
+
+/* Grand titre + tri, taille, menu ⋯ */
+.tabbar { padding: 16px 20px 10px; align-items: center; gap: 8px; flex-wrap: nowrap; background: var(--bg); }
+.tabbar > .spacer { display: block; flex: 1; }
+.view-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+#view-title { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#view-count { color: var(--muted); white-space: nowrap; }
+body.send-mode .tabbar > :not(.view-title) { display: none; }
+main { padding: 4px 20px 16px; }
+.group-head { background: var(--bg); }
+
+/* Tuiles façon Raccourcis (sauf « Classiques », l'ancien rendu) */
+.grid { gap: 12px; }
+:root:not([data-tiles="classiques"]) .grid:not(.list) .pad {
+  aspect-ratio: 1.45;
+  min-height: 92px;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 2px;
+  padding: 12px 12px 11px;
+  text-align: left;
+  border-radius: 14px;
+}
+:root:not([data-tiles="classiques"]) .grid:not(.list) .pad .icon {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  font-size: 26px;
+}
+:root:not([data-tiles="classiques"]) .grid:not(.list) .pad .icon.emoji { font-size: 27px; justify-content: start; }
+:root:not([data-tiles="classiques"]) .grid:not(.list) .pad .icon.image { width: 40px; height: 40px; overflow: hidden; }
+:root:not([data-tiles="classiques"]) .grid:not(.list) .pad .icon.note .ico { width: 24px; height: 24px; }
+:root:not([data-tiles="classiques"]) .grid:not(.list) .pad .label { display: block; width: 100%; min-width: 0; }
+:root:not([data-tiles="classiques"]) .grid:not(.list) .pad .name {
+  display: block;
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0;
+}
+:root:not([data-tiles="classiques"]) .grid:not(.list) .pad .key { position: static; justify-content: flex-start; min-height: 17px; font-size: 11.5px; }
+:root:not([data-tiles="classiques"]) .grid:not(.list) .pad .eq { top: auto; bottom: 13px; left: auto; right: 12px; }
+:root:not([data-tiles="classiques"]) .grid:not(.list) .pad:hover { transform: translateY(-1px); }
+:root:not([data-tiles="classiques"]) .grid:not(.list) .pad.flash .icon { animation: pop .3s ease; }
+
+/* Vives : couleur pleine, texte blanc */
+:root[data-tiles="vives"] .grid:not(.list) .pad { --ink: #fff; background: var(--c); border-color: transparent; }
+:root[data-tiles="vives"] .grid:not(.list) .pad:hover { background: color-mix(in srgb, var(--c) 88%, #fff); box-shadow: 0 8px 20px color-mix(in srgb, var(--c) 30%, transparent); }
+:root[data-tiles="vives"] .grid:not(.list) .pad .name,
+:root[data-tiles="vives"] .grid:not(.list) .pad .key { color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, .18); }
+:root[data-tiles="vives"] .grid:not(.list) .pad .key kbd { background: rgba(255, 255, 255, .22); }
+:root[data-tiles="vives"] .grid:not(.list) .pad .icon.note .ico,
+:root[data-tiles="vives"] .grid:not(.list) .pad .icon:not(.image):not(.emoji) { color: #fff; }
+:root[data-tiles="vives"] .grid:not(.list) .pad .eq i { background: #fff; }
+:root[data-tiles="vives"] .grid:not(.list) .pad .progress { background: rgba(255, 255, 255, .85); }
+:root[data-tiles="vives"] .grid:not(.list) .pad .add-key { color: rgba(255, 255, 255, .9); border-color: rgba(255, 255, 255, .6); }
+:root[data-tiles="vives"] .grid:not(.list) .pad.playing { background: color-mix(in srgb, var(--c) 82%, #000); box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--c); }
+
+/* Fenêtre « Modifier le son » : Annuler / Enregistrer en haut, deux colonnes */
+dialog.sheet { width: min(940px, calc(100vw - 24px)); background: var(--sheet-bg); }
+#dlg-sound .form { padding: 0; gap: 0; max-height: calc(100vh - 32px); }
+.sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.sheet-head h2 { order: 2; flex: 1; margin: 0; text-align: center; font-size: 15px; }
+.sheet-head button[value="cancel"] { order: 1; }
+.sheet-head button[value="save"] { order: 3; }
+.sheet-body { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; padding: 10px 18px 16px; align-items: start; }
+.sheet-col { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.grp-title { margin: 10px 6px 2px; font-size: 11.5px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.grp { display: flex; flex-direction: column; gap: 10px; padding: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; min-width: 0; }
+.grp .hint { margin: -4px 0 0; }
+.grp .set-row { padding: 0; }
+.grp .emoji-picks { flex-wrap: wrap; }
+.grp details.fx { border: 0; padding: 0; background: none; }
+.grp details.fx > summary { list-style: none; }
+.grp details.fx > summary::-webkit-details-marker { display: none; }
+.grp .fx-grid { grid-template-columns: 1fr; }
+.grp .fx-grid label, .grp label { min-width: 0; }
+.grp .trim canvas { width: 100%; }
+.sheet-foot { display: flex; align-items: center; gap: 10px; padding: 10px 18px; background: var(--panel); border-top: 1px solid var(--border); }
+.sheet-foot small { font-size: 12px; }
+@media (max-width: 820px) { .sheet-body { grid-template-columns: 1fr; } }
+
+/* Onglet Envoyer : « Étape N sur 3 » et un sélecteur d'étapes compact */
+.send-steps-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.step-label { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.send-steps { display: inline-flex; gap: 2px; padding: 2px; border-radius: 9px; background: var(--fill); }
+.send-steps li { flex: none; }
+.send-steps button { width: auto; height: 28px; padding: 0 12px; border: 0; border-radius: 7px; background: none; font-size: 13px; }
+.send-steps .num { width: 17px; height: 17px; font-size: 10.5px; }
+.send-steps li.on button { border: 0; background: var(--panel); box-shadow: 0 1px 2px rgba(0, 0, 0, .14); }
+.send-view.no-room .send-steps-row { display: none !important; }
+
+/* Contraste renforcé : les repères restent nets dans le nouveau style. */
+:root.contrast .sidebar .tab.active { outline: 2px solid var(--text); }
+:root.contrast .grp { border-width: 2px; }
+
+/* Fenêtre étroite : barre latérale plus fine. */
+@media (max-width: 860px) {
+  :root { --side-w: 176px; }
+  .topbar .search-box { flex-basis: 150px; }
+}
+body.send-mode .tabbar > .view-title { visibility: visible !important; }
+.send-bar { left: var(--side-w); }
+.sidebar #tab-send { color: var(--text); background: none; border: 0; }
+.sidebar #tab-send:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.sidebar #tab-send.active { background: color-mix(in srgb, var(--text) 10%, transparent); }
+.grp details.fx > summary { pointer-events: none; padding: 0; }
+.grp details.fx > summary .label { display: none; }
+.grp details.fx > summary .fx-state::before { content: "Effet en cours : "; color: var(--muted); font-weight: 400; }
+.grp-wrap { display: flex; flex-direction: column; gap: 6px; }
+.grp-wrap:has(.trim[hidden]) { display: none; }
+.grp .trim-head .label { font-size: 0; }
+.grp .trim-head .label small { font-size: 12px; margin-left: 0; }
+/* Petite fenêtre : la barre latérale ne garde que les icônes (le nom en info-bulle). */
+@media (max-width: 760px) {
+  :root { --side-w: 58px; }
+  .sidebar { padding: 12px 8px 10px; }
+  .sidebar .brand { padding: 2px 7px 12px; }
+  .sidebar .brand h1, .sidebar .tab .tab-name, .sidebar .tab .tab-count, .side-head { display: none; }
+  .sidebar .tab { justify-content: center; padding: 0; }
+  .side-foot .pill, .side-foot #room-pill { font-size: 0; padding: 6px 0; justify-content: center; text-align: center; }
+  .side-foot .pill::before { content: "●"; font-size: 12px; }
+  .topbar .search-box { flex-basis: 120px; }
+  .topbar #btn-add .lbl, .topbar #btn-stop .lbl { display: none; }
+  #view-title { font-size: 22px; }
+}
+@media (max-width: 900px) {
+  .topbar #btn-stop .lbl { display: none; }
+  .tb-sep { display: none; }
+  .topbar .search-box { min-width: 80px; }
+}
+
+/* Tuiles : « ⋯ » à droite, crayon puis étoile à sa gauche. */
+.pad .edit:not(.more) { right: 40px; }
+.pad .fav, .pad:hover .fav.on { right: 72px; }
+.pad .fav.on { right: 8px; }
+.grid.compact:not(.list) .pad .fav:not(.on) { display: none; }
+.grid.compact:not(.list) .pad:hover .fav.on { display: none; }
+.grid.list .pad .fav.on, .grid.list .pad:hover .fav.on { right: auto; }
+.menu.ctx-menu { max-height: calc(100vh - 16px); overflow-y: auto; }
+/* Petites tailles : la hauteur minimale ne doit pas élargir la tuile au-delà
+   de sa colonne (les tuiles se chevauchaient sous 130 px). */
+:root:not([data-tiles="classiques"]) .grid:not(.list) .pad { aspect-ratio: auto; min-height: 0; height: max(92px, calc(var(--pad-size, 140px) / 1.45)); }
+@media (max-width: 900px) { #sort { max-width: 175px; } }
+/* Tuiles : le nom tout en bas. La ligne du raccourci ne prend de la place que
+   s'il y en a un ; « Choisir un raccourci » est dans le menu « ⋯ ». */
+:root:not([data-tiles="classiques"]) .grid:not(.list) .pad .key { min-height: 0; }
+:root:not([data-tiles="classiques"]) .grid:not(.list) .pad .add-key:not(.listening) { display: none; }
+
+/* 3.0.1 — barre latérale réduite : l'initiale de chaque onglet au lieu du même dossier. */
+.sidebar .tab .tab-initial { display: none; }
+@media (max-width: 760px) {
+  .sidebar .tab[data-cat] .ico { display: none; }
+  .sidebar .tab .tab-initial { display: grid; place-items: center; width: 28px; height: 24px; border-radius: 7px; font-size: 12px; font-weight: 700; background: color-mix(in srgb, var(--text) 9%, transparent); }
+  .sidebar .tab.active .tab-initial { background: var(--accent); color: var(--on-accent); }
+  .side-foot .pill.ko::before { color: #e8590c; }
+}
+/* « Stop » garde son nom tant qu'il y a la place. */
+@media (min-width: 761px) and (max-width: 900px) {
+  .topbar #btn-stop .lbl { display: inline; }
+  .topbar #btn-stop { width: auto; padding: 0 10px; }
+}
+
+/* Mode Surprise actif : impossible à rater (il lance des sons dans Discord). */
+.topbar #surprise-toggle.on { width: auto; padding: 0 12px; gap: 6px; background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.topbar #surprise-toggle.on .lbl { display: inline; }
+@media (max-width: 760px) { .topbar #surprise-toggle.on { width: 36px; padding: 0; } .topbar #surprise-toggle.on .lbl { display: none; } }
+#surprise-toggle .dice { width: 18px; height: 18px; }
+
+/* Taille des pads : une petite et une grande grille de part et d'autre du curseur. */
+.tabbar .size { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.tabbar .size .sz-s { width: 12px; height: 12px; }
+.tabbar .size .sz-l { width: 18px; height: 18px; }
+
+/* Couleur du son : pastilles des teintes de l'appli. */
+.color-field { display: flex; flex-direction: column; gap: 6px; }
+.color-field .color-lbl { font-size: 13px; font-weight: 500; }
+.swatches { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.swatch { width: 24px; height: 24px; min-height: 0; padding: 0; border-radius: 50%; border: 2px solid transparent; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 12%); cursor: pointer; }
+.swatch.on { outline: 2px solid var(--accent); outline-offset: 2px; }
+.swatch-other { position: relative; display: grid; place-items: center; overflow: hidden; background: conic-gradient(#ff6b6b, #ffd43b, #69db7c, #4dabf7, #da77f2, #ff6b6b); }
+.swatch-other.on { background: var(--other); }
+.swatch-other input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; }
+.form .row2:has(.color-field) { flex-direction: column; align-items: stretch; }
+
+/* Emoji : le libellé en haut, aligné avec la grille de choix. */
+.emoji-row { align-items: flex-start; }
+.emoji-row label { display: flex; flex-direction: column; gap: 6px; }
+
+/* Questions dans le style de l'appli (remplacent les fenêtres de Windows). */
+dialog.ask { width: min(420px, calc(100vw - 32px)); }
+dialog.ask h2 { margin: 0 0 6px; font-size: 17px; }
+dialog.ask .ask-text { margin: 0 0 16px; color: var(--muted); line-height: 1.45; }
+dialog.ask .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+
+/* Tuiles : le raccourci en petit en haut à droite, tous les noms restent alignés en bas.
+   Il s'efface au survol pour laisser la place aux boutons. */
+:root:not([data-tiles="classiques"]) .grid:not(.list) .pad .key { position: absolute; top: 10px; right: 10px; bottom: auto; left: auto; width: auto; max-width: calc(100% - 62px); min-height: 0; justify-content: flex-start; overflow: hidden; transition: opacity .12s; }
+:root:not([data-tiles="classiques"]) .grid:not(.list) .pad .key kbd { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:root:not([data-tiles="classiques"]) .grid:not(.list) .pad:has(.fav.on) .key { right: 36px; max-width: calc(100% - 88px); }
+:root:not([data-tiles="classiques"]) .grid:not(.list) .pad:hover .key:not(:has(.listening)) { opacity: 0; }
+
+/* Réglages avancés : juste sous les rubriques, plus tout en bas. */
+.adv-toggle { margin-top: 10px; padding-top: 14px; border-top: 1px solid var(--border); }
+
+/* Code du salon : la police « code » seulement quand il y a un code. */
+.room-code-row input:placeholder-shown { font-family: inherit; letter-spacing: 0; }
+
+.room-code-row button:disabled { opacity: .45; cursor: default; box-shadow: none; }
+/* Petites tuiles : raccourci plus fin ; avec l'étoile de favori, il passe juste dessous. */
+:root:not([data-tiles="classiques"]) .grid.compact:not(.list) .pad .key { max-width: calc(100% - 50px); font-size: 10px; right: 8px; }
+:root:not([data-tiles="classiques"]) .grid.compact:not(.list) .pad .key kbd { padding-left: 4px; padding-right: 4px; }
+:root:not([data-tiles="classiques"]) .grid.compact:not(.list) .pad:has(.fav.on) .key { top: 34px; right: 8px; max-width: calc(100% - 50px); }
