@@ -1417,31 +1417,29 @@ fn open_capture(
     mut filter: CaptureFilter,
 ) -> Result<cpal::Stream, String> {
     let err_fn = |e| eprintln!("erreur de capture : {e}");
+    // Presque tous les micros arrivent en f32 ; quelques pilotes annoncent
+    // des entiers (16 ou 32 bits, parfois 8) : on les ramène tous à −1…1.
+    macro_rules! capture {
+        ($sample:ty, $to_f32:expr) => {
+            device.build_input_stream(
+                config,
+                move |data: &[$sample], _: &_| {
+                    let mut it = data.iter().map($to_f32);
+                    push(&buffer, filter(&mut it), max_len)
+                },
+                err_fn,
+                None,
+            )
+        };
+    }
     match format {
-        SampleFormat::F32 => device.build_input_stream(
-            config,
-            move |data: &[f32], _: &_| push(&buffer, filter(&mut data.iter().copied()), max_len),
-            err_fn,
-            None,
-        ),
-        SampleFormat::I16 => device.build_input_stream(
-            config,
-            move |data: &[i16], _: &_| {
-                let mut it = data.iter().map(|s| *s as f32 / 32768.0);
-                push(&buffer, filter(&mut it), max_len)
-            },
-            err_fn,
-            None,
-        ),
-        SampleFormat::U16 => device.build_input_stream(
-            config,
-            move |data: &[u16], _: &_| {
-                let mut it = data.iter().map(|s| (*s as f32 - 32768.0) / 32768.0);
-                push(&buffer, filter(&mut it), max_len)
-            },
-            err_fn,
-            None,
-        ),
+        SampleFormat::F32 => capture!(f32, |s| *s),
+        SampleFormat::F64 => capture!(f64, |s| *s as f32),
+        SampleFormat::I16 => capture!(i16, |s| *s as f32 / 32768.0),
+        SampleFormat::U16 => capture!(u16, |s| (*s as f32 - 32768.0) / 32768.0),
+        SampleFormat::I32 => capture!(i32, |s| *s as f32 / 2_147_483_648.0),
+        SampleFormat::I8 => capture!(i8, |s| *s as f32 / 128.0),
+        SampleFormat::U8 => capture!(u8, |s| (*s as f32 - 128.0) / 128.0),
         other => return Err(format!("format non géré : {other:?}")),
     }
     .map_err(|e| e.to_string())

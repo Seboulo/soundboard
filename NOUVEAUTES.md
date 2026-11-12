@@ -1,6 +1,14 @@
 Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
 Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
+À venir (pas encore publié) — son du micro :
+- La télé ou quelqu'un d'autre dans la pièce n'ouvre plus ton micro : la porte de voix apprend le niveau de ta voix et ignore les voix nettement plus lointaines (25 dB sous la tienne). Mesuré : micro ouvert 56 % du temps de silence avant, 11 % maintenant (la demi-seconde de fin de phrase).
+- Micro très faible : après le test de voix, la porte s'ouvre dès le premier mot (avant, une voix sous -55 dBFS était coupée). Sans test de voix, elle s'ouvre sur les syllabes fortes.
+- Réduction de bruit forte sans test de voix : la première phrase après le lancement n'est plus étouffée sur un micro faible ou une pièce bruyante.
+- Volume de voix automatique : il peut monter jusqu'à +24 dB (avant +18), un pote au micro faible n'est plus plus bas que les autres. Il ne se règle plus sur une voix lointaine.
+- Micro branché sur une seule entrée d'une carte son à deux entrées : la voix n'est plus divisée par deux. Micro dont les deux canaux sont inversés : la voix n'est plus annulée.
+- Micros qui envoient un format rare (entiers 32 bits, 8 bits) : ils marchent au lieu d'afficher « format non géré ».
+
 Nouveautés de la 3.0.2 :
 - Une vidéo envoyée par un pote ne te fait plus sortir de ton jeu : si Windows donne quand même la main à la fenêtre de l'extrait, l'appli la rend aussitôt au jeu.
 - Plus de boîte d'erreur Windows « ffmpeg.exe - Image incorrecte » : si ffmpeg est abîmé, l'appli le retélécharge une fois ; si Windows le bloque (Contrôle intelligent des applications), la vidéo part telle quelle, sans message.
