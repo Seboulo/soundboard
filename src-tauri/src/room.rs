@@ -87,6 +87,9 @@ pub enum Msg {
         /// commence à `start_ms` dans la vidéo du lien.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         cut: bool,
+        /// Texte en gros : « haut » (en haut de l'image) et/ou « petit ».
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        style: String,
     },
 }
 

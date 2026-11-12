@@ -15,6 +15,12 @@ let audio = null;
 let timer = null;
 let current = null;
 let syncId = 0;
+// Son en cours : d'où il est parti (s) et quand (ms), pour le reprendre au
+// bon endroit après 🔇 ; `engine` : joué par le moteur audio (casque).
+let clock = null;
+let muted = false;
+let closing = 0;
+const muteBtn = $('[data-action="mute"]');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Deux images à l'écran, ou 120 ms au plus : si Windows juge la fenêtre
@@ -40,7 +46,7 @@ function stopSync() {
 function reset() {
   clearTimeout(timer);
   stopSync();
-  video.onended = video.onerror = video.onloadedmetadata = img.onerror = img.onload = null;
+  video.onended = video.onerror = video.onloadedmetadata = video.ontimeupdate = img.onerror = img.onload = null;
   video.pause();
   video.removeAttribute("src");
   video.load();
@@ -52,14 +58,40 @@ function reset() {
   $("#ask").hidden = true;
   show.hidden = true;
   show.classList.add("prep");
+  clearTimeout(closing);
+  closing = 0;
+  $("#ask").classList.remove("out");
+  show.classList.remove("out");
+  clock = null;
+  muted = false;
+  muteUi();
+}
+
+function muteUi() {
+  muteBtn.textContent = muted ? "🔇" : "🔊";
+  muteBtn.setAttribute("aria-pressed", String(muted));
+  muteBtn.title = muted ? "Remettre le son" : "Couper le son de cet extrait";
 }
 
 // `why` : raison notée dans le journal quand l'extrait n'a pas pu être lu.
-function close(why) {
+function finish(why) {
   const media = current ? current.media : null;
   reset();
   current = null;
   invoke("clip_close", { media, why: typeof why === "string" ? why : null });
+}
+
+// La carte s'efface en douceur (un extrait affiché) ; sinon tout de suite.
+function close(why) {
+  const card = !$("#ask").hidden ? $("#ask") : show;
+  if (!current || typeof why === "string" || card.hidden || card.classList.contains("prep")) return finish(why);
+  if (closing) return;
+  const c = current;
+  card.classList.add("out");
+  closing = setTimeout(() => {
+    closing = 0;
+    if (current === c) finish();
+  }, 170);
 }
 
 function fill(root, c) {
@@ -88,12 +120,27 @@ async function ask(c) {
 // true quand il est parti. S'il échoue, l'élément joue le son lui-même
 // (sortie par défaut de Windows) et on renvoie false.
 function playSound(c, path, startMs, endMs, el) {
+  const mine = { path, from: startMs / 1000, endMs: endMs ?? null, el, at: performance.now(), engine: false };
+  clock = mine;
   return invoke("clip_audio", { path, startMs: Math.round(startMs), endMs: endMs ?? null, volume: c.volume ?? 1 }).then(
-    () => true,
+    () => {
+      if (clock === mine) {
+        mine.at = performance.now();
+        mine.engine = true;
+        // Coupé pendant que le son se préparait.
+        if (muted) invoke("clip_mute", { on: true });
+      }
+      return true;
+    },
     () => {
       if (current !== c) return false;
-      el.muted = false;
-      if (el.paused && el !== video) el.play().catch(() => {});
+      if (clock === mine) mine.at = performance.now();
+      el.muted = muted;
+      if (el.paused && el !== video) {
+        // Son à part d'une vidéo déjà partie : il reprend où en est l'image.
+        if (!video.paused) el.currentTime = video.currentTime;
+        el.play().catch(() => {});
+      }
       return false;
     },
   );
@@ -141,6 +188,26 @@ function reveal(ms) {
   timer = setTimeout(() => close(), ms + 300);
 }
 
+// Vidéo : la barre suit la vraie lecture (de `from` à `until`, en secondes)
+// au lieu d'un minuteur. Si la vidéo cale un instant, la barre l'attend et
+// la fin n'est pas coupée. Le minuteur reste en secours, avec de la marge.
+function revealVideo(c, from, until, ms) {
+  const el = $("#show .bar");
+  show.classList.remove("prep");
+  el.style.transition = "none";
+  el.style.transform = "scaleX(1)";
+  void el.offsetWidth;
+  el.style.transition = "transform 280ms linear";
+  video.ontimeupdate = () => {
+    if (current !== c) return;
+    const left = 1 - (video.currentTime - from) / Math.max(0.1, until - from);
+    el.style.transform = `scaleX(${Math.min(1, Math.max(0, left))})`;
+    if (video.currentTime >= until) close();
+  };
+  clearTimeout(timer);
+  timer = setTimeout(() => close(), ms + 4000);
+}
+
 function playVideo(c, vol) {
   img.hidden = true;
   video.hidden = false;
@@ -183,6 +250,7 @@ function playVideo(c, vol) {
     if (c.sound) {
       // Son à part (Shorts) : même départ que l'image.
       const a = new Audio(convertFileSrc(c.sound));
+      a.volume = vol;
       a.muted = true;
       a.preload = "auto";
       audio = a;
@@ -198,13 +266,17 @@ function playVideo(c, vol) {
     const engine = await Promise.race([sound, sleep(1500).then(() => null)]);
     if (current !== c) return;
     const soundAt = performance.now();
-    reveal(showMs);
+    revealVideo(c, from, until, showMs);
     video.play().catch(() => {});
     if (engine) followSound(from, soundAt);
     else if (engine === null) {
-      // Son en retard : on se cale sur lui dès qu'il part.
+      // Son en retard : il part du début du passage, l'image se recale sur
+      // lui (retour au début) et le compte à rebours repart, sinon la fin
+      // du son était coupée.
       sound.then((ok) => {
-        if (ok && current === c && !video.paused) followSound(video.currentTime, performance.now());
+        if (!ok || current !== c || video.paused) return;
+        revealVideo(c, from, until, showMs);
+        followSound(from, performance.now());
       });
     }
   };
@@ -245,9 +317,13 @@ function playImage(c, vol) {
     const duration = await Promise.race([known, sleep(1500).then(() => 6)]);
     if (current !== c) return;
     const d = Math.min(MAX_MS, (Math.min(end, duration) - start) * 1000);
-    await Promise.race([playSound(c, c.sound, start * 1000, c.end_ms, a), sleep(1500)]);
+    const sound = playSound(c, c.sound, start * 1000, c.end_ms, a);
+    const engine = await Promise.race([sound, sleep(1500).then(() => null)]);
     if (current !== c) return;
     reveal(Math.max(IMAGE_MS, d));
+    // Son en retard : le compte à rebours repart quand il part, pour ne pas
+    // couper sa fin.
+    if (engine === null) sound.then((ok) => ok && current === c && reveal(Math.max(IMAGE_MS, d)));
   };
   img.src = convertFileSrc(c.media);
 }
@@ -256,7 +332,12 @@ function play(c) {
   clearTimeout(timer);
   $("#ask").hidden = true;
   fill(show, c);
-  $(".meme").textContent = c.title || "";
+  const meme = $(".meme");
+  meme.textContent = c.title || "";
+  meme.classList.toggle("top", /\bhaut\b/.test(c.style || ""));
+  meme.classList.toggle("small", /\bpetit\b/.test(c.style || ""));
+  // 🔇 seulement s'il y a un son.
+  muteBtn.hidden = c.kind === "image" && !c.sound;
   show.classList.add("prep");
   show.hidden = false;
   $("[data-says]").textContent = c.preview ? "· ce que ton pote verra" : "t'envoie ça";
@@ -287,6 +368,29 @@ $('[data-action="block"]').addEventListener("click", async () => {
   close();
 });
 $('[data-action="close"]').addEventListener("click", () => close());
+// 🔇 : coupe le son sans fermer ; un second clic le remet là où en est l'image.
+muteBtn.addEventListener("click", () => {
+  const c = current;
+  if (!c || !clock) return;
+  muted = !muted;
+  muteUi();
+  const k = clock;
+  if (!k.engine) {
+    k.el.muted = muted;
+    return;
+  }
+  if (muted) return void invoke("clip_mute", { on: true });
+  // Son parti aussi dans Discord : il tourne toujours (coupé dans le casque
+  // seulement), le moteur le remet sans le relancer chez tes potes.
+  invoke("clip_mute", { on: false }).then(
+    (inPlace) => {
+      if (inPlace || muted || current !== c || clock !== k) return;
+      const atMs = Math.round((k.from + (performance.now() - k.at) / 1000) * 1000);
+      invoke("clip_audio", { path: k.path, startMs: Math.round(k.from * 1000), endMs: k.endMs, volume: c.volume ?? 1, atMs }).catch(() => {});
+    },
+    () => {},
+  );
+});
 $('[data-action="keep"]').addEventListener("click", async (e) => {
   const btn = e.currentTarget;
   btn.disabled = true;

@@ -2003,6 +2003,7 @@ async function openSettings() {
   formSettings.denoise_mode.value = !s.noise_suppression ? "off" : s.strong_denoise ? "strong" : "light";
   formSettings.voice_gate.checked = s.voice_gate;
   formSettings.gate_auto.checked = s.gate_auto ?? true;
+  formSettings.far_voices.value = s.far_voices ?? "normal";
   formSettings.voice_leveler.checked = s.voice_leveler ?? true;
   updateGateRows();
   for (const k of ["mic_volume", "master_volume", "monitor_volume", "gate_threshold"]) {
@@ -2099,6 +2100,7 @@ function updateThresholdMark() {
 function updateGateRows() {
   const on = formSettings.voice_gate.checked;
   formSettings.gate_auto.disabled = !on;
+  formSettings.far_voices.disabled = !on;
   formSettings.gate_threshold.disabled = !on || formSettings.gate_auto.checked;
   updateThresholdMark();
 }
@@ -2205,6 +2207,7 @@ dlgSettings.addEventListener("close", () => {
     strong_denoise: f.denoise_mode.value === "strong",
     voice_gate: f.voice_gate.checked,
     gate_auto: f.gate_auto.checked,
+    far_voices: f.far_voices.value,
     voice_leveler: f.voice_leveler.checked,
     gate_threshold: Number(f.gate_threshold.value),
     master_volume: Number(f.master_volume.value),
@@ -3608,6 +3611,7 @@ const roomPill = $("#room-pill");
 const roomMenu = $("#room-menu");
 
 function renderRoom() {
+  renderDnd();
   const wrap = $(".room-wrap");
   wrap.hidden = !state.config.settings.room_code;
   const target = room.members.find((m) => m.id === room.target);
@@ -3698,6 +3702,29 @@ listen("room-sent", ({ payload }) => {
   toast(`« ${payload} » envoyé chez ${t?.name ?? "ton pote"}`);
 });
 listen("room-error", ({ payload }) => toast(String(payload), true));
+// « Ne pas déranger » : rien ne s'affiche ni ne joue de la part des potes.
+// Les extraits sont gardés dans l'historique ; coupé au prochain lancement.
+const dndBtn = $("#dnd-toggle");
+let dndOn = false;
+function renderDnd() {
+  dndBtn.hidden = !state?.config.settings.room_code;
+  dndBtn.className = "pill dnd" + (dndOn ? " on" : "");
+  dndBtn.textContent = dndOn ? "🌙 Ne pas déranger : activé" : "🌙 Ne pas déranger";
+  dndBtn.setAttribute("aria-pressed", String(dndOn));
+  dndBtn.title = dndOn
+    ? "Les sons et les extraits de tes potes ne passent plus. Les extraits t'attendent dans Envoyer → Historique. Clique pour couper."
+    : "Pour une partie sérieuse : plus aucun son ni extrait de tes potes chez toi (les extraits sont gardés dans l'historique)";
+}
+dndBtn.addEventListener("click", async () => {
+  dndOn = !!(await invoke("clip_dnd", { on: !dndOn }).catch(() => dndOn));
+  renderDnd();
+  toast(dndOn ? "🌙 Ne pas déranger : tes potes ne peuvent plus rien jouer ni afficher chez toi" : "Ne pas déranger coupé");
+});
+invoke("clip_dnd", {}).then((on) => {
+  dndOn = on === true;
+  renderDnd();
+}).catch(() => {});
+listen("clip-quiet", ({ payload: [who] }) => toast(`🌙 ${who} t'a envoyé un extrait : il t'attend dans Envoyer → Historique`));
 listen("clip-received", ({ payload: [who, title] }) => toast(`🎬 ${who} t'envoie un extrait${title ? ` : « ${title} »` : ""}`));
 
 // ---------- Onglet « Envoyer » : extrait sur l'écran d'un pote ----------
@@ -3717,6 +3744,9 @@ const sendStatus = $(".send-status", dlgClip);
 let clipMedia = null;
 let sendStep = "pick";
 let clipSource = "search";
+// Texte en gros : place (« haut » ou en bas) et taille (« petit » ou grand).
+const memeStyle = { pos: "", size: "" };
+const clipStyle = () => [memeStyle.pos, memeStyle.size].filter(Boolean).join(" ");
 
 function clipUi() {
   clipImg.hidden = clipMedia?.kind !== "image";
@@ -3734,7 +3764,15 @@ function clipUi() {
   if (!sendBtn.classList.contains("busy")) sendBtn.disabled = !clipMedia;
   sendBtn.title = clipMedia ? "" : "Choisis d'abord un GIF, une image ou une vidéo";
   $('[data-action="preview"]', dlgClip).disabled = !clipMedia;
-  $(".meme-text", dlgClip).textContent = clipMedia ? formClip.title.value.trim() : "";
+  const meme = $(".meme-text", dlgClip);
+  meme.textContent = clipMedia ? formClip.title.value.trim() : "";
+  meme.classList.toggle("top", memeStyle.pos === "haut");
+  meme.classList.toggle("small", memeStyle.size === "petit");
+  $(".meme-style", dlgClip).hidden = !formClip.title.value.trim();
+  // Vidéo : le son s'écoute avec ▶ sous l'image.
+  listenBtn.hidden = clipMedia?.kind === "video";
+  $("[data-listen-hint]", dlgClip).textContent =
+    clipMedia?.kind === "video" ? "Volume du son chez ton pote. ▶ sous la vidéo : tu l'entends dans ton casque, comme lui." : "Tu l'entends dans ton casque, comme ton pote l'entendra.";
   // Étapes : celle en cours, celles déjà faites.
   const done = { pick: !!clipMedia, adjust: !!clipMedia && sendStep === "adjust", send: false };
   dlgClip.querySelectorAll(".send-steps li").forEach((li) => {
@@ -3753,8 +3791,6 @@ function setSendStep(step) {
   if (step === "pick") {
     stopClipListen();
     clipVideo.pause();
-  } else if (clipMedia?.kind === "video") {
-    clipVideo.play().catch(() => {});
   }
   clipUi();
 }
@@ -3784,6 +3820,7 @@ function showClipMedia(picked, startS = 0) {
     clipImg.removeAttribute("src");
     clipVideo.src = src;
     clipVideo.currentTime = startS;
+    loadClipWaveform(picked);
   } else {
     clipVideo.removeAttribute("src");
     clipImg.src = src;
@@ -3829,6 +3866,7 @@ function openClipDialog(to) {
   setSendStep(sendStep);
   window.scrollTo({ top: 0 });
   renderClipRecents();
+  renderClipFavs();
   if (sendStep === "pick" && state.config.settings.room_code) formClip.q.focus();
 }
 // Retour aux sons : on garde l'extrait en cours pour y revenir.
@@ -3885,12 +3923,75 @@ function clipTile(r, caption) {
   }
   b.addEventListener("click", () => {
     clipTrimEnd = r.kind === "video" ? r.end_s ?? null : null;
+    setMemeStyle(r.style);
     formClip.title.value = r.title || "";
     formClip.cvol.value = String(r.volume ?? 1);
     if (r.kind === "image") formClip.sound.value = r.sound_id || "";
     showClipMedia({ path: r.path, kind: r.kind }, r.start_s || 0);
   });
   return b;
+}
+// Place et taille du texte d'un extrait repris de l'historique.
+function setMemeStyle(style) {
+  const words = String(style || "").split(/\s+/);
+  memeStyle.pos = words.includes("haut") ? "haut" : "";
+  memeStyle.size = words.includes("petit") ? "petit" : "";
+  dlgClip.querySelectorAll("[data-meme]").forEach((g) =>
+    g.querySelectorAll("button").forEach((x) => x.classList.toggle("active", x.dataset.v === memeStyle[g.dataset.meme])),
+  );
+}
+// « Mes extraits » : les préférés, gardés à part pour les renvoyer en un clic.
+let clipFavs = [];
+const favOf = (r) => clipFavs.find((f) => f.path === r.path || f.origin === r.path);
+async function toggleClipFav(r) {
+  try {
+    clipFavs = await invoke("clip_favorite", { path: r.path, on: !favOf(r) });
+  } catch (err) {
+    return toast(String(err), true);
+  }
+  renderClipFavs(clipFavs);
+  if (clipSource === "history") renderClipHistory();
+}
+// Vignette avec son étoile (et « Envoyer » pour un extrait gardé).
+function clipCard(r, caption, quick = false) {
+  const card = document.createElement("div");
+  card.className = "clip-card";
+  const on = !!favOf(r);
+  const star = document.createElement("button");
+  star.type = "button";
+  star.className = "clip-star" + (on ? " on" : "");
+  star.textContent = on ? "★" : "☆";
+  star.title = on ? "Retirer de « Mes extraits »" : "Garder dans « Mes extraits »";
+  star.setAttribute("aria-pressed", String(on));
+  star.addEventListener("click", () => toggleClipFav(r));
+  card.append(clipTile(r, caption), star);
+  if (quick) {
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "clip-go primary";
+    go.textContent = "Envoyer";
+    go.title = "L'envoyer tout de suite, tel quel, à la personne choisie en bas";
+    go.addEventListener("click", () => {
+      const video = r.kind === "video";
+      sendClip({
+        media: r.path,
+        soundId: video ? null : r.sound_id || null,
+        title: r.title || "",
+        startS: video ? r.start_s || 0 : null,
+        endS: video ? r.end_s ?? null : null,
+        volume: video ? r.volume ?? 1 : null,
+        style: r.title ? r.style || "" : "",
+      });
+    });
+    card.append(go);
+  }
+  return card;
+}
+async function renderClipFavs(list) {
+  clipFavs = list ?? (await invoke("clip_favorites").catch(() => []));
+  if (!Array.isArray(clipFavs)) clipFavs = [];
+  $(".clip-favs", dlgClip).hidden = !clipFavs.length;
+  $(".clip-favs-list", dlgClip).replaceChildren(...clipFavs.map((r) => clipCard(r, r.title || "", true)));
 }
 const fmtWhen = (at) => (at ? new Date(at * 1000).toLocaleString("fr-FR", { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "");
 // Les derniers extraits envoyés, en vignettes en haut : un clic pour renvoyer.
@@ -3913,7 +4014,7 @@ async function renderClipHistory() {
       box.replaceChildren(note);
       continue;
     }
-    box.replaceChildren(...list.map((r) => clipTile(r, [r.from ? `de ${r.from}` : "", fmtWhen(r.at)].filter(Boolean).join(" · "))));
+    box.replaceChildren(...list.map((r) => clipCard(r, [r.from ? `de ${r.from}` : "", fmtWhen(r.at)].filter(Boolean).join(" · "))));
   }
 }
 $('[data-action="preview"]', dlgClip).addEventListener("click", () => {
@@ -3927,6 +4028,7 @@ $('[data-action="preview"]', dlgClip).addEventListener("click", () => {
     startS: video ? Number(formClip.start.value) || 0 : null,
     endS: video ? Number(formClip.end.value) || null : null,
     volume: video ? Number(formClip.cvol.value) : null,
+    style: clipStyle(),
   }).catch((err) => toast(String(err), true));
 });
 $("#btn-clip").addEventListener("click", () => openClipDialog());
@@ -4214,6 +4316,14 @@ formClip.addEventListener("keydown", (e) => {
   else if (e.target.name === "title" && clipMedia) sendBtn.click();
 });
 formClip.title.addEventListener("input", clipUi);
+dlgClip.querySelectorAll("[data-meme] button").forEach((b) =>
+  b.addEventListener("click", () => {
+    const group = b.parentElement;
+    memeStyle[group.dataset.meme] = b.dataset.v;
+    group.querySelectorAll("button").forEach((x) => x.classList.toggle("active", x === b));
+    clipUi();
+  }),
+);
 formClip.sound.addEventListener("change", () => { stopClipListen(); clipUi(); });
 formClip.cvol.addEventListener("input", clipUi);
 formClip.cvol.addEventListener("change", () => { if (clipListening) clipListen(); });
@@ -4221,13 +4331,19 @@ formClip.cvol.addEventListener("change", () => { if (clipListening) clipListen()
 let clipListening = false;
 let clipListenTimer = 0;
 const listenBtn = $('[data-action="listen"]', dlgClip);
+// Vidéo : lecture de l'image et du son ensemble (voir « Découpe »).
+let tlPlaying = false;
+const tlPlayBtn = $('[data-action="tl-play"]', dlgClip);
 function stopClipListen() {
+  if (tlPlaying) return tlPause();
   if (clipListening) invoke("stop_preview");
   clipListening = false;
   clearTimeout(clipListenTimer);
   listenBtn.textContent = "▶ Écouter";
 }
 async function clipListen() {
+  // Vidéo : le son suit la lecture (▶ sous l'image).
+  if (clipMedia?.kind === "video") return void (tlPlaying && tlAudio());
   try {
     await invoke("clip_listen", {
       media: clipMedia.path,
@@ -4251,92 +4367,390 @@ async function clipListen() {
 }
 listenBtn.addEventListener("click", () => (clipListening ? stopClipListen() : clipListen()));
 
-// ---------- Découpe de la vidéo : début et fin, 30 s au plus ----------
+// ---------- Découpe de la vidéo : barre de temps, début et fin, 30 s au plus ----------
+// Sous la vidéo : une règle graduée, la forme du son, le passage choisi
+// (deux poignées) et un curseur qui montre où en est la lecture. ▶ joue
+// l'image et le son ensemble (le son dans le casque, comme chez le pote).
 const CLIP_MAX_S = 30;
+const TL_THUMB = 12; // largeur d'une poignée (px), comme dans style.css
+const TL_RULER = 16; // hauteur de la règle graduée (px)
 let clipTrimFrom = 0;
 let clipTrimEnd = null;
 const fmtS = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`;
-function trimUi() {
-  const max = Number(formClip.start.max) || 1;
-  const a = Number(formClip.start.value), b = Number(formClip.end.value);
-  const sel = $(".clip-range-sel", dlgClip);
-  sel.style.left = `${(a / max) * 100}%`;
-  sel.style.width = `${((b - a) / max) * 100}%`;
-  $("[data-trim-label]", dlgClip).textContent = `${fmtS(a)} → ${fmtS(b)} (${(b - a).toFixed(1)} s)`;
+const tlBox = $(".clip-range", dlgClip);
+const tlCanvas = $(".tl-canvas", dlgClip);
+const tlHead = $(".tl-head", dlgClip);
+// dur : durée de la vidéo ; view : partie montrée par la barre (zoom) ;
+// loop : la lecture tourne sur le passage ; audioEnd : fin du son demandé.
+const tl = { dur: 0, view: [0, CLIP_MAX_S], peaks: [], zoom: "all", loop: true, audioEnd: 0, audioSeq: 0 };
+const r1 = (x) => Math.round(x * 10) / 10;
+const trimA = () => Number(formClip.start.value);
+const trimB = () => Number(formClip.end.value);
+// Le centre d'une poignée va de 6 px à (largeur − 6 px) : la règle, la forme
+// du son et le curseur suivent la même échelle.
+function tlX(t) {
+  const [v0, v1] = tl.view;
+  return TL_THUMB / 2 + ((t - v0) / Math.max(0.001, v1 - v0)) * (tlBox.clientWidth - TL_THUMB);
 }
-let trimLast = [0, CLIP_MAX_S];
-let trimDrag = null;
-function setTrim(moved) {
-  const dur = Number(formClip.start.max) || 0;
-  let a = Number(formClip.start.value), b = Number(formClip.end.value);
-  if (moved === "start") {
-    // Le début emmène tout le passage (même durée), comme on s'y attend.
-    const len = Math.max(0.5, trimLast[1] - trimLast[0]);
-    b = Math.min(dur, a + len);
-    if (b - a < 0.5) a = Math.max(0, b - 0.5);
-  } else {
-    if (b - a > CLIP_MAX_S) a = b - CLIP_MAX_S;
-    if (a > b - 0.5) a = Math.max(0, b - 0.5);
-    if (b - a < 0.5) b = Math.min(dur, a + 0.5);
+function tlT(x) {
+  const [v0, v1] = tl.view;
+  const t = v0 + ((x - TL_THUMB / 2) / Math.max(1, tlBox.clientWidth - TL_THUMB)) * (v1 - v0);
+  return Math.min(tl.dur || v1, Math.max(0, t));
+}
+function tlHeadUi() {
+  const t = clipVideo.currentTime || 0;
+  const [v0, v1] = tl.view;
+  tlHead.hidden = t < v0 - 0.01 || t > v1 + 0.01;
+  tlHead.style.left = `${tlX(t)}px`;
+  $("[data-tl-now]", dlgClip).textContent = `${fmtS(t)} / ${fmtS(tl.dur)}`;
+}
+function tlDraw() {
+  const w = tlBox.clientWidth, h = tlBox.clientHeight;
+  if (!w || !h) return;
+  const dpr = window.devicePixelRatio || 1;
+  if (tlCanvas.width !== Math.round(w * dpr) || tlCanvas.height !== Math.round(h * dpr)) {
+    tlCanvas.width = Math.round(w * dpr);
+    tlCanvas.height = Math.round(h * dpr);
+  }
+  const ctx = tlCanvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const css = getComputedStyle(document.documentElement);
+  const accent = css.getPropertyValue("--accent").trim() || "#4f46e5";
+  const muted = css.getPropertyValue("--muted").trim() || "#888";
+  const [v0, v1] = tl.view;
+  const a = trimA(), b = trimB();
+  const xa = tlX(a), xb = tlX(b);
+  // Le passage choisi, en fond.
+  ctx.globalAlpha = 0.14;
+  ctx.fillStyle = accent;
+  ctx.fillRect(xa, TL_RULER, xb - xa, h - TL_RULER);
+  ctx.globalAlpha = 1;
+  // La forme du son (une ligne plate tant qu'elle n'est pas mesurée).
+  const n = tl.peaks.length;
+  const mid = TL_RULER + (h - TL_RULER) / 2;
+  const maxH = (h - TL_RULER - 6) / 2;
+  for (let x = TL_THUMB / 2; x < w - TL_THUMB / 2; x += 3) {
+    const t0 = tlT(x), t1 = tlT(x + 3);
+    let p = 0;
+    if (n && tl.dur) {
+      const i0 = Math.min(n - 1, Math.floor((t0 / tl.dur) * n));
+      const i1 = Math.min(n, Math.max(i0 + 1, Math.ceil((t1 / tl.dur) * n)));
+      for (let i = i0; i < i1; i++) p = Math.max(p, tl.peaks[i] || 0);
+    }
+    const bh = Math.max(1, p * maxH);
+    const inside = t0 >= a && t0 < b;
+    ctx.globalAlpha = inside ? 1 : 0.45;
+    ctx.fillStyle = inside ? accent : muted;
+    ctx.fillRect(x, mid - bh, 2, bh * 2);
+  }
+  ctx.globalAlpha = 1;
+  // La règle : un trait et l'heure tous les « pas », choisis selon le zoom.
+  const pxPerS = (w - TL_THUMB) / Math.max(0.001, v1 - v0);
+  const step = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800].find((s) => s * pxPerS >= 56) || 3600;
+  ctx.fillStyle = muted;
+  ctx.font = '10px "Segoe UI", system-ui, sans-serif';
+  ctx.textBaseline = "top";
+  for (let t = Math.ceil(v0 / step - 1e-6) * step; t <= v1 + 1e-6; t += step) {
+    const x = Math.round(tlX(t));
+    ctx.fillRect(x, 0, 1, TL_RULER - 2);
+    const label = step < 1 ? fmtS(t) : `${Math.floor(t / 60)}:${String(Math.round(t % 60)).padStart(2, "0")}`;
+    if (x + 4 + ctx.measureText(label).width < w) ctx.fillText(label, x + 4, 1);
+  }
+  ctx.globalAlpha = 0.5;
+  ctx.fillRect(0, TL_RULER - 1, w, 1);
+  ctx.globalAlpha = 1;
+}
+function trimUi() {
+  const a = trimA(), b = trimB();
+  $("[data-trim-label]", dlgClip).textContent = `${fmtS(a)} → ${fmtS(b)} · ${(b - a).toFixed(1)} s`;
+  dlgClip.querySelectorAll("[data-zoom]").forEach((x) => x.classList.toggle("active", x.dataset.zoom === tl.zoom));
+  dlgClip.querySelectorAll("[data-len]").forEach((x) => x.classList.toggle("active", Math.abs(b - a - Number(x.dataset.len)) < 0.05));
+  tlDraw();
+  tlHeadUi();
+}
+// Partie montrée par la barre. Elle contient toujours le passage : une
+// poignée hors de la barre serait ramenée dedans et changerait le passage.
+function setView(v0, v1) {
+  const a = trimA(), b = trimB();
+  v0 = Math.max(0, Math.floor(Math.min(v0, a) * 10) / 10);
+  v1 = Math.min(tl.dur, Math.ceil(Math.max(v1, b) * 10) / 10);
+  tl.view = [v0, v1];
+  for (const r of [formClip.start, formClip.end]) {
+    r.min = String(v0);
+    r.max = String(v1);
   }
   formClip.start.value = String(a);
   formClip.end.value = String(b);
-  trimLast = [a, b];
   trimUi();
 }
+function zoomView(mode) {
+  tl.zoom = mode;
+  if (mode === "all") return setView(0, tl.dur);
+  const a = trimA(), b = trimB();
+  const pad = Math.max(1.5, (b - a) * 0.3);
+  setView(a - pad, b + pad);
+}
+let trimLast = [0, CLIP_MAX_S];
+let trimDrag = null;
+let trimWasPlaying = false;
+// Passage posé d'un coup (boutons) : la barre s'élargit s'il en sort.
+function applyTrim(a, b) {
+  a = r1(Math.max(0, a));
+  b = r1(Math.min(tl.dur, b));
+  if (b - a < 0.5) return;
+  trimLast = [a, b];
+  const [v0, v1] = tl.view;
+  tl.view = [Math.min(v0, Math.floor(a * 10) / 10), Math.max(v1, b)];
+  for (const r of [formClip.start, formClip.end]) {
+    r.min = String(tl.view[0]);
+    r.max = String(tl.view[1]);
+  }
+  formClip.start.value = String(a);
+  formClip.end.value = String(b);
+  trimUi();
+  if (tlPlaying) tlAudio();
+}
+function setTrim(moved) {
+  const [v0, v1] = tl.view;
+  let a = trimA(), b = trimB();
+  if (moved === "start") {
+    // Le début emmène tout le passage (même durée), comme on s'y attend.
+    const len = Math.max(0.5, trimLast[1] - trimLast[0]);
+    b = Math.min(v1, a + len);
+    if (b - a < len) a = Math.max(v0, b - len);
+  } else {
+    if (b - a > CLIP_MAX_S) a = b - CLIP_MAX_S;
+    if (a > b - 0.5) a = Math.max(v0, b - 0.5);
+    if (b - a < 0.5) b = Math.min(v1, a + 0.5);
+  }
+  formClip.start.value = String(r1(a));
+  formClip.end.value = String(r1(b));
+  trimLast = [trimA(), trimB()];
+  trimUi();
+}
+
+// ▶ : l'image et le son ensemble. Dans le passage, la lecture tourne en
+// boucle dessus ; ailleurs (pour chercher un moment), elle continue.
+function tlPlayUi() {
+  tlPlayBtn.textContent = tlPlaying ? "⏸" : "▶";
+  tlPlayBtn.setAttribute("aria-label", tlPlaying ? "Mettre en pause" : "Lire le passage avec le son");
+}
+function tlAudio() {
+  const media = clipMedia;
+  if (media?.kind !== "video") return;
+  const t = clipVideo.currentTime || 0;
+  const a = trimA(), b = trimB();
+  tl.loop = t >= a - 0.05 && t < b - 0.05;
+  // Le niveau est celui du passage entier : le volume ne change pas selon
+  // l'endroit d'où on reprend.
+  const startS = tl.loop ? a : t;
+  const endS = tl.loop ? b : Math.min(tl.dur, t + CLIP_MAX_S);
+  tl.audioEnd = endS;
+  const seq = ++tl.audioSeq;
+  clipListening = true;
+  invoke("clip_listen", { media: media.path, soundId: null, startS, endS, volume: Number(formClip.cvol.value), atS: Math.max(startS, t) }).then(
+    () => {
+      // Mis en pause pendant que le son se préparait.
+      if (!tlPlaying && seq === tl.audioSeq) invoke("stop_preview");
+    },
+    (err) => {
+      if (seq !== tl.audioSeq || !tlPlaying) return;
+      // Pas de son lisible : l'image joue quand même.
+      clipListening = false;
+      toast(String(err), true);
+    },
+  );
+}
+function tlPlay() {
+  if (clipMedia?.kind !== "video") return;
+  tlPlaying = true;
+  if (clipVideo.ended || clipVideo.currentTime >= tl.dur - 0.05) clipVideo.currentTime = trimA();
+  clipVideo.play().catch(() => {});
+  tlAudio();
+  tlPlayUi();
+}
+function tlPause() {
+  tlPlaying = false;
+  tl.audioSeq += 1;
+  clipVideo.pause();
+  if (clipListening) invoke("stop_preview");
+  clipListening = false;
+  tlPlayUi();
+}
+function tlSeek(t) {
+  clipVideo.currentTime = Math.min(Math.max(0, tl.dur - 0.05), Math.max(0, t));
+  tlHeadUi();
+  if (tlPlaying) tlAudio();
+}
+tlPlayBtn.addEventListener("click", () => (tlPlaying ? tlPause() : tlPlay()));
+clipVideo.addEventListener("click", () => (tlPlaying ? tlPause() : tlPlay()));
+let tlRaf = 0;
+function tlTick() {
+  tlHeadUi();
+  tlRaf = clipVideo.paused ? 0 : requestAnimationFrame(tlTick);
+}
+clipVideo.addEventListener("play", () => {
+  if (!tlRaf) tlTick();
+});
+clipVideo.addEventListener("seeked", tlHeadUi);
+clipVideo.addEventListener("ended", () => {
+  if (!tlPlaying) return;
+  if (!tl.loop) return tlPause();
+  clipVideo.currentTime = trimA();
+  clipVideo.play().catch(() => {});
+  tlAudio();
+});
+clipVideo.addEventListener("timeupdate", () => {
+  if (clipMedia?.kind !== "video" || trimDrag) return;
+  tlHeadUi();
+  if (!tlPlaying) return;
+  const t = clipVideo.currentTime;
+  if (tl.loop && t >= trimB()) {
+    clipVideo.currentTime = trimA();
+    tlAudio();
+  } else if (!tl.loop && t >= tl.audioEnd - 0.1 && t < tl.dur - 0.3) {
+    // Lecture hors du passage : le son est demandé par tranches de 30 s.
+    tlAudio();
+  }
+});
+
 for (const which of ["start", "end"]) {
   formClip[which].addEventListener("input", () => {
     setTrim(which);
     if (clipMedia?.kind !== "video") return;
     // Pendant qu'on glisse : l'image montre l'endroit de la poignée.
+    if (!trimDrag) trimWasPlaying = tlPlaying;
     trimDrag = which;
-    clipVideo.pause();
+    if (tlPlaying) tlPause();
     clipVideo.currentTime = Number(formClip[which].value);
+    tlHeadUi();
   });
   formClip[which].addEventListener("change", () => {
     trimDrag = null;
     if (clipMedia?.kind !== "video") return;
-    clipVideo.currentTime = Number(formClip.start.value);
-    clipVideo.play().catch(() => {});
-    if (clipListening) clipListen();
+    // Fin déplacée : on réécoute les 2 dernières secondes, là où ça coupe.
+    clipVideo.currentTime = which === "end" ? Math.max(trimA(), trimB() - 2) : trimA();
+    tlHeadUi();
+    if (trimWasPlaying) tlPlay();
+    trimWasPlaying = false;
   });
 }
 clipVideo.addEventListener("loadedmetadata", () => {
   const dur = Math.round((clipVideo.duration || 0) * 10) / 10;
   if (!dur || !isFinite(dur)) return;
-  for (const r of [formClip.start, formClip.end]) r.max = String(dur);
-  const a = Math.min(clipTrimFrom, Math.max(0, dur - 0.5));
+  tl.dur = dur;
+  tl.view = [0, dur];
+  for (const r of [formClip.start, formClip.end]) {
+    r.min = "0";
+    r.max = String(dur);
+  }
+  const a = r1(Math.min(clipTrimFrom, Math.max(0, dur - 0.5)));
   formClip.start.value = String(a);
   const wanted = clipTrimEnd != null && clipTrimEnd > a ? clipTrimEnd : a + CLIP_MAX_S;
   clipTrimEnd = null;
-  formClip.end.value = String(Math.min(dur, wanted, a + CLIP_MAX_S));
-  trimLast = [a, Number(formClip.end.value)];
-  trimUi();
+  formClip.end.value = String(r1(Math.min(dur, wanted, a + CLIP_MAX_S)));
+  trimLast = [a, trimB()];
   clipVideo.currentTime = a;
+  // Longue vidéo : le passage serait minuscule, on zoome dessus d'office.
+  zoomView(dur > 150 ? "sel" : "all");
 });
-// Poignées collées (longue vidéo) : on attrape celle qui est la plus proche.
-$(".clip-range", dlgClip).addEventListener("pointermove", (e) => {
-  if (e.buttons) return;
-  const r = e.currentTarget.getBoundingClientRect();
-  const max = Number(formClip.start.max) || 1;
-  const x = ((e.clientX - r.left) / r.width) * max;
-  const startCloser = Math.abs(x - Number(formClip.start.value)) < Math.abs(x - Number(formClip.end.value));
-  formClip.start.style.zIndex = startCloser ? "2" : "1";
-  formClip.end.style.zIndex = startCloser ? "1" : "2";
+// Forme du son de la vidéo choisie (mesurée en arrière-plan).
+function loadClipWaveform(media) {
+  tl.peaks = [];
+  tlDraw();
+  invoke("clip_waveform", { media: media.path }).then(
+    (peaks) => {
+      if (clipMedia !== media || !Array.isArray(peaks)) return;
+      tl.peaks = peaks;
+      tlDraw();
+    },
+    () => {},
+  );
+}
+// Un clic (ou un glissé) sur la barre, hors des poignées : on va à ce moment.
+tlBox.addEventListener("pointerdown", (e) => {
+  if (e.target === formClip.start || e.target === formClip.end || e.button !== 0 || !tl.dur) return;
+  tlBox.setPointerCapture(e.pointerId);
+  tlSeek(tlT(e.clientX - tlBox.getBoundingClientRect().left));
 });
-// L'aperçu tourne en boucle sur le passage choisi.
-clipVideo.addEventListener("timeupdate", () => {
-  if (clipMedia?.kind !== "video" || trimDrag) return;
-  const a = Number(formClip.start.value), b = Number(formClip.end.value);
-  if (clipVideo.currentTime >= b || clipVideo.currentTime < a - 0.3) clipVideo.currentTime = a;
+tlBox.addEventListener("pointermove", (e) => {
+  const x = e.clientX - tlBox.getBoundingClientRect().left;
+  if (e.buttons) {
+    if (tlBox.hasPointerCapture(e.pointerId)) tlSeek(tlT(x));
+    return;
+  }
+  // Poignées collées (longue vidéo) : on attrape celle qui est la plus proche.
+  const t = tlT(x);
+  const startCloser = Math.abs(t - trimA()) < Math.abs(t - trimB());
+  formClip.start.style.zIndex = startCloser ? "3" : "2";
+  formClip.end.style.zIndex = startCloser ? "2" : "3";
 });
+// Molette : zoom autour du pointeur.
+tlBox.addEventListener("wheel", (e) => {
+  if (!tl.dur) return;
+  e.preventDefault();
+  const [v0, v1] = tl.view;
+  const t = tlT(e.clientX - tlBox.getBoundingClientRect().left);
+  const span = Math.min(tl.dur, Math.max(2, (v1 - v0) * (e.deltaY < 0 ? 0.7 : 1 / 0.7)));
+  const from = Math.min(tl.dur - span, Math.max(0, t - ((t - v0) / Math.max(0.001, v1 - v0)) * span));
+  tl.zoom = span >= tl.dur ? "all" : "";
+  setView(from, from + span);
+}, { passive: false });
+dlgClip.querySelectorAll("[data-zoom]").forEach((b) => b.addEventListener("click", () => tl.dur && zoomView(b.dataset.zoom)));
+// « Début ici » / « Fin ici » : le passage se cale sur l'endroit où on en est.
+$('[data-action="set-start"]', dlgClip).addEventListener("click", () => {
+  if (!tl.dur) return;
+  const t = r1(clipVideo.currentTime), b = trimB();
+  const len = Math.min(CLIP_MAX_S, trimLast[1] - trimLast[0]);
+  applyTrim(Math.min(t, tl.dur - 0.5), b > t + 0.5 && b - t <= CLIP_MAX_S ? b : Math.min(tl.dur, t + len));
+});
+$('[data-action="set-end"]', dlgClip).addEventListener("click", () => {
+  if (!tl.dur) return;
+  const t = r1(clipVideo.currentTime), a = trimA();
+  const len = Math.min(CLIP_MAX_S, trimLast[1] - trimLast[0]);
+  const end = Math.max(0.5, t);
+  applyTrim(a < end - 0.5 && end - a <= CLIP_MAX_S ? a : Math.max(0, end - len), end);
+});
+dlgClip.querySelectorAll("[data-len]").forEach((b) =>
+  b.addEventListener("click", () => {
+    if (!tl.dur) return;
+    const len = Math.min(Number(b.dataset.len), tl.dur);
+    const end = Math.min(tl.dur, trimA() + len);
+    applyTrim(Math.max(0, end - len), end);
+  }),
+);
+// Espace : lecture / pause (sauf en train d'écrire).
+dlgClip.addEventListener("keydown", (e) => {
+  if (e.code !== "Space" || sendStep !== "adjust" || clipMedia?.kind !== "video") return;
+  const el = e.target;
+  if (el.matches?.('input:not([type="range"]), textarea, select, button')) return;
+  e.preventDefault();
+  if (tlPlaying) tlPause();
+  else tlPlay();
+});
+new ResizeObserver(() => tl.dur && trimUi()).observe(tlBox);
 // État de l'envoi, à côté du bouton (il reste affiché jusqu'au prochain).
 function setSendStatus(text, kind = "") {
   sendStatus.textContent = text;
   sendStatus.className = "send-status" + (kind ? ` ${kind}` : "");
 }
-sendBtn.addEventListener("click", async () => {
-  if (!clipMedia || sendBtn.classList.contains("busy")) return;
+sendBtn.addEventListener("click", () => {
+  if (!clipMedia) return;
+  sendClip({
+    media: clipMedia.path,
+    soundId: clipMedia.kind === "image" ? formClip.sound.value || null : null,
+    title: formClip.title.value,
+    startS: clipMedia.kind === "video" ? Number(formClip.start.value) || 0 : null,
+    endS: clipMedia.kind === "video" ? Number(formClip.end.value) || null : null,
+    volume: clipMedia.kind === "video" ? Number(formClip.cvol.value) : null,
+    style: formClip.title.value.trim() ? clipStyle() : "",
+  });
+});
+// Envoie l'extrait décrit par `clip` (celui de l'étape 2, ou un extrait
+// gardé renvoyé tel quel) à la personne choisie en bas.
+async function sendClip(clip) {
+  if (sendBtn.classList.contains("busy")) return;
   if (!state.config.settings.room_code) return toast("Rejoins d'abord un salon avec tes potes : Réglages → Potes", true);
   if (!room.members.length && formClip.to.value !== "*moi") {
     setSendStatus("Aucun pote en ligne : choisis « Tout le salon et moi » pour tester seul", "err");
@@ -4349,15 +4763,7 @@ sendBtn.addEventListener("click", async () => {
   sendBtn.textContent = "Envoi…";
   setSendStatus(`Envoi ${who}… (jusqu'à 1 min pour une vidéo)`, "busy");
   try {
-    await invoke("send_clip", {
-      media: clipMedia.path,
-      soundId: clipMedia.kind === "image" ? formClip.sound.value || null : null,
-      title: formClip.title.value,
-      to,
-      startS: clipMedia.kind === "video" ? Number(formClip.start.value) || 0 : null,
-      endS: clipMedia.kind === "video" ? Number(formClip.end.value) || null : null,
-      volume: clipMedia.kind === "video" ? Number(formClip.cvol.value) : null,
-    });
+    await invoke("send_clip", { ...clip, to });
     const at = new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
     setSendStatus(`✓ Envoyé ${who} à ${at}`, "ok");
     if (!sendOpen) toast(`🎬 Extrait envoyé ${who}`);
@@ -4370,7 +4776,7 @@ sendBtn.addEventListener("click", async () => {
     sendBtn.textContent = "Envoyer";
     clipUi();
   }
-});
+}
 invoke("room_status").then((r) => {
   room = r;
   if (state) renderRoom();

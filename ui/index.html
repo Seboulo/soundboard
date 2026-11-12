@@ -62,6 +62,7 @@
       <button id="room-pill" class="pill" type="button" aria-haspopup="menu" aria-expanded="false" title="Salon entre potes : choisis chez qui tes sons sont joués"></button>
       <div id="room-menu" class="menu" role="menu" hidden></div>
     </div>
+      <button id="dnd-toggle" class="pill" type="button" aria-pressed="false" hidden></button>
     </div>
   </aside>
   <div class="app-main">
@@ -182,6 +183,10 @@
 
         <!-- Étape 1 : choisir -->
         <div class="send-step" data-step="pick">
+          <div class="clip-favs" hidden>
+            <span class="label">Mes extraits <small class="muted">un clic sur « Envoyer » et c'est parti</small></span>
+            <div class="clip-favs-list"></div>
+          </div>
           <div class="clip-recents" hidden>
             <span class="label">Récents</span>
             <div class="clip-recents-list"></div>
@@ -224,7 +229,7 @@
             <div class="clip-gifs clip-history" data-list="sent"></div>
             <h3>Reçus</h3>
             <div class="clip-gifs clip-history" data-list="received"></div>
-            <p class="hint">Les 20 derniers de chaque côté. Un clic le remet à l'étape 2 : tu peux le revoir, l'écouter ou le renvoyer.</p>
+            <p class="hint">Les 20 derniers de chaque côté. Un clic le remet à l'étape 2 : tu peux le revoir, l'écouter ou le renvoyer. L'étoile le garde dans « Mes extraits », prêt à renvoyer en un clic.</p>
           </div>
         </div>
 
@@ -234,8 +239,33 @@
             <div class="adjust-media">
               <div class="clip-frame">
                 <img class="clip-preview" alt="" hidden>
-                <video class="clip-preview" muted loop playsinline hidden></video>
+                <video class="clip-preview" muted playsinline hidden></video>
                 <div class="meme-text" aria-hidden="true"></div>
+              </div>
+              <div class="clip-timeline" data-for-video hidden>
+                <div class="tl-row">
+                  <button type="button" class="tl-play primary" data-action="tl-play" aria-label="Lire le passage avec le son" title="Lire avec le son (Espace)">▶</button>
+                  <span class="tl-now" data-tl-now title="Où tu en es dans la vidéo">0:00.0</span>
+                  <span class="tl-sel">Passage <b data-trim-label></b></span>
+                  <div class="segmented tl-zoom" title="Molette sur la barre : zoom">
+                    <button type="button" data-zoom="all" class="active">Tout</button>
+                    <button type="button" data-zoom="sel">Passage</button>
+                  </div>
+                </div>
+                <div class="clip-range">
+                  <canvas class="tl-canvas" aria-hidden="true"></canvas>
+                  <div class="tl-head" aria-hidden="true"></div>
+                  <input name="start" type="range" min="0" max="30" step="0.1" value="0" aria-label="Début du passage">
+                  <input name="end" type="range" min="0" max="30" step="0.1" value="30" aria-label="Fin du passage">
+                </div>
+                <div class="tl-row tl-tools">
+                  <button type="button" data-action="set-start" title="Le passage commence là où tu en es">⇤ Début ici</button>
+                  <button type="button" data-action="set-end" title="Le passage finit là où tu en es">Fin ici ⇥</button>
+                  <span class="tl-len"><span class="muted">Durée</span>
+                    <button type="button" data-len="5">5 s</button><button type="button" data-len="10">10 s</button><button type="button" data-len="15">15 s</button><button type="button" data-len="30">30 s</button>
+                  </span>
+                </div>
+                <small class="hint">Clique sur la barre pour aller à un moment, glisse les deux poignées pour régler le passage (30 s au plus). ← → pour affiner.</small>
               </div>
               <button type="button" class="ghost" data-action="back">← Choisir autre chose</button>
             </div>
@@ -243,14 +273,18 @@
               <label class="set-field"><span>Texte en gros sur l'extrait <small class="muted">(facultatif)</small></span>
                 <input name="title" maxlength="60" placeholder="Ex. : QUAND KEVIN RATE SON TIR">
               </label>
-              <div class="set-field clip-trim" data-for-video hidden>
-                <span>Passage à montrer <span class="value" data-trim-label></span></span>
-                <div class="clip-range">
-                  <div class="clip-range-sel"></div>
-                  <input name="start" type="range" min="0" max="30" step="0.1" value="0" aria-label="Début du passage">
-                  <input name="end" type="range" min="0" max="30" step="0.1" value="30" aria-label="Fin du passage">
+              <div class="set-field meme-style">
+                <span>Place et taille du texte</span>
+                <div class="search-row">
+                  <div class="segmented" data-meme="pos">
+                    <button type="button" data-v="" class="active">En bas</button>
+                    <button type="button" data-v="haut">En haut</button>
+                  </div>
+                  <div class="segmented" data-meme="size">
+                    <button type="button" data-v="" class="active">Grand</button>
+                    <button type="button" data-v="petit">Petit</button>
+                  </div>
                 </div>
-                <small class="hint">Glisse les deux poignées (30 secondes au plus). ← → pour affiner après un clic.</small>
               </div>
               <label class="set-field" data-for-image>Son avec l'image
                 <select name="sound"></select>
@@ -261,7 +295,7 @@
                   <input name="cvol" type="range" list="tick-100" min="0" max="2" step="0.05" value="1" data-for-video aria-label="Volume du son de la vidéo">
                   <button type="button" data-action="listen">▶ Écouter</button>
                 </div>
-                <small class="hint">Tu l'entends dans ton casque, comme ton pote l'entendra.</small>
+                <small class="hint" data-listen-hint>Tu l'entends dans ton casque, comme ton pote l'entendra.</small>
               </div>
             </div>
           </div>
@@ -532,6 +566,13 @@
           <label class="advanced set-row"><span class="txt"><b>Traitement studio de la voix</b><small>Volume constant, compresseur doux et dé-esseur (S et CH moins sifflants), comme à la radio.</small></span><input name="voice_leveler" type="checkbox" class="switch"></label>
           <label class="advanced set-row"><span class="txt"><b>Couper ton micro quand tu ne parles pas</b></span><input name="voice_gate" type="checkbox" class="switch"></label>
           <label class="advanced set-row"><span class="txt"><b>Sensibilité automatique</b><small>Comme sur Discord : le micro apprend le bruit de ta pièce et ne s'ouvre que quand tu parles.</small></span><input name="gate_auto" type="checkbox" class="switch"></label>
+          <label class="advanced set-row"><span class="txt"><b>Voix lointaines</b><small>La télé ou quelqu'un d'autre dans la pièce n'ouvre pas ton micro. Strict : pour une télé proche, mais parler très bas ne l'ouvre plus.</small></span>
+            <select name="far_voices">
+              <option value="normal">Ignorées</option>
+              <option value="strict">Ignorées (strict)</option>
+              <option value="off">Acceptées</option>
+            </select>
+          </label>
           <label class="advanced set-field">Seuil manuel de détection de la voix <span class="value" data-for="gate_threshold"></span>
             <input name="gate_threshold" type="range" min="0.1" max="0.95" step="0.05">
           </label>
