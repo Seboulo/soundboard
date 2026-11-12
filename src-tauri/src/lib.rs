@@ -2386,14 +2386,13 @@ pub fn run() {
                 AudioEvent::Mic(level) => {
                     let _ = handle.emit("mic-level", level);
                 }
-                AudioEvent::Learned(speech_db) => {
+                AudioEvent::Learned(device, speech_db) => {
                     // Hors du fil audio : il ne doit attendre ni les
                     // réglages ni le disque.
                     let handle = handle.clone();
                     std::thread::spawn(move || {
                         if let Some(state) = handle.try_state::<AppState>() {
                             let mut config = state.config.lock().unwrap();
-                            let device = config.settings.mic_device.clone();
                             config.settings.mic_learned = Some(config::MicLearned { device, speech_db });
                             let _ = state.save(&config);
                         }

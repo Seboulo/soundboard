@@ -77,6 +77,13 @@ const TALKER_JUMP_DB: f32 = 20.0;
 /// que tu t'éloignes beaucoup, la porte se rouvre toute seule au lieu de
 /// rester fermée pour toujours.
 const TALKER_FAR_STEP_DB: f32 = 0.002;
+/// Tant que le niveau venu d'un lancement précédent n'est pas confirmé :
+/// part de l'écart rattrapée à chaque trame de voix bien plus faible
+/// (0,2 s de parole suffisent à rouvrir le micro).
+const TALKER_UNCONFIRMED_RATE: f32 = 0.05;
+/// Trames de voix au niveau prévu (assez fortes pour ouvrir le micro) qui
+/// confirment le niveau venu d'un lancement précédent.
+const TALKER_CONFIRM_FRAMES: u32 = 30;
 /// Réduction maximale de DeepFilterNet, en attendant de connaître le bruit
 /// de la pièce. Plus fort, il mange les fins de mots et les syllabes douces.
 const DF_ATTEN_LIMIT_DB: f32 = 30.0;
@@ -270,6 +277,10 @@ pub struct MicProcessor {
     talker_sure: bool,
     /// Trames de voix mesurées depuis l'ouverture du micro.
     heard_frames: u32,
+    /// `talker_db` vient d'un lancement précédent (retenu ou test de voix).
+    talker_from_before: bool,
+    /// Trames de voix entendues au niveau prévu (voir `TALKER_CONFIRM_FRAMES`).
+    confirm_frames: u32,
     pregain_db: f32,
     pregains: VecDeque<f32>,
     /// Trames en attente : la porte décide sur le son qui entre et
@@ -598,6 +609,8 @@ impl MicProcessor {
             talker_frames: if talker_db.is_nan() { 0 } else { 1000 },
             talker_sure: sure_db.is_some(),
             heard_frames: 0,
+            talker_from_before: !talker_db.is_nan(),
+            confirm_frames: 0,
             pregain_db,
             pregains: VecDeque::with_capacity(DF_LAG_FRAMES + 1),
             delay: VecDeque::with_capacity(delay_frames + 1),
@@ -901,8 +914,24 @@ impl MicProcessor {
             self.talker_db = db;
         }
         let gap = db - self.talker_db;
+        if gap >= -NEAR_OPEN_DB {
+            self.confirm_frames = self.confirm_frames.saturating_add(1);
+        }
         if gap < -NEAR_KEEP_DB {
-            self.talker_db -= TALKER_FAR_STEP_DB;
+            // Niveau venu d'un lancement précédent (retenu, ou test de voix)
+            // et pas encore confirmé cette fois-ci : si la première voix
+            // entendue est bien plus faible, c'est sans doute toi (volume du
+            // micro baissé dans Windows, micro éloigné), pas la télé. On la
+            // rejoint vite, sinon le micro restait fermé une bonne minute.
+            // Une fois ta voix entendue à son niveau prévu (un tiers de
+            // seconde), une voix lointaine ne compte plus.
+            if self.talker_from_before && self.confirm_frames < TALKER_CONFIRM_FRAMES {
+                self.talker_db += gap * TALKER_UNCONFIRMED_RATE;
+                // La mesure repart comme au premier lancement (rapide).
+                self.talker_frames = 0;
+            } else {
+                self.talker_db -= TALKER_FAR_STEP_DB;
+            }
             return false;
         }
         self.talker_frames = self.talker_frames.saturating_add(1);
@@ -1368,6 +1397,33 @@ mod tests {
         let calibration = MicCalibration { noise_db: -70.0, speech_db: -40.0, eq_db: [0.0; 6] };
         let p = MicProcessor::new(1, 48_000, MicFilters { calibration: Some(calibration), ..filters }, VoiceEffect::None, Default::default());
         assert_eq!(p.near_floor_db(NEAR_OPEN_DB), -52.0);
+    }
+
+    #[test]
+    fn stale_level_from_a_previous_launch_is_dropped_when_the_voice_comes_back_weaker() {
+        let filters = MicFilters { gate: true, gate_auto: true, ..OFF };
+        let with = |f: MicFilters| MicProcessor::new(1, 48_000, f, VoiceEffect::None, Default::default());
+        let calibration = MicCalibration { noise_db: -80.0, speech_db: -30.0, eq_db: [0.0; 6] };
+        for f in [MicFilters { learned_db: Some(-30.0), ..filters }, MicFilters { calibration: Some(calibration), ..filters }] {
+            // Volume du micro baissé de 25 dB depuis la dernière fois : après
+            // 0,2 s de parole, ta voix ouvre de nouveau le micro.
+            let mut p = with(f);
+            assert!(-55.0 < p.near_floor_db(NEAR_OPEN_DB));
+            (0..20).for_each(|_| { p.track_talker(0.9, -55.0); });
+            assert!(-55.0 >= p.near_floor_db(NEAR_OPEN_DB), "{}", p.near_floor_db(NEAR_OPEN_DB));
+            // Voix normale entendue d'abord : la télé (25 dB dessous) ne
+            // fait pas baisser le niveau, même après 30 s.
+            let mut p = with(f);
+            (0..50).for_each(|_| { p.track_talker(0.9, -31.0); });
+            (0..3000).for_each(|_| { p.track_talker(0.9, -55.0); });
+            assert!(p.near_floor_db(NEAR_KEEP_DB) > -55.0, "{}", p.near_floor_db(NEAR_KEEP_DB));
+            // La télé parle avant ton premier mot : le niveau baisse, puis
+            // remonte quand tu parles (quelques secondes de parole).
+            let mut p = with(f);
+            (0..200).for_each(|_| { p.track_talker(0.9, -55.0); });
+            (0..600).for_each(|_| { p.track_talker(0.9, -30.0); });
+            assert!(p.near_floor_db(NEAR_KEEP_DB) > -55.0, "{}", p.near_floor_db(NEAR_KEEP_DB));
+        }
     }
 
     #[test]

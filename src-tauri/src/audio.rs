@@ -85,7 +85,8 @@ pub enum AudioEvent {
     Mic(MicLevel),
     /// Niveau habituel de ta voix (dBFS), à garder pour le prochain
     /// lancement : envoyé quand il est connu, puis s'il bouge de 2 dB.
-    Learned(f32),
+    /// Avec le nom du micro réellement ouvert (pas « par défaut »).
+    Learned(Option<String>, f32),
 }
 
 /// Identifiant réservé à la pré-écoute dans l'éditeur (casque uniquement).
@@ -309,6 +310,13 @@ fn find_output(name: Option<&str>) -> Option<cpal::Device> {
     }
 }
 
+/// Le niveau de voix retenu vaut-il pour le micro ouvert (`name`) ? Un
+/// niveau gardé sans nom de micro (« par défaut », anciennes versions) ne
+/// vaut plus : on ne sait pas de quel micro il vient.
+fn learned_fits(learned: &crate::config::MicLearned, name: Option<&str>) -> bool {
+    name.is_some() && learned.device.as_deref() == name && learned.speech_db >= denoise::LEARNED_MIN_DB
+}
+
 fn find_input(name: Option<&str>) -> Option<cpal::Device> {
     let host = cpal::default_host();
     match name {
@@ -371,6 +379,8 @@ struct Engine {
     monitor: Option<Output>,
     virt: Option<Output>,
     mic_stream: Option<cpal::Stream>,
+    /// Nom du micro ouvert (le vrai, même réglé sur « par défaut »).
+    mic_name: Option<String>,
     mic_voice: Option<Voice>,
     mic_muted: bool,
     meter: Arc<MicMeter>,
@@ -441,7 +451,7 @@ fn run(rx: Receiver<Command>, meter_on: Arc<AtomicBool>, on_event: impl Fn(Audio
             match engine.meter.learned_db() {
                 Some(db) if last_learned.is_none_or(|last| (db - last).abs() >= 2.0) => {
                     last_learned = Some(db);
-                    on_event(AudioEvent::Learned(db));
+                    on_event(AudioEvent::Learned(engine.mic_name.clone(), db));
                 }
                 Some(_) => {}
                 // Micro rouvert : la prochaine mesure sera envoyée.
@@ -595,6 +605,10 @@ impl Engine {
         let sample_rate = supported.sample_rate().0;
         let format = supported.sample_format();
         let config: cpal::StreamConfig = supported.into();
+        // Le vrai nom du micro ouvert : avec « micro par défaut de Windows »,
+        // le niveau retenu ne doit pas servir à un autre micro si le micro
+        // par défaut a changé entre-temps.
+        self.mic_name = device.name().ok();
         let filters = MicFilters {
             denoise: self.settings.noise_suppression,
             strong: self.settings.strong_denoise,
@@ -609,7 +623,7 @@ impl Engine {
                 .settings
                 .mic_learned
                 .as_ref()
-                .filter(|l| l.device == self.settings.mic_device && l.speech_db >= denoise::LEARNED_MIN_DB)
+                .filter(|l| learned_fits(l, self.mic_name.as_deref()))
                 .map(|l| l.speech_db.min(-1.0)),
         };
         self.meter.forget();
@@ -1608,6 +1622,18 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn learned_voice_level_only_fits_the_microphone_it_was_measured_on() {
+        let learned = |device: Option<&str>, speech_db| crate::config::MicLearned { device: device.map(str::to_string), speech_db };
+        assert!(learned_fits(&learned(Some("Micro USB"), -30.0), Some("Micro USB")));
+        // Micro par défaut changé dans Windows : l'ancien niveau ne sert pas.
+        assert!(!learned_fits(&learned(Some("Micro USB"), -30.0), Some("Casque Bluetooth")));
+        // Gardé sans nom (réglage « par défaut ») : on ne sait pas d'où il vient.
+        assert!(!learned_fits(&learned(None, -30.0), Some("Micro USB")));
+        assert!(!learned_fits(&learned(None, -30.0), None));
+        assert!(!learned_fits(&learned(Some("Micro USB"), -60.0), Some("Micro USB")));
+    }
     use rodio::buffer::SamplesBuffer;
 
     #[test]
