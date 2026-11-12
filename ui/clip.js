@@ -93,7 +93,11 @@ function playSound(c, path, startMs, endMs, el) {
     () => {
       if (current !== c) return false;
       el.muted = false;
-      if (el.paused && el !== video) el.play().catch(() => {});
+      if (el.paused && el !== video) {
+        // Son à part d'une vidéo déjà partie : il reprend où en est l'image.
+        if (!video.paused) el.currentTime = video.currentTime;
+        el.play().catch(() => {});
+      }
       return false;
     },
   );
@@ -183,6 +187,7 @@ function playVideo(c, vol) {
     if (c.sound) {
       // Son à part (Shorts) : même départ que l'image.
       const a = new Audio(convertFileSrc(c.sound));
+      a.volume = vol;
       a.muted = true;
       a.preload = "auto";
       audio = a;
@@ -202,9 +207,13 @@ function playVideo(c, vol) {
     video.play().catch(() => {});
     if (engine) followSound(from, soundAt);
     else if (engine === null) {
-      // Son en retard : on se cale sur lui dès qu'il part.
+      // Son en retard : il part du début du passage, l'image se recale sur
+      // lui (retour au début) et le compte à rebours repart, sinon la fin
+      // du son était coupée.
       sound.then((ok) => {
-        if (ok && current === c && !video.paused) followSound(video.currentTime, performance.now());
+        if (!ok || current !== c || video.paused) return;
+        reveal(showMs);
+        followSound(from, performance.now());
       });
     }
   };
@@ -245,9 +254,13 @@ function playImage(c, vol) {
     const duration = await Promise.race([known, sleep(1500).then(() => 6)]);
     if (current !== c) return;
     const d = Math.min(MAX_MS, (Math.min(end, duration) - start) * 1000);
-    await Promise.race([playSound(c, c.sound, start * 1000, c.end_ms, a), sleep(1500)]);
+    const sound = playSound(c, c.sound, start * 1000, c.end_ms, a);
+    const engine = await Promise.race([sound, sleep(1500).then(() => null)]);
     if (current !== c) return;
     reveal(Math.max(IMAGE_MS, d));
+    // Son en retard : le compte à rebours repart quand il part, pour ne pas
+    // couper sa fin.
+    if (engine === null) sound.then((ok) => ok && current === c && reveal(Math.max(IMAGE_MS, d)));
   };
   img.src = convertFileSrc(c.media);
 }

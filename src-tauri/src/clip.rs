@@ -542,7 +542,7 @@ pub async fn clip_listen(
         }
         None => return Err("pas de son à écouter".into()),
     };
-    play_audio(app.clone(), path, start_ms, end_ms, vol, false).await
+    play_audio(app.clone(), path, start_ms, end_ms, vol, false, false).await
 }
 
 /// Extraits convertis gardés (un renvoi du même passage repart tout de suite).
@@ -1077,6 +1077,9 @@ fn show_window(app: &AppHandle, show: ClipShow) -> Result<(), String> {
     *state.clips.pending.lock().unwrap() = Some(show.clone());
     let current = state.clips.window.lock().unwrap().clone();
     if let Some(w) = current.as_deref().and_then(|l| app.get_webview_window(l)) {
+        // L'extrait d'avant est remplacé : son son s'arrête avec lui (sinon il
+        // continuait jusqu'à 30 s sous la carte « Afficher / Refuser »).
+        stop_audio(&state);
         // La fenêtre se met elle-même à la bonne taille (clip_fit), une fois
         // l'extrait précédent caché : pas de saut visible.
         warm_level(app, &show);
@@ -1139,7 +1142,19 @@ pub async fn clip_audio(app: AppHandle, path: String, start_ms: u64, end_ms: Opt
     // Extrait reçu d'un pote : son son part aussi dans Discord, comme un son
     // du salon, pour que tout le monde l'entende. L'aperçu reste au casque.
     let discord = state.clips.pending.lock().unwrap().as_ref().is_some_and(|c| !c.preview && c.direct);
-    play_audio(app.clone(), path, start_ms, end_ms, volume, discord).await
+    if !still_shown(&state, &path) {
+        return Err("extrait déjà fermé".into());
+    }
+    play_audio(app.clone(), path, start_ms, end_ms, volume, discord, true).await
+}
+
+/// Le son `path` est-il celui de l'extrait affiché en ce moment ? Un son
+/// demandé par un extrait fermé ou remplacé entre-temps ne doit pas partir
+/// (sinon il jouait jusqu'à 30 s sans fenêtre).
+fn still_shown(state: &AppState, path: &Path) -> bool {
+    state.clips.pending.lock().unwrap().as_ref().is_some_and(|c| {
+        Path::new(&c.media) == path || c.sound.as_deref().is_some_and(|s| Path::new(s) == path)
+    })
 }
 
 /// Son d'un extrait reçu, joué dans le casque et dans Discord.
@@ -1168,11 +1183,16 @@ fn level_of(state: &AppState, path: &Path, start_ms: u64, end_ms: Option<u64>) -
     Ok((a, end))
 }
 
-async fn play_audio(app: AppHandle, path: PathBuf, start_ms: u64, end_ms: Option<u64>, volume: f32, discord: bool) -> Result<(), String> {
+/// `for_clip` : son de la fenêtre d'extrait, joué seulement si elle montre
+/// encore cet extrait une fois le niveau mesuré (ça peut prendre un moment).
+async fn play_audio(app: AppHandle, path: PathBuf, start_ms: u64, end_ms: Option<u64>, volume: f32, discord: bool, for_clip: bool) -> Result<(), String> {
     let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app2.state::<AppState>();
         let (analysis, end) = level_of(&state, &path, start_ms, end_ms)?;
+        if for_clip && !still_shown(&state, &path) {
+            return Err("extrait déjà fermé".into());
+        }
         let mut sound = extras::store_like(&path, analysis);
         sound.id = audio::PREVIEW_ID.into();
         sound.start_ms = start_ms;
@@ -1350,17 +1370,22 @@ pub fn close(app: &AppHandle) {
     if let Some(state) = app.try_state::<AppState>() {
         state.clips.pending.lock().unwrap().take();
         state.clips.window.lock().unwrap().take();
-        if state.clips.audio_on.swap(false, Ordering::SeqCst) {
-            state.audio.stop_preview();
-        }
-        if state.clips.audio_discord.swap(false, Ordering::SeqCst) {
-            state.audio.stop(CLIP_SOUND_ID);
-        }
+        stop_audio(&state);
     }
     for (label, w) in app.webview_windows() {
         if is_clip_window(&label) {
             let _ = w.destroy();
         }
+    }
+}
+
+/// Coupe le son de l'extrait (casque et Discord).
+fn stop_audio(state: &AppState) {
+    if state.clips.audio_on.swap(false, Ordering::SeqCst) {
+        state.audio.stop_preview();
+    }
+    if state.clips.audio_discord.swap(false, Ordering::SeqCst) {
+        state.audio.stop(CLIP_SOUND_ID);
     }
 }
 
