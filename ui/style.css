@@ -1545,6 +1545,10 @@ body:has(.grid.list) .tabbar .size { display: none; }
   text-shadow: 0 2px 6px rgba(0, 0, 0, .6);
   overflow-wrap: anywhere;
 }
+.meme-text.top { bottom: auto; top: 10px; }
+.meme-text.small { font-size: 17px; -webkit-text-stroke-width: 1px; }
+.meme-style .search-row { gap: 10px; flex-wrap: wrap; }
+.adjust-media video.clip-preview { cursor: pointer; }
 
 /* Fenêtre étroite : les pastilles (câble, micro, salon) rétrécissent avec
    « … » plutôt que de pousser Réglages et thème hors de la fenêtre. */
@@ -1565,12 +1569,28 @@ body:has(.grid.list) .tabbar .size { display: none; }
   #sort { max-width: 150px; }
 }
 .clip-listen input[type="range"] { flex: 1; min-width: 0; }
-.clip-range { position: relative; height: 28px; margin-top: 4px; }
-.clip-range::before { content: ""; position: absolute; left: 0; right: 0; top: 11px; height: 6px; border-radius: 3px; background: var(--border); }
-.clip-range-sel { position: absolute; top: 11px; height: 6px; border-radius: 3px; background: var(--accent); }
-.clip-range input[type="range"] { position: absolute; inset: 0; width: 100%; margin: 0; background: none; pointer-events: none; -webkit-appearance: none; appearance: none; }
-.clip-range input[type="range"]::-webkit-slider-runnable-track { background: none; }
-.clip-range input[type="range"]::-webkit-slider-thumb { pointer-events: auto; -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--panel, #fff); border: 2px solid var(--accent); cursor: ew-resize; margin-top: 6px; }
+/* Barre de temps de l'extrait : règle graduée, forme du son, passage
+   (deux poignées) et curseur de lecture. */
+.clip-timeline { width: 100%; display: flex; flex-direction: column; gap: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; }
+.tl-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tl-row .spacer { flex: 1; }
+.tl-play { width: 38px; height: 32px; padding: 0; font-size: 14px; flex: none; }
+.tl-now { font-variant-numeric: tabular-nums; font-weight: 600; }
+.tl-sel { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.tl-sel b { color: var(--text); font-weight: 600; }
+.tl-zoom { margin-left: auto; }
+.tl-zoom button { padding: 3px 10px; font-size: 12px; }
+.meme-style .segmented button { white-space: nowrap; }
+.tl-tools button { padding: 4px 10px; font-size: 13px; }
+.tl-len { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; font-size: 13px; }
+.tl-len button.active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.clip-range { position: relative; height: 76px; cursor: pointer; touch-action: none; }
+.tl-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.tl-head { position: absolute; top: 12px; bottom: 0; width: 2px; margin-left: -1px; background: var(--text); border-radius: 1px; pointer-events: none; z-index: 1; }
+.tl-head::before { content: ""; position: absolute; top: -4px; left: -4px; width: 10px; height: 10px; border-radius: 50%; background: var(--text); }
+.clip-range input[type="range"] { position: absolute; left: 0; right: 0; top: 16px; bottom: 0; width: 100%; height: auto; margin: 0; padding: 0; background: none; pointer-events: none; -webkit-appearance: none; appearance: none; z-index: 2; }
+.clip-range input[type="range"]::-webkit-slider-runnable-track { background: none; height: 100%; }
+.clip-range input[type="range"]::-webkit-slider-thumb { pointer-events: auto; -webkit-appearance: none; width: 12px; height: 60px; border-radius: 4px; background: var(--accent); border: 2px solid var(--panel, #fff); box-shadow: 0 1px 4px rgba(0, 0, 0, .3); cursor: ew-resize; }
 .clip-range input[type="range"]:focus-visible { outline: none; }
 .clip-range input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); }
 .clip-recents { display: flex; align-items: center; gap: 8px; }

@@ -236,7 +236,7 @@ fn phone_request(app: &AppHandle, req: phone::Request) -> Result<serde_json::Val
             Ok(serde_json::to_value(pick).map_err(|e| e.to_string())?)
         }
         phone::Request::ClipSend { media, title, to, start, sound } => {
-            tauri::async_runtime::block_on(clip::send_clip(app.clone(), media, sound, title, to, start, None, None))?;
+            tauri::async_runtime::block_on(clip::send_clip(app.clone(), media, sound, title, to, start, None, None, None))?;
             Ok(serde_json::json!({ "ok": true }))
         }
         phone::Request::Stop => {
@@ -307,6 +307,7 @@ fn play_request(state: &AppState, sound: &Sound) -> PlayRequest {
         looping: sound.looping,
         keep_playing: sound.keep_playing,
         fx: sound.fx,
+        end_fade_ms: 0,
     }
 }
 
@@ -2543,6 +2544,8 @@ pub fn run() {
             clip::clip_from_link,
             clip::clip_search_videos,
             clip::clip_audio,
+            clip::clip_mute,
+            clip::clip_waveform,
             clip::clip_listen,
             clip::clip_recents,
             clip::clip_history,

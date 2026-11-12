@@ -15,6 +15,12 @@ let audio = null;
 let timer = null;
 let current = null;
 let syncId = 0;
+// Son en cours : d'où il est parti (s) et quand (ms), pour le reprendre au
+// bon endroit après 🔇 ; `engine` : joué par le moteur audio (casque).
+let clock = null;
+let muted = false;
+let closing = 0;
+const muteBtn = $('[data-action="mute"]');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Deux images à l'écran, ou 120 ms au plus : si Windows juge la fenêtre
@@ -52,14 +58,40 @@ function reset() {
   $("#ask").hidden = true;
   show.hidden = true;
   show.classList.add("prep");
+  clearTimeout(closing);
+  closing = 0;
+  $("#ask").classList.remove("out");
+  show.classList.remove("out");
+  clock = null;
+  muted = false;
+  muteUi();
+}
+
+function muteUi() {
+  muteBtn.textContent = muted ? "🔇" : "🔊";
+  muteBtn.setAttribute("aria-pressed", String(muted));
+  muteBtn.title = muted ? "Remettre le son" : "Couper le son de cet extrait";
 }
 
 // `why` : raison notée dans le journal quand l'extrait n'a pas pu être lu.
-function close(why) {
+function finish(why) {
   const media = current ? current.media : null;
   reset();
   current = null;
   invoke("clip_close", { media, why: typeof why === "string" ? why : null });
+}
+
+// La carte s'efface en douceur (un extrait affiché) ; sinon tout de suite.
+function close(why) {
+  const card = !$("#ask").hidden ? $("#ask") : show;
+  if (!current || typeof why === "string" || card.hidden || card.classList.contains("prep")) return finish(why);
+  if (closing) return;
+  const c = current;
+  card.classList.add("out");
+  closing = setTimeout(() => {
+    closing = 0;
+    if (current === c) finish();
+  }, 170);
 }
 
 function fill(root, c) {
@@ -88,11 +120,22 @@ async function ask(c) {
 // true quand il est parti. S'il échoue, l'élément joue le son lui-même
 // (sortie par défaut de Windows) et on renvoie false.
 function playSound(c, path, startMs, endMs, el) {
+  const mine = { path, from: startMs / 1000, endMs: endMs ?? null, el, at: performance.now(), engine: false };
+  clock = mine;
   return invoke("clip_audio", { path, startMs: Math.round(startMs), endMs: endMs ?? null, volume: c.volume ?? 1 }).then(
-    () => true,
+    () => {
+      if (clock === mine) {
+        mine.at = performance.now();
+        mine.engine = true;
+        // Coupé pendant que le son se préparait.
+        if (muted) invoke("clip_mute");
+      }
+      return true;
+    },
     () => {
       if (current !== c) return false;
-      el.muted = false;
+      if (clock === mine) mine.at = performance.now();
+      el.muted = muted;
       if (el.paused && el !== video) {
         // Son à part d'une vidéo déjà partie : il reprend où en est l'image.
         if (!video.paused) el.currentTime = video.currentTime;
@@ -289,7 +332,12 @@ function play(c) {
   clearTimeout(timer);
   $("#ask").hidden = true;
   fill(show, c);
-  $(".meme").textContent = c.title || "";
+  const meme = $(".meme");
+  meme.textContent = c.title || "";
+  meme.classList.toggle("top", /\bhaut\b/.test(c.style || ""));
+  meme.classList.toggle("small", /\bpetit\b/.test(c.style || ""));
+  // 🔇 seulement s'il y a un son.
+  muteBtn.hidden = c.kind === "image" && !c.sound;
   show.classList.add("prep");
   show.hidden = false;
   $("[data-says]").textContent = c.preview ? "· ce que ton pote verra" : "t'envoie ça";
@@ -320,6 +368,21 @@ $('[data-action="block"]').addEventListener("click", async () => {
   close();
 });
 $('[data-action="close"]').addEventListener("click", () => close());
+// 🔇 : coupe le son sans fermer ; un second clic le remet là où en est l'image.
+muteBtn.addEventListener("click", () => {
+  const c = current;
+  if (!c || !clock) return;
+  muted = !muted;
+  muteUi();
+  const k = clock;
+  if (!k.engine) {
+    k.el.muted = muted;
+    return;
+  }
+  if (muted) return void invoke("clip_mute");
+  const atMs = Math.round((k.from + (performance.now() - k.at) / 1000) * 1000);
+  invoke("clip_audio", { path: k.path, startMs: Math.round(k.from * 1000), endMs: k.endMs, volume: c.volume ?? 1, atMs }).catch(() => {});
+});
 $('[data-action="keep"]').addEventListener("click", async (e) => {
   const btn = e.currentTarget;
   btn.disabled = true;

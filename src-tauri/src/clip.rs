@@ -48,6 +48,8 @@ pub struct ClipShow {
     pub start_ms: u64,
     pub end_ms: Option<u64>,
     pub volume: f32,
+    /// Texte en gros : « haut » et/ou « petit » (vide : en bas, en grand).
+    pub style: String,
     /// Qui l'envoie (pour « Bloquer »).
     pub from_id: String,
     /// Demander avant d'afficher.
@@ -528,6 +530,7 @@ pub async fn clip_listen(
     start_s: Option<f64>,
     end_s: Option<f64>,
     volume: Option<f32>,
+    at_s: Option<f64>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let media = sendable(&state, &media)?;
@@ -544,7 +547,8 @@ pub async fn clip_listen(
         }
         None => return Err("pas de son à écouter".into()),
     };
-    play_audio(app.clone(), path, start_ms, end_ms, vol, false, false).await
+    let at_ms = at_s.map(|s| (s.clamp(0.0, 36_000.0) * 1000.0) as u64);
+    play_audio(app.clone(), path, start_ms, end_ms, vol, false, false, at_ms).await
 }
 
 /// Extraits convertis gardés (un renvoi du même passage repart tout de suite).
@@ -601,7 +605,13 @@ async fn prepare_video(app: &AppHandle, dir: &Path, media: &Path, start_s: Optio
 /// « Envoyer à » : tout le salon, et soi-même aussi pour tester.
 const ME_TOO: &str = "*moi";
 
+/// Style du texte en gros, réduit aux mots connus.
+fn text_style(style: &str) -> String {
+    ["haut", "petit"].into_iter().filter(|w| style.split_whitespace().any(|s| s == *w)).collect::<Vec<_>>().join(" ")
+}
+
 /// Envoie l'extrait à un pote (ou à tout le salon si `to` est vide).
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn send_clip(
     app: AppHandle,
@@ -612,8 +622,10 @@ pub async fn send_clip(
     start_s: Option<f64>,
     end_s: Option<f64>,
     volume: Option<f32>,
+    style: Option<String>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
+    let style = text_style(style.as_deref().unwrap_or(""));
     let media = sendable(&state, &media)?;
     let dir = clips_dir(&state).join("envoi");
     let media_ext = media.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
@@ -652,6 +664,7 @@ pub async fn send_clip(
             end_ms: video_end(start_ms, end_s).map(|e| e + offset),
             volume: Some(volume.unwrap_or(1.0).clamp(0.0, 2.0)),
             cut: cut_ms.is_some(),
+            style,
         };
         if with_me {
             room.expect_echo();
@@ -738,7 +751,7 @@ pub async fn send_clip(
     let title: String = title.trim().chars().take(60).collect();
     let msg_title = title.clone();
     let to_all = to.is_empty();
-    let msg = Msg::Clip { from: room.my_id(), name: room.my_name(), to, title, link: String::new(), start_ms: 0, end_ms: None, volume: None, cut: false };
+    let msg = Msg::Clip { from: room.my_id(), name: room.my_name(), to, title, link: String::new(), start_ms: 0, end_ms: None, volume: None, cut: false, style };
     if with_me {
         room.expect_echo();
     }
@@ -830,6 +843,7 @@ async fn fetch_link(app: &AppHandle, url: &str, dir: &Path, id: &str, start_ms: 
 }
 
 /// Un extrait arrive d'un pote.
+#[allow(clippy::too_many_arguments)]
 pub async fn receive(
     app: &AppHandle,
     from: String,
@@ -838,6 +852,7 @@ pub async fn receive(
     url: Option<String>,
     direct: bool,
     link: Option<LinkClip>,
+    style: String,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let mode = state.config.lock().unwrap().settings.clips_mode.clone();
@@ -934,6 +949,7 @@ pub async fn receive(
         from_id: from.clone(),
         from: name,
         title,
+        style: text_style(&style),
         kind,
         media: media_path.to_string_lossy().into_owned(),
         sound: sound_path.map(|p| p.to_string_lossy().into_owned()),
@@ -1200,7 +1216,7 @@ fn show_now(app: &AppHandle, show: ClipShow) -> Result<(), String> {
 /// pas toujours le casque. En cas d'échec (vidéo WebM en Opus…), la fenêtre
 /// joue le son elle-même.
 #[tauri::command]
-pub async fn clip_audio(app: AppHandle, path: String, start_ms: u64, end_ms: Option<u64>, volume: f32) -> Result<(), String> {
+pub async fn clip_audio(app: AppHandle, path: String, start_ms: u64, end_ms: Option<u64>, volume: f32, at_ms: Option<u64>) -> Result<(), String> {
     let state = app.state::<AppState>();
     let path = PathBuf::from(path);
     let dir = clips_dir(&state);
@@ -1213,7 +1229,7 @@ pub async fn clip_audio(app: AppHandle, path: String, start_ms: u64, end_ms: Opt
     if !still_shown(&state, &path) {
         return Err("extrait déjà fermé".into());
     }
-    play_audio(app.clone(), path, start_ms, end_ms, volume, discord, true).await
+    play_audio(app.clone(), path, start_ms, end_ms, volume, discord, true, at_ms).await
 }
 
 /// Le son `path` est-il celui de l'extrait affiché en ce moment ? Un son
@@ -1223,6 +1239,24 @@ fn still_shown(state: &AppState, path: &Path) -> bool {
     state.clips.pending.lock().unwrap().as_ref().is_some_and(|c| {
         Path::new(&c.media) == path || c.sound.as_deref().is_some_and(|s| Path::new(s) == path)
     })
+}
+
+/// Fondu de sortie du son à la fin du passage.
+const CLIP_END_FADE_MS: u32 = 250;
+
+/// 🔇 sur la carte : coupe le son de l'extrait sans le fermer.
+#[tauri::command]
+pub fn clip_mute(state: State<AppState>) {
+    stop_audio(&state);
+}
+
+/// Forme du son de la vidéo choisie, pour s'y repérer en coupant le passage.
+#[tauri::command]
+pub async fn clip_waveform(app: AppHandle, media: String) -> Result<Vec<f32>, String> {
+    let state = app.state::<AppState>();
+    let media = sendable(&state, &media)?;
+    let path = video_sound(&clips_dir(&state).join("envoi"), &media);
+    tauri::async_runtime::spawn_blocking(move || analysis::waveform(&path, 1600)).await.map_err(|e| e.to_string())?
 }
 
 /// Son d'un extrait reçu, joué dans le casque et dans Discord.
@@ -1253,7 +1287,10 @@ fn level_of(state: &AppState, path: &Path, start_ms: u64, end_ms: Option<u64>) -
 
 /// `for_clip` : son de la fenêtre d'extrait, joué seulement si elle montre
 /// encore cet extrait une fois le niveau mesuré (ça peut prendre un moment).
-async fn play_audio(app: AppHandle, path: PathBuf, start_ms: u64, end_ms: Option<u64>, volume: f32, discord: bool, for_clip: bool) -> Result<(), String> {
+/// `at_ms` : reprendre en cours de passage (le niveau reste celui du passage
+/// entier, pour que le volume ne change pas selon l'endroit).
+#[allow(clippy::too_many_arguments)]
+async fn play_audio(app: AppHandle, path: PathBuf, start_ms: u64, end_ms: Option<u64>, volume: f32, discord: bool, for_clip: bool, at_ms: Option<u64>) -> Result<(), String> {
     let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app2.state::<AppState>();
@@ -1263,17 +1300,21 @@ async fn play_audio(app: AppHandle, path: PathBuf, start_ms: u64, end_ms: Option
         }
         let mut sound = extras::store_like(&path, analysis);
         sound.id = audio::PREVIEW_ID.into();
-        sound.start_ms = start_ms;
-        sound.end_ms = Some(end.min(analysis.duration_ms));
+        let stop = end.min(analysis.duration_ms);
+        sound.start_ms = at_ms.map_or(start_ms, |at| at.clamp(start_ms, stop.max(start_ms)));
+        sound.end_ms = Some(stop);
         sound.volume = volume.clamp(0.0, 2.0);
+        // Le passage s'arrête en plein son : fondu de sortie au lieu d'une
+        // coupure sèche (sans effet si le fichier finit avant).
+        let request = |state: &AppState, sound: &Sound| PlayRequest { end_fade_ms: CLIP_END_FADE_MS, ..play_request(state, sound) };
         if discord {
             sound.id = CLIP_SOUND_ID.into();
             state.audio.stop(CLIP_SOUND_ID);
-            state.audio.toggle_detached(play_request(&state, &sound));
+            state.audio.toggle_detached(request(&state, &sound));
             state.clips.audio_discord.store(true, Ordering::SeqCst);
             return Ok(());
         }
-        let req = play_request(&state, &sound);
+        let req = request(&state, &sound);
         state.audio.preview(req)?;
         state.clips.audio_on.store(true, Ordering::SeqCst);
         Ok(())
@@ -1284,6 +1325,7 @@ async fn play_audio(app: AppHandle, path: PathBuf, start_ms: u64, end_ms: Option
 
 /// « Aperçu » : montre son propre extrait dans le coin de son écran, comme
 /// le pote le verra (sans rien envoyer).
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn clip_preview(
     app: AppHandle,
@@ -1293,6 +1335,7 @@ pub async fn clip_preview(
     start_s: Option<f64>,
     end_s: Option<f64>,
     volume: Option<f32>,
+    style: Option<String>,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let media = sendable(&state, &media)?;
@@ -1324,6 +1367,7 @@ pub async fn clip_preview(
     let show = ClipShow {
         from: "Aperçu".into(),
         title: title.trim().chars().take(60).collect(),
+        style: text_style(style.as_deref().unwrap_or("")),
         kind,
         media: media.to_string_lossy().into_owned(),
         sound,

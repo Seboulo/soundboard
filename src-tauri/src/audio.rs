@@ -55,6 +55,8 @@ pub struct PlayRequest {
     pub keep_playing: bool,
     /// Effets de l'éditeur.
     pub fx: SoundFx,
+    /// Fondu de sortie à la fin du passage (ms) ; 0 : le petit anti-clic.
+    pub end_fade_ms: u32,
 }
 
 /// Durée des fondus des sons en boucle.
@@ -891,7 +893,7 @@ fn open_source(req: &PlayRequest, rate: u32) -> Result<Box<dyn Source<Item = f32
     decoder.seek_ms(req.start_ms);
     // Fondu de 5 ms à la fin du passage : une découpe ne claque plus.
     let frames = req.duration_ms.map(|ms| ms * decoder.sample_rate() as u64 / 1000);
-    let source = Leveler::new(EndFade::new(decoder.take_duration(length), frames), Levels::of(req));
+    let source = Leveler::new(EndFade::new(decoder.take_duration(length), frames, req.end_fade_ms), Levels::of(req));
     if req.looping {
         // Gardé en mémoire pour pouvoir le rejouer sans relire le fichier.
         Ok(Box::new(Resample::new(source.buffered().repeat_infinite(), rate)))
@@ -1274,10 +1276,12 @@ struct EndFade<S> {
 }
 
 impl<S: Source<Item = f32>> EndFade<S> {
-    fn new(inner: S, frames: Option<u64>) -> Self {
+    fn new(inner: S, frames: Option<u64>, fade_ms: u32) -> Self {
         let ch = inner.channels().max(1) as u64;
         let total = frames.map_or(u64::MAX, |f| f * ch);
-        let fade = (crate::sound_fx::DECLICK_MS * inner.sample_rate() as f32 / 1000.0) as u64 * ch;
+        let ms = crate::sound_fx::DECLICK_MS.max(fade_ms as f32);
+        // Jamais plus de la moitié du passage.
+        let fade = ((ms * inner.sample_rate() as f32 / 1000.0) as u64 * ch).min(total / 2);
         Self { inner, pos: 0, fade_from: total.saturating_sub(fade), total }
     }
 }

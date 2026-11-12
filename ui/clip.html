@@ -43,6 +43,12 @@
       -webkit-text-stroke: 2px #000; paint-order: stroke fill; text-shadow: 0 2px 8px rgba(0,0,0,.6);
       overflow-wrap: anywhere; pointer-events: none; animation: pop .25s ease-out; }
     .meme:empty { display: none; }
+    .meme.top { bottom: auto; top: 12px; }
+    .meme.small { font-size: 22px; -webkit-text-stroke-width: 1.5px; }
+    /* Fermeture en douceur. */
+    .card.out { opacity: 0; transform: translateY(8px); transition: opacity .16s ease-in, transform .16s ease-in; }
+    .mute { padding: 3px 8px; font-size: 12px; }
+    .mute[aria-pressed="true"] { color: var(--muted); }
   </style>
 </head>
 <body>
@@ -55,7 +61,7 @@
     <div class="bar"></div>
   </div>
   <div id="show" class="card" hidden>
-    <div class="head"><span class="emo" aria-hidden="true">🎬</span><span class="who"><b data-from></b> <small data-says>t'envoie ça</small></span><button type="button" class="keep" data-action="keep" title="En faire un pad dans ta soundboard">💾 Garder</button><button type="button" class="x" data-action="close" title="Fermer">✕</button></div>
+    <div class="head"><span class="emo" aria-hidden="true">🎬</span><span class="who"><b data-from></b> <small data-says>t'envoie ça</small></span><button type="button" class="mute" data-action="mute" aria-pressed="false" title="Couper le son de cet extrait">🔊</button><button type="button" class="keep" data-action="keep" title="En faire un pad dans ta soundboard">💾 Garder</button><button type="button" class="x" data-action="close" title="Fermer">✕</button></div>
     <div class="stage"><img alt=""><video playsinline></video><div class="meme"></div></div>
     <div class="bar"></div>
   </div>
