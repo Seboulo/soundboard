@@ -1496,6 +1496,7 @@ fn update_settings(app: AppHandle, state: State<AppState>, mut settings: Setting
         settings.subscriptions = config.settings.subscriptions.clone();
         settings.published = config.settings.published.clone();
         settings.room_id = config.settings.room_id.clone();
+        settings.mic_learned = config.settings.mic_learned.clone();
         settings.duck_level = settings.duck_level.clamp(0.1, 0.8);
         room_changed = (&config.settings.room_code, &config.settings.room_name)
             != (&settings.room_code, &settings.room_name);
@@ -1536,7 +1537,7 @@ fn audio_settings(s: &Settings) -> serde_json::Value {
         s.monitor_device, s.virtual_device, s.mic_device, s.mic_enabled, s.mic_volume,
         s.master_volume, s.monitor_volume, s.stop_previous, s.noise_suppression,
         s.strong_denoise, s.voice_gate, s.gate_auto, s.gate_threshold, s.voice_effect,
-        s.voice_leveler, s.voice_eq, s.mic_calibration,
+        s.voice_leveler, s.voice_eq, s.mic_calibration, s.far_voices,
     ])
 }
 
@@ -2384,6 +2385,19 @@ pub fn run() {
                 }
                 AudioEvent::Mic(level) => {
                     let _ = handle.emit("mic-level", level);
+                }
+                AudioEvent::Learned(speech_db) => {
+                    // Hors du fil audio : il ne doit attendre ni les
+                    // réglages ni le disque.
+                    let handle = handle.clone();
+                    std::thread::spawn(move || {
+                        if let Some(state) = handle.try_state::<AppState>() {
+                            let mut config = state.config.lock().unwrap();
+                            let device = config.settings.mic_device.clone();
+                            config.settings.mic_learned = Some(config::MicLearned { device, speech_db });
+                            let _ = state.save(&config);
+                        }
+                    });
                 }
             });
 

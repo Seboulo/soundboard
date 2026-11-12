@@ -6,6 +6,8 @@ Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Dis
 - Micro très faible : après le test de voix, la porte s'ouvre dès le premier mot (avant, une voix sous -55 dBFS était coupée). Sans test de voix, elle s'ouvre sur les syllabes fortes.
 - Réduction de bruit forte sans test de voix : la première phrase après le lancement n'est plus étouffée sur un micro faible ou une pièce bruyante.
 - Volume de voix automatique : il peut monter jusqu'à +24 dB (avant +18), un pote au micro faible n'est plus plus bas que les autres. Il ne se règle plus sur une voix lointaine.
+- Nouveau réglage « Voix lointaines » (Réglages avancés du micro) : Ignorées, Ignorées (strict) pour une télé proche (15 dB sous ta voix : micro ouvert 56 % de tes silences en normal, 10 % en strict), ou Acceptées comme avant.
+- L'appli retient le niveau de ta voix d'un lancement à l'autre : même sans test de voix, la réduction de bruit, le volume automatique et la porte sont bien réglés dès ton premier mot.
 - Micro branché sur une seule entrée d'une carte son à deux entrées : la voix n'est plus divisée par deux. Micro dont les deux canaux sont inversés : la voix n'est plus annulée.
 - Micros qui envoient un format rare (entiers 32 bits, 8 bits) : ils marchent au lieu d'afficher « format non géré ».
 

@@ -19,7 +19,7 @@
 //!   arrive, appliquée au son qui sort avec 20 à 30 ms de retard : le début
 //!   des mots n'est plus mangé.
 
-use crate::config::{MicCalibration, VoiceEffect, VoiceEq};
+use crate::config::{FarVoices, MicCalibration, VoiceEffect, VoiceEq};
 use crate::dynamics::LookaheadLimiter;
 use crate::effects::Effect;
 use crate::resample::{Kernel, SincWindow};
@@ -48,6 +48,16 @@ const OPEN_FLOOR_DB: f32 = -55.0;
 /// tiers du temps où tu te taisais.
 const NEAR_OPEN_DB: f32 = 12.0;
 const NEAR_KEEP_DB: f32 = 18.0;
+/// Réglage « strict » : 8 dB de moins partout (4 pour ouvrir, 10 pour rester
+/// ouvert), pour une télé plus proche. Mesuré avec une voix 15 dB sous la
+/// tienne : micro ouvert 56 % de tes silences en normal, 10 % en strict,
+/// pour 1 % de tes propres syllabes en moins. Parler très bas n'ouvre plus.
+const NEAR_STRICT_DB: f32 = 8.0;
+/// Le niveau de ta voix est gardé pour le prochain lancement une fois
+/// mesuré sur 3 s de parole, s'il est d'au moins -50 dBFS : plus bas, c'est
+/// peut-être la télé qu'on a entendue, et il vaut mieux repartir de zéro.
+const LEARNED_AFTER_FRAMES: u32 = 300;
+pub const LEARNED_MIN_DB: f32 = -50.0;
 /// Sans test de voix, une voix très faible peut être la tienne sur un micro
 /// réglé trop bas, ou la télé avant que tu n'aies parlé : rien ne les
 /// distingue. Le plancher ne descend alors sous -55 dBFS que pour rester
@@ -164,6 +174,11 @@ pub struct MicFilters {
     pub eq: VoiceEq,
     /// Mesures du test de voix : bruit de fond et volume connus d'avance.
     pub calibration: Option<MicCalibration>,
+    /// Sévérité de la porte envers les voix lointaines.
+    pub far_voices: FarVoices,
+    /// Niveau de ta voix (dBFS) appris aux lancements précédents, s'il n'y a
+    /// pas de test de voix.
+    pub learned_db: Option<f32>,
 }
 
 /// Enregistrement du test de voix : le son du micro tel quel (48 kHz mono)
@@ -179,6 +194,9 @@ pub struct MicMeter {
     level: AtomicU32,
     voice: AtomicU32,
     open: AtomicBool,
+    /// Niveau de ta voix appris depuis l'ouverture du micro (dBFS ; 0 =
+    /// pas encore).
+    learned: AtomicU32,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -192,6 +210,17 @@ pub struct MicLevel {
 }
 
 impl MicMeter {
+    /// Niveau habituel de ta voix, une fois mesuré sur assez de parole.
+    pub fn learned_db(&self) -> Option<f32> {
+        let db = f32::from_bits(self.learned.load(Ordering::Relaxed));
+        (db < 0.0).then_some(db)
+    }
+
+    /// À l'ouverture d'un micro : rien n'est encore appris.
+    pub fn forget(&self) {
+        self.learned.store(0f32.to_bits(), Ordering::Relaxed);
+    }
+
     pub fn read(&self) -> MicLevel {
         MicLevel {
             level: f32::from_bits(self.level.load(Ordering::Relaxed)),
@@ -239,6 +268,8 @@ pub struct MicProcessor {
     talker_frames: u32,
     /// Le niveau de ta voix vient du test de voix (voir `UNSURE_OPEN_DB`).
     talker_sure: bool,
+    /// Trames de voix mesurées depuis l'ouverture du micro.
+    heard_frames: u32,
     pregain_db: f32,
     pregains: VecDeque<f32>,
     /// Trames en attente : la porte décide sur le son qui entre et
@@ -539,7 +570,8 @@ impl MicProcessor {
         let voice_lag = inner_lag + delay_frames;
         // Niveau de voix connu d'avance (test de voix) : l'IA est bien
         // réglée dès le premier mot.
-        let talker_db = filters.calibration.map_or(f32::NAN, |c| c.speech_db);
+        let sure_db = filters.calibration.map(|c| c.speech_db);
+        let talker_db = sure_db.or(filters.learned_db).unwrap_or(f32::NAN);
         let pregain_db = if talker_db.is_nan() { 0.0 } else { (DF_INPUT_TARGET_DB - talker_db).clamp(0.0, DF_PREGAIN_MAX_DB) };
         Self {
             filters,
@@ -564,7 +596,8 @@ impl MicProcessor {
             deep_out: vec![0.0; FRAME],
             talker_db,
             talker_frames: if talker_db.is_nan() { 0 } else { 1000 },
-            talker_sure: !talker_db.is_nan(),
+            talker_sure: sure_db.is_some(),
+            heard_frames: 0,
             pregain_db,
             pregains: VecDeque::with_capacity(DF_LAG_FRAMES + 1),
             delay: VecDeque::with_capacity(delay_frames + 1),
@@ -576,7 +609,7 @@ impl MicProcessor {
             eq_buf: Vec::with_capacity(FRAME),
             gain: if filters.gate { 0.0 } else { 1.0 },
             hold: 0,
-            leveler: VoiceLeveler::new(filters.calibration.map(|c| c.speech_db)),
+            leveler: VoiceLeveler::new(sure_db.or(filters.learned_db), sure_db.is_some()),
             limiter: voice_limiter(),
             eq: equalizer(filters.eq, filters.calibration),
             recording: None,
@@ -655,8 +688,10 @@ impl MicProcessor {
         }
         // Assez fort pour être toi (et non une voix au fond de la pièce) :
         // de quoi ouvrir la porte, ou seulement la garder ouverte.
-        let near_open = in_db >= self.near_floor_db(NEAR_OPEN_DB);
-        let near = in_db >= self.near_floor_db(NEAR_KEEP_DB);
+        let strict = if self.filters.far_voices == FarVoices::Strict { NEAR_STRICT_DB } else { 0.0 };
+        let near_open = in_db >= self.near_floor_db(NEAR_OPEN_DB - strict);
+        // Réglage désactivé : toute voix garde la porte ouverte, comme avant.
+        let near = self.filters.far_voices == FarVoices::Off || in_db >= self.near_floor_db(NEAR_KEEP_DB - strict);
 
         // Gain d'avant l'IA : la voix lui arrive toujours à un niveau normal.
         let (mut pre, mut post) = (1.0, 1.0);
@@ -871,6 +906,11 @@ impl MicProcessor {
             return false;
         }
         self.talker_frames = self.talker_frames.saturating_add(1);
+        self.heard_frames = self.heard_frames.saturating_add(1);
+        let keep = self.heard_frames >= LEARNED_AFTER_FRAMES && self.talker_db >= LEARNED_MIN_DB;
+        if keep && self.heard_frames.is_multiple_of(100) {
+            self.meter.learned.store(self.talker_db.min(-1.0).to_bits(), Ordering::Relaxed);
+        }
         let slow = (1.0 / (self.talker_frames as f32 + 4.0)).max(0.003);
         let jump = gap > TALKER_JUMP_DB;
         self.talker_db += gap * if jump { slow.max(0.05) } else { slow };
@@ -886,6 +926,11 @@ impl MicProcessor {
             return OPEN_FLOOR_DB;
         }
         let mut floor = self.talker_db - margin;
+        if self.filters.far_voices == FarVoices::Off {
+            // Jamais plus haut que l'ancien plancher fixe ; plus bas
+            // seulement pour un micro très faible.
+            floor = floor.min(OPEN_FLOOR_DB);
+        }
         if !self.talker_sure {
             let unsure = (self.talker_db - UNSURE_OPEN_DB).min(OPEN_FLOOR_DB) - (margin - NEAR_OPEN_DB);
             floor = floor.max(unsure);
@@ -982,12 +1027,18 @@ const COMP_KNEE_DB: f32 = 6.0;
 const COMP_RATIO: f32 = 2.0;
 
 impl VoiceLeveler {
-    /// `speech_db` : niveau de ta voix s'il est déjà connu (test de voix),
-    /// pour que le premier mot sorte déjà au bon volume.
-    fn new(speech_db: Option<f32>) -> Self {
-        // Niveau connu (test de voix) : pas de démarrage rapide.
-        let measured = if speech_db.is_some() { 1000 } else { 0 };
-        let min_db = if speech_db.is_some() { -70.0 } else { -55.0 };
+    /// `speech_db` : niveau de ta voix s'il est déjà connu, pour que le
+    /// premier mot sorte déjà au bon volume ; `sure` : il vient du test de
+    /// voix, et non de ce qui a été appris aux lancements précédents.
+    fn new(speech_db: Option<f32>, sure: bool) -> Self {
+        // Test de voix : pas de démarrage rapide. Niveau appris : on s'en
+        // écarte en une seconde s'il n'est plus bon (micro changé).
+        let measured = match (speech_db, sure) {
+            (None, _) => 0,
+            (Some(_), false) => 80,
+            (Some(_), true) => 1000,
+        };
+        let min_db = if speech_db.is_some() && sure { -70.0 } else { -55.0 };
         let speech_db = speech_db.unwrap_or(LEVEL_TARGET_DB);
         let gain_db = (LEVEL_TARGET_DB - speech_db).clamp(LEVEL_MIN_DB, LEVEL_MAX_DB);
         let gain = 10f32.powf(gain_db / 20.0);
@@ -1111,6 +1162,8 @@ mod tests {
         level: false,
         eq: VoiceEq::Natural,
         calibration: None,
+        far_voices: FarVoices::Normal,
+        learned_db: None,
     };
 
     #[test]
@@ -1240,6 +1293,8 @@ mod tests {
             level: false,
             eq: VoiceEq::Natural,
             calibration: None,
+            far_voices: FarVoices::Normal,
+            learned_db: None,
         };
         let out = run(gate, 48_000, 1, &noise);
         let tail = &out[out.len() / 2..];
@@ -1315,8 +1370,39 @@ mod tests {
         assert_eq!(p.near_floor_db(NEAR_OPEN_DB), -52.0);
     }
 
+    #[test]
+    fn far_voices_setting_and_learned_level() {
+        let filters = MicFilters { gate: true, gate_auto: true, ..OFF };
+        let with = |f: MicFilters| MicProcessor::new(1, 48_000, f, VoiceEffect::None, Default::default());
+        let calibration = MicCalibration { noise_db: -70.0, speech_db: -30.0, eq_db: [0.0; 6] };
+        let sure = MicFilters { calibration: Some(calibration), ..filters };
+        // Désactivé : l'ancien plancher.
+        assert_eq!(with(sure).near_floor_db(NEAR_OPEN_DB), -42.0);
+        assert_eq!(with(MicFilters { far_voices: FarVoices::Off, ..sure }).near_floor_db(NEAR_OPEN_DB), OPEN_FLOOR_DB);
+        // Désactivé, un micro très faible ouvre quand même.
+        let weak = MicCalibration { speech_db: -57.0, ..calibration };
+        let off = MicFilters { far_voices: FarVoices::Off, calibration: Some(weak), ..filters };
+        assert_eq!(with(off).near_floor_db(NEAR_OPEN_DB), -69.0);
+        // Niveau appris au lancement précédent : tout est réglé d'avance.
+        let p = with(MicFilters { learned_db: Some(-30.0), denoise: true, strong: true, ..filters });
+        assert_eq!(p.near_floor_db(NEAR_OPEN_DB), -42.0);
+        assert!((p.leveler.gain_db - 10.0).abs() < 0.01);
+        // Le test de voix passe avant.
+        let p = with(MicFilters { learned_db: Some(-50.0), ..sure });
+        assert_eq!(p.near_floor_db(NEAR_OPEN_DB), -42.0);
+        // Le niveau est donné à garder après 3 s de voix, pas avant.
+        let meter = std::sync::Arc::new(MicMeter::default());
+        let mut p = MicProcessor::new(1, 48_000, filters, VoiceEffect::None, meter.clone());
+        (0..250).for_each(|_| { p.track_talker(0.9, -33.0); });
+        assert_eq!(meter.learned_db(), None);
+        (0..150).for_each(|_| { p.track_talker(0.9, -33.0); });
+        assert!((meter.learned_db().unwrap() + 33.0).abs() < 0.5);
+        meter.forget();
+        assert_eq!(meter.learned_db(), None);
+    }
+
     fn leveled(amp: f32) -> f32 {
-        let mut l = VoiceLeveler::new(None);
+        let mut l = VoiceLeveler::new(None, false);
         let mut out = Vec::new();
         // 15 s : le volume automatique prend quelques secondes pour monter.
         for f in 0..1500 {
@@ -1343,7 +1429,7 @@ mod tests {
     fn voice_leveler_restarts_from_a_much_louder_voice() {
         // Réglé sur une voix lointaine (-50 dBFS) : gain au maximum. Puis ta
         // voix arrive à -25 dBFS : en 100 ms le gain est déjà redescendu.
-        let mut l = VoiceLeveler::new(None);
+        let mut l = VoiceLeveler::new(None, false);
         (0..300).for_each(|_| l.begin_frame(0.0032, true));
         assert!(l.gain_db > 20.0, "{}", l.gain_db);
         l.relearn(-25.0);
@@ -1359,7 +1445,7 @@ mod tests {
     fn voice_leveler_does_not_pump_after_a_shout() {
         // Voix normale, 1 s de cri (+14 dB), puis voix normale : une seconde
         // après le cri, le gain a peu bougé (avant : environ -5 dB).
-        let mut l = VoiceLeveler::new(None);
+        let mut l = VoiceLeveler::new(None, false);
         let mut gain_after = 0.0;
         for f in 0..700 {
             let amp = if (400..500).contains(&f) { 0.7 } else { 0.14 };
@@ -1375,7 +1461,7 @@ mod tests {
     fn de_esser_tames_sibilants_only() {
         // Même niveau : un 7 kHz (un S) est baissé, un 1 kHz (une voyelle) non.
         let through = |freq: f32| {
-            let mut l = VoiceLeveler::new(None);
+            let mut l = VoiceLeveler::new(None, false);
             let input = tone(freq, 0.05, 48_000);
             let out: Vec<f32> = input.iter().map(|&x| l.process(x, x)).collect();
             20.0 * (rms(&out[24_000..]) / rms(&input[24_000..])).log10()

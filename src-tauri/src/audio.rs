@@ -83,6 +83,9 @@ pub enum AudioEvent {
     Playing(Vec<PlayingStatus>),
     /// Niveau du micro, seulement quand l'indicateur est affiché.
     Mic(MicLevel),
+    /// Niveau habituel de ta voix (dBFS), à garder pour le prochain
+    /// lancement : envoyé quand il est connu, puis s'il bouge de 2 dB.
+    Learned(f32),
 }
 
 /// Identifiant réservé à la pré-écoute dans l'éditeur (casque uniquement).
@@ -409,6 +412,8 @@ const FX_CACHE_SAMPLES: usize = 16 << 20;
 fn run(rx: Receiver<Command>, meter_on: Arc<AtomicBool>, on_event: impl Fn(AudioEvent)) {
     let mut engine = Engine::default();
     let mut last_status: Vec<PlayingStatus> = Vec::new();
+    let mut last_learned: Option<f32> = None;
+    let mut ticks = 0u32;
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(cmd) => engine.handle(cmd),
@@ -429,6 +434,19 @@ fn run(rx: Receiver<Command>, meter_on: Arc<AtomicBool>, on_event: impl Fn(Audio
         last_status = status;
         if meter_on.load(Ordering::Relaxed) && engine.mic_stream.is_some() {
             on_event(AudioEvent::Mic(engine.meter.read()));
+        }
+        // Toutes les 10 s environ.
+        ticks = ticks.wrapping_add(1);
+        if ticks.is_multiple_of(100) && engine.mic_stream.is_some() {
+            match engine.meter.learned_db() {
+                Some(db) if last_learned.is_none_or(|last| (db - last).abs() >= 2.0) => {
+                    last_learned = Some(db);
+                    on_event(AudioEvent::Learned(db));
+                }
+                Some(_) => {}
+                // Micro rouvert : la prochaine mesure sera envoyée.
+                None => last_learned = None,
+            }
         }
     }
 }
@@ -586,7 +604,15 @@ impl Engine {
             level: self.settings.voice_leveler,
             eq: self.settings.voice_eq,
             calibration: self.settings.mic_calibration,
+            far_voices: self.settings.far_voices,
+            learned_db: self
+                .settings
+                .mic_learned
+                .as_ref()
+                .filter(|l| l.device == self.settings.mic_device && l.speech_db >= denoise::LEARNED_MIN_DB)
+                .map(|l| l.speech_db.min(-1.0)),
         };
+        self.meter.forget();
 
         // Le micro sort du filtre en mono 48 kHz. 200 ms de marge au plus :
         // la lecture rattrape en douceur la dérive des horloges (voir

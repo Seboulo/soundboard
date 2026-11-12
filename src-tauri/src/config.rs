@@ -213,6 +213,30 @@ pub struct MicCalibration {
     pub eq_db: [f32; 6],
 }
 
+/// Niveau habituel de ta voix, appris en t'écoutant et gardé d'un lancement
+/// à l'autre : le micro est bien réglé dès le premier mot, même sans test
+/// de voix. Il ne vaut que pour le micro où il a été mesuré.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MicLearned {
+    pub device: Option<String>,
+    /// En dBFS.
+    pub speech_db: f32,
+}
+
+/// Que faire des voix lointaines (télé, quelqu'un d'autre dans la pièce)
+/// quand le micro se coupe tout seul.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FarVoices {
+    /// Toute voix assez forte ouvre le micro.
+    Off,
+    /// Les voix nettement plus faibles que la tienne ne l'ouvrent pas.
+    #[default]
+    Normal,
+    /// Plus sévère : pour une télé proche. Parler très bas ne l'ouvre plus.
+    Strict,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -253,6 +277,9 @@ pub struct Settings {
     pub voice_leveler: bool,
     pub voice_eq: VoiceEq,
     pub mic_calibration: Option<MicCalibration>,
+    pub far_voices: FarVoices,
+    /// Tenu à jour par l'app elle-même.
+    pub mic_learned: Option<MicLearned>,
     /// Raccourci qui coupe / rallume ton micro (les sons passent toujours).
     pub mute_hotkey: Option<String>,
     /// Raccourci qui joue un son au hasard.
@@ -355,6 +382,8 @@ impl Default for Settings {
             voice_leveler: true,
             voice_eq: VoiceEq::Natural,
             mic_calibration: None,
+            far_voices: FarVoices::Normal,
+            mic_learned: None,
             mute_hotkey: None,
             random_hotkey: None,
             voice_effect: VoiceEffect::None,
