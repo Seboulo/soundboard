@@ -159,6 +159,8 @@ pub fn clip_history(state: State<AppState>) -> serde_json::Value {
 #[derive(Default)]
 pub struct Clips {
     pending: Mutex<Option<ClipShow>>,
+    /// Extraits arrivés pendant qu'un autre s'affiche : ils attendent leur tour.
+    queue: Mutex<std::collections::VecDeque<ClipShow>>,
     last_from: Mutex<HashMap<String, Instant>>,
     /// Fenêtre affichée en ce moment.
     window: Mutex<Option<String>>,
@@ -978,10 +980,22 @@ fn fit_size(w: f64, h: f64) -> (f64, f64) {
     ((sw + CHROME.0).round(), (sh + CHROME.1).round())
 }
 
-/// Coin en bas à droite de l'écran principal, au-dessus de la barre des
+/// Écran où se trouve la fenêtre au premier plan (le jeu) ; à défaut,
+/// l'écran principal.
+fn target_monitor(app: &AppHandle) -> Option<tauri::Monitor> {
+    #[cfg(windows)]
+    if let Some((x, y)) = foreground::point() {
+        if let Some(m) = app.monitor_from_point(x, y).ok().flatten() {
+            return Some(m);
+        }
+    }
+    app.primary_monitor().ok().flatten()
+}
+
+/// Coin en bas à droite de l'écran du jeu, au-dessus de la barre des
 /// tâches (en pixels logiques).
 fn corner(app: &AppHandle, (width, height): (f64, f64)) -> Option<(f64, f64)> {
-    let m = app.primary_monitor().ok().flatten()?;
+    let m = target_monitor(app)?;
     let scale = m.scale_factor();
     let area = m.work_area();
     let x = (area.position.x as f64 + area.size.width as f64) / scale - width - 20.0;
@@ -1004,7 +1018,7 @@ fn place(app: &AppHandle, w: &tauri::WebviewWindow, size: (f64, f64)) {
 /// rendre si Windows ou WebView2 active quand même la fenêtre de l'extrait.
 #[cfg(windows)]
 mod foreground {
-    use std::sync::atomic::{AtomicIsize, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicI64, AtomicIsize, AtomicU64, Ordering};
 
     #[link(name = "user32")]
     extern "system" {
@@ -1012,6 +1026,17 @@ mod foreground {
         fn SetForegroundWindow(hwnd: isize) -> i32;
         fn GetWindowThreadProcessId(hwnd: isize, pid: *mut u32) -> u32;
         fn IsWindow(hwnd: isize) -> i32;
+        fn GetWindowRect(hwnd: isize, rect: *mut [i32; 4]) -> i32;
+    }
+
+    /// Centre de la fenêtre au premier plan à l'arrivée de l'extrait (x et y
+    /// en pixels, rangés dans un seul nombre) ; `i64::MIN` : inconnu.
+    static POINT: AtomicI64 = AtomicI64::new(i64::MIN);
+
+    /// Où afficher l'extrait : un point de l'écran du jeu.
+    pub fn point() -> Option<(f64, f64)> {
+        let p = POINT.load(Ordering::SeqCst);
+        (p != i64::MIN).then_some((((p >> 32) as i32) as f64, (p as i32) as f64))
     }
 
     static BEFORE: AtomicIsize = AtomicIsize::new(0);
@@ -1037,6 +1062,12 @@ mod foreground {
     pub fn remember() {
         // SAFETY: lecture seule.
         let fg = unsafe { GetForegroundWindow() };
+        let mut r = [0i32; 4];
+        // SAFETY: `r` a la taille d'un RECT (4 entiers de 32 bits).
+        if fg != 0 && unsafe { GetWindowRect(fg, &mut r) } != 0 && r[2] > r[0] && r[3] > r[1] {
+            let (x, y) = ((r[0] + r[2]) / 2, (r[1] + r[3]) / 2);
+            POINT.store(((x as i64) << 32) | (y as u32 as i64), Ordering::SeqCst);
+        }
         if fg != 0 && !ours(fg) {
             BEFORE.store(fg, Ordering::SeqCst);
             SINCE.store(now_ms(), Ordering::SeqCst);
@@ -1069,7 +1100,44 @@ pub fn give_focus_back() {
     foreground::give_back();
 }
 
+/// Extraits en attente au plus (au-delà, les nouveaux sont ignorés).
+const QUEUE_MAX: usize = 3;
+
+/// Affiche l'extrait, ou le met en file d'attente si un autre est déjà à
+/// l'écran : il passera juste après, au lieu de le couper.
 fn show_window(app: &AppHandle, show: ClipShow) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let busy = state.clips.pending.lock().unwrap().is_some()
+        && state.clips.window.lock().unwrap().as_deref().is_some_and(|l| app.get_webview_window(l).is_some());
+    if busy && !show.preview {
+        let mut queue = state.clips.queue.lock().unwrap();
+        if queue.len() >= QUEUE_MAX {
+            journal::write(&format!("Extrait de {} ignoré (déjà {QUEUE_MAX} en attente)", show.from));
+            return Ok(());
+        }
+        journal::write(&format!("Extrait de {} mis en attente (un autre est à l'écran)", show.from));
+        warm_level(app, &show);
+        queue.push_back(show);
+        return Ok(());
+    }
+    show_now(app, show)
+}
+
+/// Passe à l'extrait suivant de la file ; ferme la fenêtre s'il n'y en a plus.
+fn advance(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let next = state.clips.queue.lock().unwrap().pop_front();
+    match next {
+        Some(show) => {
+            if show_now(app, show).is_err() {
+                close(app);
+            }
+        }
+        None => close(app),
+    }
+}
+
+fn show_now(app: &AppHandle, show: ClipShow) -> Result<(), String> {
     #[cfg(windows)]
     foreground::remember();
     let state = app.state::<AppState>();
@@ -1363,11 +1431,12 @@ pub async fn clip_close(app: AppHandle, media: Option<String>, why: Option<Strin
             return;
         }
     }
-    close(&app);
+    advance(&app);
 }
 
 pub fn close(app: &AppHandle) {
     if let Some(state) = app.try_state::<AppState>() {
+        state.clips.queue.lock().unwrap().clear();
         state.clips.pending.lock().unwrap().take();
         state.clips.window.lock().unwrap().take();
         stop_audio(&state);
@@ -1394,8 +1463,10 @@ pub fn close_from(app: &AppHandle, from: &str) {
     let state = app.state::<AppState>();
     state.clips.stopped.lock().unwrap().insert(from.to_string(), Instant::now());
     let from_him = state.clips.pending.lock().unwrap().as_ref().is_some_and(|c| c.from_id == from);
+    // Ses extraits en attente partent aussi ; ceux des autres restent.
+    state.clips.queue.lock().unwrap().retain(|c| c.from_id != from);
     if from_him {
-        close(app);
+        advance(app);
     }
 }
 

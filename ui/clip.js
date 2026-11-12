@@ -40,7 +40,7 @@ function stopSync() {
 function reset() {
   clearTimeout(timer);
   stopSync();
-  video.onended = video.onerror = video.onloadedmetadata = img.onerror = img.onload = null;
+  video.onended = video.onerror = video.onloadedmetadata = video.ontimeupdate = img.onerror = img.onload = null;
   video.pause();
   video.removeAttribute("src");
   video.load();
@@ -145,6 +145,26 @@ function reveal(ms) {
   timer = setTimeout(() => close(), ms + 300);
 }
 
+// Vidéo : la barre suit la vraie lecture (de `from` à `until`, en secondes)
+// au lieu d'un minuteur. Si la vidéo cale un instant, la barre l'attend et
+// la fin n'est pas coupée. Le minuteur reste en secours, avec de la marge.
+function revealVideo(c, from, until, ms) {
+  const el = $("#show .bar");
+  show.classList.remove("prep");
+  el.style.transition = "none";
+  el.style.transform = "scaleX(1)";
+  void el.offsetWidth;
+  el.style.transition = "transform 280ms linear";
+  video.ontimeupdate = () => {
+    if (current !== c) return;
+    const left = 1 - (video.currentTime - from) / Math.max(0.1, until - from);
+    el.style.transform = `scaleX(${Math.min(1, Math.max(0, left))})`;
+    if (video.currentTime >= until) close();
+  };
+  clearTimeout(timer);
+  timer = setTimeout(() => close(), ms + 4000);
+}
+
 function playVideo(c, vol) {
   img.hidden = true;
   video.hidden = false;
@@ -203,7 +223,7 @@ function playVideo(c, vol) {
     const engine = await Promise.race([sound, sleep(1500).then(() => null)]);
     if (current !== c) return;
     const soundAt = performance.now();
-    reveal(showMs);
+    revealVideo(c, from, until, showMs);
     video.play().catch(() => {});
     if (engine) followSound(from, soundAt);
     else if (engine === null) {
@@ -212,7 +232,7 @@ function playVideo(c, vol) {
       // du son était coupée.
       sound.then((ok) => {
         if (!ok || current !== c || video.paused) return;
-        reveal(showMs);
+        revealVideo(c, from, until, showMs);
         followSound(from, performance.now());
       });
     }
