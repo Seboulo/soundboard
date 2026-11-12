@@ -2003,6 +2003,7 @@ async function openSettings() {
   formSettings.denoise_mode.value = !s.noise_suppression ? "off" : s.strong_denoise ? "strong" : "light";
   formSettings.voice_gate.checked = s.voice_gate;
   formSettings.gate_auto.checked = s.gate_auto ?? true;
+  formSettings.far_voices.value = s.far_voices ?? "normal";
   formSettings.voice_leveler.checked = s.voice_leveler ?? true;
   updateGateRows();
   for (const k of ["mic_volume", "master_volume", "monitor_volume", "gate_threshold"]) {
@@ -2099,6 +2100,7 @@ function updateThresholdMark() {
 function updateGateRows() {
   const on = formSettings.voice_gate.checked;
   formSettings.gate_auto.disabled = !on;
+  formSettings.far_voices.disabled = !on;
   formSettings.gate_threshold.disabled = !on || formSettings.gate_auto.checked;
   updateThresholdMark();
 }
@@ -2205,6 +2207,7 @@ dlgSettings.addEventListener("close", () => {
     strong_denoise: f.denoise_mode.value === "strong",
     voice_gate: f.voice_gate.checked,
     gate_auto: f.gate_auto.checked,
+    far_voices: f.far_voices.value,
     voice_leveler: f.voice_leveler.checked,
     gate_threshold: Number(f.gate_threshold.value),
     master_volume: Number(f.master_volume.value),

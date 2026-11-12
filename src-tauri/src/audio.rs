@@ -85,6 +85,10 @@ pub enum AudioEvent {
     Playing(Vec<PlayingStatus>),
     /// Niveau du micro, seulement quand l'indicateur est affiché.
     Mic(MicLevel),
+    /// Niveau habituel de ta voix (dBFS), à garder pour le prochain
+    /// lancement : envoyé quand il est connu, puis s'il bouge de 2 dB.
+    /// Avec le nom du micro réellement ouvert (pas « par défaut »).
+    Learned(Option<String>, f32),
 }
 
 /// Identifiant réservé à la pré-écoute dans l'éditeur (casque uniquement).
@@ -317,6 +321,13 @@ fn find_output(name: Option<&str>) -> Option<cpal::Device> {
     }
 }
 
+/// Le niveau de voix retenu vaut-il pour le micro ouvert (`name`) ? Un
+/// niveau gardé sans nom de micro (« par défaut », anciennes versions) ne
+/// vaut plus : on ne sait pas de quel micro il vient.
+fn learned_fits(learned: &crate::config::MicLearned, name: Option<&str>) -> bool {
+    name.is_some() && learned.device.as_deref() == name && learned.speech_db >= denoise::LEARNED_MIN_DB
+}
+
 fn find_input(name: Option<&str>) -> Option<cpal::Device> {
     let host = cpal::default_host();
     match name {
@@ -381,6 +392,8 @@ struct Engine {
     monitor: Option<Output>,
     virt: Option<Output>,
     mic_stream: Option<cpal::Stream>,
+    /// Nom du micro ouvert (le vrai, même réglé sur « par défaut »).
+    mic_name: Option<String>,
     mic_voice: Option<Voice>,
     mic_muted: bool,
     meter: Arc<MicMeter>,
@@ -422,6 +435,8 @@ const FX_CACHE_SAMPLES: usize = 16 << 20;
 fn run(rx: Receiver<Command>, meter_on: Arc<AtomicBool>, on_event: impl Fn(AudioEvent)) {
     let mut engine = Engine::default();
     let mut last_status: Vec<PlayingStatus> = Vec::new();
+    let mut last_learned: Option<f32> = None;
+    let mut ticks = 0u32;
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(cmd) => engine.handle(cmd),
@@ -442,6 +457,19 @@ fn run(rx: Receiver<Command>, meter_on: Arc<AtomicBool>, on_event: impl Fn(Audio
         last_status = status;
         if meter_on.load(Ordering::Relaxed) && engine.mic_stream.is_some() {
             on_event(AudioEvent::Mic(engine.meter.read()));
+        }
+        // Toutes les 10 s environ.
+        ticks = ticks.wrapping_add(1);
+        if ticks.is_multiple_of(100) && engine.mic_stream.is_some() {
+            match engine.meter.learned_db() {
+                Some(db) if last_learned.is_none_or(|last| (db - last).abs() >= 2.0) => {
+                    last_learned = Some(db);
+                    on_event(AudioEvent::Learned(engine.mic_name.clone(), db));
+                }
+                Some(_) => {}
+                // Micro rouvert : la prochaine mesure sera envoyée.
+                None => last_learned = None,
+            }
         }
     }
 }
@@ -590,6 +618,10 @@ impl Engine {
         let sample_rate = supported.sample_rate().0;
         let format = supported.sample_format();
         let config: cpal::StreamConfig = supported.into();
+        // Le vrai nom du micro ouvert : avec « micro par défaut de Windows »,
+        // le niveau retenu ne doit pas servir à un autre micro si le micro
+        // par défaut a changé entre-temps.
+        self.mic_name = device.name().ok();
         let filters = MicFilters {
             denoise: self.settings.noise_suppression,
             strong: self.settings.strong_denoise,
@@ -599,7 +631,15 @@ impl Engine {
             level: self.settings.voice_leveler,
             eq: self.settings.voice_eq,
             calibration: self.settings.mic_calibration,
+            far_voices: self.settings.far_voices,
+            learned_db: self
+                .settings
+                .mic_learned
+                .as_ref()
+                .filter(|l| learned_fits(l, self.mic_name.as_deref()))
+                .map(|l| l.speech_db.min(-1.0)),
         };
+        self.meter.forget();
 
         // Le micro sort du filtre en mono 48 kHz. 200 ms de marge au plus :
         // la lecture rattrape en douceur la dérive des horloges (voir
@@ -1445,31 +1485,29 @@ fn open_capture(
     mut filter: CaptureFilter,
 ) -> Result<cpal::Stream, String> {
     let err_fn = |e| eprintln!("erreur de capture : {e}");
+    // Presque tous les micros arrivent en f32 ; quelques pilotes annoncent
+    // des entiers (16 ou 32 bits, parfois 8) : on les ramène tous à −1…1.
+    macro_rules! capture {
+        ($sample:ty, $to_f32:expr) => {
+            device.build_input_stream(
+                config,
+                move |data: &[$sample], _: &_| {
+                    let mut it = data.iter().map($to_f32);
+                    push(&buffer, filter(&mut it), max_len)
+                },
+                err_fn,
+                None,
+            )
+        };
+    }
     match format {
-        SampleFormat::F32 => device.build_input_stream(
-            config,
-            move |data: &[f32], _: &_| push(&buffer, filter(&mut data.iter().copied()), max_len),
-            err_fn,
-            None,
-        ),
-        SampleFormat::I16 => device.build_input_stream(
-            config,
-            move |data: &[i16], _: &_| {
-                let mut it = data.iter().map(|s| *s as f32 / 32768.0);
-                push(&buffer, filter(&mut it), max_len)
-            },
-            err_fn,
-            None,
-        ),
-        SampleFormat::U16 => device.build_input_stream(
-            config,
-            move |data: &[u16], _: &_| {
-                let mut it = data.iter().map(|s| (*s as f32 - 32768.0) / 32768.0);
-                push(&buffer, filter(&mut it), max_len)
-            },
-            err_fn,
-            None,
-        ),
+        SampleFormat::F32 => capture!(f32, |s| *s),
+        SampleFormat::F64 => capture!(f64, |s| *s as f32),
+        SampleFormat::I16 => capture!(i16, |s| *s as f32 / 32768.0),
+        SampleFormat::U16 => capture!(u16, |s| (*s as f32 - 32768.0) / 32768.0),
+        SampleFormat::I32 => capture!(i32, |s| *s as f32 / 2_147_483_648.0),
+        SampleFormat::I8 => capture!(i8, |s| *s as f32 / 128.0),
+        SampleFormat::U8 => capture!(u8, |s| (*s as f32 - 128.0) / 128.0),
         other => return Err(format!("format non géré : {other:?}")),
     }
     .map_err(|e| e.to_string())
@@ -1612,6 +1650,18 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn learned_voice_level_only_fits_the_microphone_it_was_measured_on() {
+        let learned = |device: Option<&str>, speech_db| crate::config::MicLearned { device: device.map(str::to_string), speech_db };
+        assert!(learned_fits(&learned(Some("Micro USB"), -30.0), Some("Micro USB")));
+        // Micro par défaut changé dans Windows : l'ancien niveau ne sert pas.
+        assert!(!learned_fits(&learned(Some("Micro USB"), -30.0), Some("Casque Bluetooth")));
+        // Gardé sans nom (réglage « par défaut ») : on ne sait pas d'où il vient.
+        assert!(!learned_fits(&learned(None, -30.0), Some("Micro USB")));
+        assert!(!learned_fits(&learned(None, -30.0), None));
+        assert!(!learned_fits(&learned(Some("Micro USB"), -60.0), Some("Micro USB")));
+    }
     use rodio::buffer::SamplesBuffer;
 
     #[test]
