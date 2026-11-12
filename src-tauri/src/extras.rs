@@ -725,6 +725,10 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
                 journal::write("Salon : ignoré (« Mes potes peuvent jouer des sons chez moi » est coupé)");
                 return Ok(());
             }
+            if clip::dnd(&state) {
+                journal::write("Salon : ignoré (ne pas déranger)");
+                return Ok(());
+            }
             // Pas plus d'un son par seconde et demie et par pote (sauf le
             // fichier qu'on vient de lui demander, qui arrive juste après).
             if inc.attachment.is_none() {

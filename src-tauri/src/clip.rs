@@ -87,6 +87,12 @@ pub struct Recent {
     /// vidéo du lien (ms).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cut_ms: Option<u64>,
+    /// Texte en gros : « haut » et/ou « petit ».
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub style: String,
+    /// « Mes extraits » : l'extrait de l'historique dont il vient.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 /// Vidéo reçue par son lien : l'appli la télécharge elle-même.
@@ -115,8 +121,98 @@ fn recents_file(state: &AppState) -> PathBuf {
 }
 
 fn load_list(file: &Path) -> Vec<Recent> {
+    load_some(file, RECENTS)
+}
+
+fn load_some(file: &Path, max: usize) -> Vec<Recent> {
     let list: Vec<Recent> = fs::read(file).ok().and_then(|d| serde_json::from_slice(&d).ok()).unwrap_or_default();
-    list.into_iter().filter(|r| Path::new(&r.path).exists()).take(RECENTS).collect()
+    list.into_iter().filter(|r| Path::new(&r.path).exists()).take(max).collect()
+}
+
+/// « Mes extraits » : les préférés, gardés à part (l'historique, lui, ne
+/// garde que les derniers) pour les renvoyer en un clic.
+const FAVORITES: usize = 30;
+
+fn favorites_dir(state: &AppState) -> PathBuf {
+    clips_dir(state).join("favoris")
+}
+
+fn load_favorites(state: &AppState) -> Vec<Recent> {
+    load_some(&favorites_dir(state).join("index.json"), FAVORITES)
+}
+
+#[tauri::command]
+pub fn clip_favorites(state: State<AppState>) -> Vec<Recent> {
+    load_favorites(&state)
+}
+
+/// Étoile sur un extrait de l'historique : le garde dans « Mes extraits »
+/// (copié avec son son, son passage et son texte), ou l'en retire.
+#[tauri::command]
+pub fn clip_favorite(state: State<AppState>, path: String, on: bool) -> Result<Vec<Recent>, String> {
+    let dir = favorites_dir(&state);
+    let index = dir.join("index.json");
+    let mut list = load_favorites(&state);
+    let is_it = |r: &Recent| r.path == path || r.origin.as_deref() == Some(path.as_str());
+    if !on {
+        for r in list.iter().filter(|r| is_it(r)) {
+            let _ = fs::remove_file(&r.path);
+            if let Some(s) = &r.sound {
+                let _ = fs::remove_file(s);
+            }
+            let media = Path::new(&r.path);
+            let side = video_sound(&dir, media);
+            if side != media {
+                let _ = fs::remove_file(side);
+            }
+        }
+        list.retain(|r| !is_it(r));
+    } else if !list.iter().any(is_it) {
+        if list.len() >= FAVORITES {
+            return Err(format!("déjà {FAVORITES} extraits gardés : retires-en un d'abord"));
+        }
+        let src = PathBuf::from(&path);
+        let from = src.parent().map(Path::to_path_buf).unwrap_or_default();
+        let clips = clips_dir(&state);
+        if (from != clips.join("envoi") && from != clips.join("recus")) || !src.exists() {
+            return Err("cet extrait n'est plus sur le disque".into());
+        }
+        let mut r = load_recents(&state)
+            .into_iter()
+            .chain(load_list(&received_file(&state)))
+            .find(|r| r.path == path)
+            .ok_or("cet extrait n'est plus dans l'historique")?;
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let copy_in = |p: &Path| -> Option<PathBuf> {
+            let to = dir.join(p.file_name()?);
+            fs::copy(p, &to).ok()?;
+            Some(to)
+        };
+        let copy = copy_in(&src).ok_or("impossible de garder cet extrait")?;
+        // Son à part : celui d'une image reçue, ou la piste d'une vidéo.
+        let side = video_sound(&from, &src);
+        let side = (side != src).then(|| copy_in(&side)).flatten();
+        r.sound = match r.sound.as_deref().map(Path::new) {
+            Some(s) => copy_in(s).or(side),
+            None => None,
+        }
+        .map(|p| p.to_string_lossy().into_owned());
+        // Lien d'origine connu seulement cette session : gardé avec l'extrait.
+        if r.link.is_none() {
+            if let Some((link, cut)) = link_for(&state, &path) {
+                r.link = Some(link);
+                r.cut_ms = cut;
+            }
+        }
+        r.origin = Some(path.clone());
+        r.path = copy.to_string_lossy().into_owned();
+        r.at = now_s();
+        list.insert(0, r);
+    }
+    let data = serde_json::to_vec(&list).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::write(index, data).map_err(|e| e.to_string())?;
+    Ok(list)
 }
 
 fn add_to_list(file: &Path, recent: Recent) {
@@ -182,6 +278,30 @@ pub struct Clips {
     levels: Mutex<Vec<((PathBuf, u64, u64), crate::config::Analysis)>>,
     /// ffmpeg déjà demandé cette session (pour convertir les vidéos envoyées).
     ffmpeg_asked: AtomicBool,
+    /// « Ne pas déranger » : rien ne s'affiche ni ne joue de la part des
+    /// potes (jusqu'à ce qu'on le coupe ou qu'on relance l'appli).
+    dnd: AtomicBool,
+}
+
+/// « Ne pas déranger » est-il en route ?
+pub fn dnd(state: &AppState) -> bool {
+    state.clips.dnd.load(Ordering::SeqCst)
+}
+
+/// Lit (`on` absent) ou règle « Ne pas déranger ». En route : l'extrait
+/// affiché et ceux en attente sont fermés.
+#[tauri::command]
+pub fn clip_dnd(app: AppHandle, on: Option<bool>) -> bool {
+    let state = app.state::<AppState>();
+    if let Some(on) = on {
+        state.clips.dnd.store(on, Ordering::SeqCst);
+        journal::write(if on { "Ne pas déranger : activé" } else { "Ne pas déranger : coupé" });
+        let preview = state.clips.pending.lock().unwrap().as_ref().is_some_and(|c| c.preview);
+        if on && !preview {
+            close(&app);
+        }
+    }
+    dnd(&state)
 }
 
 /// Le fichier à envoyer, rangé dans le dossier d'envoi. Un extrait reçu
@@ -191,13 +311,16 @@ fn sendable(state: &AppState, media: &str) -> Result<PathBuf, String> {
     let media = PathBuf::from(media);
     let dir = clips_dir(state).join("envoi");
     let received = clips_dir(state).join("recus");
+    let favorites = favorites_dir(state);
     let from = media.parent();
     if from == Some(dir.as_path()) {
         return Ok(media);
     }
-    if from != Some(received.as_path()) || !media.exists() {
+    let kept = from == Some(favorites.as_path());
+    if (from != Some(received.as_path()) && !kept) || !media.exists() {
         return Err("choisis d'abord une image ou une vidéo".into());
     }
+    let received = if kept { favorites } else { received };
     let name = media.file_name().ok_or("fichier introuvable")?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let copy = dir.join(name);
@@ -211,7 +334,14 @@ fn sendable(state: &AppState, media: &str) -> Result<PathBuf, String> {
         }
     }
     let key = media.to_string_lossy().into_owned();
-    if let Some(r) = load_list(&received_file(state)).into_iter().find(|r| r.path == key) {
+    let known = if kept { load_favorites(state) } else { load_list(&received_file(state)) };
+    if let Some(r) = known.into_iter().find(|r| r.path == key) {
+        // Son d'une image gardée : rangé à côté, sous le nom attendu à l'envoi.
+        if let Some(s) = r.sound.as_deref().map(Path::new).filter(|s| s.exists()) {
+            if let Some(n) = s.file_name() {
+                let _ = fs::copy(s, dir.join(n));
+            }
+        }
         let copy_key = copy.to_string_lossy().into_owned();
         if let Some(cut) = r.cut_ms {
             state.clips.cuts.lock().unwrap().insert(copy_key.clone(), cut);
@@ -626,6 +756,7 @@ pub async fn send_clip(
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let style = text_style(style.as_deref().unwrap_or(""));
+    let recent_style = style.clone();
     let media = sendable(&state, &media)?;
     let dir = clips_dir(&state).join("envoi");
     let media_ext = media.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
@@ -685,6 +816,8 @@ pub async fn send_clip(
             at: now_s(),
             link: Some(link),
             cut_ms,
+            style: recent_style,
+            origin: None,
         });
         return Ok(());
     }
@@ -781,6 +914,8 @@ pub async fn send_clip(
         at: now_s(),
         link: None,
         cut_ms: None,
+        style: recent_style,
+        origin: None,
     });
     Ok(())
 }
@@ -863,6 +998,9 @@ pub async fn receive(
         journal::write(&format!("Extrait de {name} ignoré (bloqué)"));
         return Ok(());
     }
+    // « Ne pas déranger » : l'extrait est quand même récupéré et rangé dans
+    // l'historique (« Reçus »), pour le regarder plus tard.
+    let quiet = state.clips.dnd.load(Ordering::SeqCst);
     if url.is_none() && link.is_none() {
         return Ok(());
     }
@@ -973,7 +1111,14 @@ pub async fn receive(
         at: now_s(),
         link: link_url,
         cut_ms,
+        style: show.style.clone(),
+        origin: None,
     });
+    if quiet {
+        journal::write(&format!("Extrait de {} gardé dans l'historique (ne pas déranger)", show.from));
+        let _ = app.emit("clip-quiet", (&show.from, &show.title));
+        return Ok(());
+    }
     let _ = app.emit("clip-received", (&show.from, &show.title));
     show_window(app, show)
 }

@@ -3608,6 +3608,7 @@ const roomPill = $("#room-pill");
 const roomMenu = $("#room-menu");
 
 function renderRoom() {
+  renderDnd();
   const wrap = $(".room-wrap");
   wrap.hidden = !state.config.settings.room_code;
   const target = room.members.find((m) => m.id === room.target);
@@ -3698,6 +3699,29 @@ listen("room-sent", ({ payload }) => {
   toast(`« ${payload} » envoyé chez ${t?.name ?? "ton pote"}`);
 });
 listen("room-error", ({ payload }) => toast(String(payload), true));
+// « Ne pas déranger » : rien ne s'affiche ni ne joue de la part des potes.
+// Les extraits sont gardés dans l'historique ; coupé au prochain lancement.
+const dndBtn = $("#dnd-toggle");
+let dndOn = false;
+function renderDnd() {
+  dndBtn.hidden = !state?.config.settings.room_code;
+  dndBtn.className = "pill dnd" + (dndOn ? " on" : "");
+  dndBtn.textContent = dndOn ? "🌙 Ne pas déranger : activé" : "🌙 Ne pas déranger";
+  dndBtn.setAttribute("aria-pressed", String(dndOn));
+  dndBtn.title = dndOn
+    ? "Les sons et les extraits de tes potes ne passent plus. Les extraits t'attendent dans Envoyer → Historique. Clique pour couper."
+    : "Pour une partie sérieuse : plus aucun son ni extrait de tes potes chez toi (les extraits sont gardés dans l'historique)";
+}
+dndBtn.addEventListener("click", async () => {
+  dndOn = !!(await invoke("clip_dnd", { on: !dndOn }).catch(() => dndOn));
+  renderDnd();
+  toast(dndOn ? "🌙 Ne pas déranger : tes potes ne peuvent plus rien jouer ni afficher chez toi" : "Ne pas déranger coupé");
+});
+invoke("clip_dnd", {}).then((on) => {
+  dndOn = on === true;
+  renderDnd();
+}).catch(() => {});
+listen("clip-quiet", ({ payload: [who] }) => toast(`🌙 ${who} t'a envoyé un extrait : il t'attend dans Envoyer → Historique`));
 listen("clip-received", ({ payload: [who, title] }) => toast(`🎬 ${who} t'envoie un extrait${title ? ` : « ${title} »` : ""}`));
 
 // ---------- Onglet « Envoyer » : extrait sur l'écran d'un pote ----------
@@ -3839,6 +3863,7 @@ function openClipDialog(to) {
   setSendStep(sendStep);
   window.scrollTo({ top: 0 });
   renderClipRecents();
+  renderClipFavs();
   if (sendStep === "pick" && state.config.settings.room_code) formClip.q.focus();
 }
 // Retour aux sons : on garde l'extrait en cours pour y revenir.
@@ -3895,12 +3920,75 @@ function clipTile(r, caption) {
   }
   b.addEventListener("click", () => {
     clipTrimEnd = r.kind === "video" ? r.end_s ?? null : null;
+    setMemeStyle(r.style);
     formClip.title.value = r.title || "";
     formClip.cvol.value = String(r.volume ?? 1);
     if (r.kind === "image") formClip.sound.value = r.sound_id || "";
     showClipMedia({ path: r.path, kind: r.kind }, r.start_s || 0);
   });
   return b;
+}
+// Place et taille du texte d'un extrait repris de l'historique.
+function setMemeStyle(style) {
+  const words = String(style || "").split(/\s+/);
+  memeStyle.pos = words.includes("haut") ? "haut" : "";
+  memeStyle.size = words.includes("petit") ? "petit" : "";
+  dlgClip.querySelectorAll("[data-meme]").forEach((g) =>
+    g.querySelectorAll("button").forEach((x) => x.classList.toggle("active", x.dataset.v === memeStyle[g.dataset.meme])),
+  );
+}
+// « Mes extraits » : les préférés, gardés à part pour les renvoyer en un clic.
+let clipFavs = [];
+const favOf = (r) => clipFavs.find((f) => f.path === r.path || f.origin === r.path);
+async function toggleClipFav(r) {
+  try {
+    clipFavs = await invoke("clip_favorite", { path: r.path, on: !favOf(r) });
+  } catch (err) {
+    return toast(String(err), true);
+  }
+  renderClipFavs(clipFavs);
+  if (clipSource === "history") renderClipHistory();
+}
+// Vignette avec son étoile (et « Envoyer » pour un extrait gardé).
+function clipCard(r, caption, quick = false) {
+  const card = document.createElement("div");
+  card.className = "clip-card";
+  const on = !!favOf(r);
+  const star = document.createElement("button");
+  star.type = "button";
+  star.className = "clip-star" + (on ? " on" : "");
+  star.textContent = on ? "★" : "☆";
+  star.title = on ? "Retirer de « Mes extraits »" : "Garder dans « Mes extraits »";
+  star.setAttribute("aria-pressed", String(on));
+  star.addEventListener("click", () => toggleClipFav(r));
+  card.append(clipTile(r, caption), star);
+  if (quick) {
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "clip-go primary";
+    go.textContent = "Envoyer";
+    go.title = "L'envoyer tout de suite, tel quel, à la personne choisie en bas";
+    go.addEventListener("click", () => {
+      const video = r.kind === "video";
+      sendClip({
+        media: r.path,
+        soundId: video ? null : r.sound_id || null,
+        title: r.title || "",
+        startS: video ? r.start_s || 0 : null,
+        endS: video ? r.end_s ?? null : null,
+        volume: video ? r.volume ?? 1 : null,
+        style: r.title ? r.style || "" : "",
+      });
+    });
+    card.append(go);
+  }
+  return card;
+}
+async function renderClipFavs(list) {
+  clipFavs = list ?? (await invoke("clip_favorites").catch(() => []));
+  if (!Array.isArray(clipFavs)) clipFavs = [];
+  $(".clip-favs", dlgClip).hidden = !clipFavs.length;
+  $(".clip-favs-list", dlgClip).replaceChildren(...clipFavs.map((r) => clipCard(r, r.title || "", true)));
 }
 const fmtWhen = (at) => (at ? new Date(at * 1000).toLocaleString("fr-FR", { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "");
 // Les derniers extraits envoyés, en vignettes en haut : un clic pour renvoyer.
@@ -3923,7 +4011,7 @@ async function renderClipHistory() {
       box.replaceChildren(note);
       continue;
     }
-    box.replaceChildren(...list.map((r) => clipTile(r, [r.from ? `de ${r.from}` : "", fmtWhen(r.at)].filter(Boolean).join(" · "))));
+    box.replaceChildren(...list.map((r) => clipCard(r, [r.from ? `de ${r.from}` : "", fmtWhen(r.at)].filter(Boolean).join(" · "))));
   }
 }
 $('[data-action="preview"]', dlgClip).addEventListener("click", () => {
@@ -4644,8 +4732,22 @@ function setSendStatus(text, kind = "") {
   sendStatus.textContent = text;
   sendStatus.className = "send-status" + (kind ? ` ${kind}` : "");
 }
-sendBtn.addEventListener("click", async () => {
-  if (!clipMedia || sendBtn.classList.contains("busy")) return;
+sendBtn.addEventListener("click", () => {
+  if (!clipMedia) return;
+  sendClip({
+    media: clipMedia.path,
+    soundId: clipMedia.kind === "image" ? formClip.sound.value || null : null,
+    title: formClip.title.value,
+    startS: clipMedia.kind === "video" ? Number(formClip.start.value) || 0 : null,
+    endS: clipMedia.kind === "video" ? Number(formClip.end.value) || null : null,
+    volume: clipMedia.kind === "video" ? Number(formClip.cvol.value) : null,
+    style: formClip.title.value.trim() ? clipStyle() : "",
+  });
+});
+// Envoie l'extrait décrit par `clip` (celui de l'étape 2, ou un extrait
+// gardé renvoyé tel quel) à la personne choisie en bas.
+async function sendClip(clip) {
+  if (sendBtn.classList.contains("busy")) return;
   if (!state.config.settings.room_code) return toast("Rejoins d'abord un salon avec tes potes : Réglages → Potes", true);
   if (!room.members.length && formClip.to.value !== "*moi") {
     setSendStatus("Aucun pote en ligne : choisis « Tout le salon et moi » pour tester seul", "err");
@@ -4658,16 +4760,7 @@ sendBtn.addEventListener("click", async () => {
   sendBtn.textContent = "Envoi…";
   setSendStatus(`Envoi ${who}… (jusqu'à 1 min pour une vidéo)`, "busy");
   try {
-    await invoke("send_clip", {
-      media: clipMedia.path,
-      soundId: clipMedia.kind === "image" ? formClip.sound.value || null : null,
-      title: formClip.title.value,
-      to,
-      startS: clipMedia.kind === "video" ? Number(formClip.start.value) || 0 : null,
-      endS: clipMedia.kind === "video" ? Number(formClip.end.value) || null : null,
-      volume: clipMedia.kind === "video" ? Number(formClip.cvol.value) : null,
-      style: formClip.title.value.trim() ? clipStyle() : "",
-    });
+    await invoke("send_clip", { ...clip, to });
     const at = new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
     setSendStatus(`✓ Envoyé ${who} à ${at}`, "ok");
     if (!sendOpen) toast(`🎬 Extrait envoyé ${who}`);
@@ -4680,7 +4773,7 @@ sendBtn.addEventListener("click", async () => {
     sendBtn.textContent = "Envoyer";
     clipUi();
   }
-});
+}
 invoke("room_status").then((r) => {
   room = r;
   if (state) renderRoom();

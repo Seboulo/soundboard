@@ -1593,6 +1593,22 @@ body:has(.grid.list) .tabbar .size { display: none; }
 .clip-range input[type="range"]::-webkit-slider-thumb { pointer-events: auto; -webkit-appearance: none; width: 12px; height: 60px; border-radius: 4px; background: var(--accent); border: 2px solid var(--panel, #fff); box-shadow: 0 1px 4px rgba(0, 0, 0, .3); cursor: ew-resize; }
 .clip-range input[type="range"]:focus-visible { outline: none; }
 .clip-range input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); }
+/* « Mes extraits » : préférés à renvoyer en un clic. */
+.clip-favs { display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px; }
+.clip-favs .label { font-weight: 600; }
+.clip-favs .label small { font-weight: 400; margin-left: 6px; }
+.clip-favs-list { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+.clip-favs-list .clip-card { flex: 0 0 132px; }
+.clip-card { position: relative; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.clip-card > button:first-child { padding: 0; height: 72px; overflow: hidden; border-radius: 8px; background: var(--panel-2); border: 2px solid transparent; position: relative; width: 100%; }
+.clip-card > button:first-child img, .clip-card > button:first-child video { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.clip-card > button:first-child .name { position: absolute; left: 0; right: 0; bottom: 0; padding: 2px 6px; font-size: 11px; color: #fff; background: rgba(0, 0, 0, .55); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+.clip-card > button:first-child .tag { position: absolute; top: 4px; right: 4px; left: auto; font-size: 10px; padding: 1px 4px; border-radius: 4px; background: rgba(0, 0, 0, .75); color: #fff; }
+.clip-card .clip-star, .clip-gifs .clip-card .clip-star { position: absolute; top: 4px; left: 4px; width: 24px; height: 24px; padding: 0; border-radius: 50%; border: 0; background: rgba(0, 0, 0, .6); color: #fff; font-size: 13px; line-height: 24px; opacity: 0; }
+.clip-card:hover .clip-star, .clip-card .clip-star:focus-visible, .clip-card .clip-star.on { opacity: 1; }
+.clip-card .clip-star.on { color: #fbbf24; }
+.clip-card .clip-go, .clip-gifs .clip-card .clip-go { height: auto; padding: 3px 8px; font-size: 12px; border-radius: 6px; }
+.pill.dnd.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .clip-recents { display: flex; align-items: center; gap: 8px; }
 .clip-recents .label { color: var(--muted); font-size: 13px; }
 .clip-recents-list { display: flex; gap: 6px; overflow-x: auto; min-width: 0; }

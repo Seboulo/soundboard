@@ -62,6 +62,7 @@
       <button id="room-pill" class="pill" type="button" aria-haspopup="menu" aria-expanded="false" title="Salon entre potes : choisis chez qui tes sons sont joués"></button>
       <div id="room-menu" class="menu" role="menu" hidden></div>
     </div>
+      <button id="dnd-toggle" class="pill" type="button" aria-pressed="false" hidden></button>
     </div>
   </aside>
   <div class="app-main">
@@ -182,6 +183,10 @@
 
         <!-- Étape 1 : choisir -->
         <div class="send-step" data-step="pick">
+          <div class="clip-favs" hidden>
+            <span class="label">Mes extraits <small class="muted">un clic sur « Envoyer » et c'est parti</small></span>
+            <div class="clip-favs-list"></div>
+          </div>
           <div class="clip-recents" hidden>
             <span class="label">Récents</span>
             <div class="clip-recents-list"></div>
@@ -224,7 +229,7 @@
             <div class="clip-gifs clip-history" data-list="sent"></div>
             <h3>Reçus</h3>
             <div class="clip-gifs clip-history" data-list="received"></div>
-            <p class="hint">Les 20 derniers de chaque côté. Un clic le remet à l'étape 2 : tu peux le revoir, l'écouter ou le renvoyer.</p>
+            <p class="hint">Les 20 derniers de chaque côté. Un clic le remet à l'étape 2 : tu peux le revoir, l'écouter ou le renvoyer. L'étoile le garde dans « Mes extraits », prêt à renvoyer en un clic.</p>
           </div>
         </div>
 
