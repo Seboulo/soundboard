@@ -97,6 +97,9 @@ enum Command {
     Preview(PlayRequest, Reply),
     StopAll,
     Stop(String),
+    /// Coupe (vrai) ou remet (faux) un son dans le casque seulement : ce qui
+    /// part dans Discord continue.
+    MuteMonitor(String, bool),
     StopPreview,
     SetMicMuted(bool),
     /// Fait entendre dans le casque ce qui sort du câble (ce que Discord reçoit).
@@ -179,6 +182,12 @@ impl AudioHandle {
     /// Arrête un son tout de suite (sans fondu).
     pub fn stop(&self, id: &str) {
         let _ = self.send(Command::Stop(id.to_string()));
+    }
+
+    /// Coupe ou remet le son `id` dans ton casque seulement ; Discord (le
+    /// câble) continue de le recevoir.
+    pub fn mute_monitor(&self, id: &str, muted: bool) {
+        let _ = self.send(Command::MuteMonitor(id.to_string(), muted));
     }
 
     pub fn listen_cable(&self, on: bool) -> Result<(), String> {
@@ -346,6 +355,8 @@ impl Output {
 struct Playing {
     id: String,
     voices: Vec<Voice>,
+    /// Voix du casque (pas celle du câble), pour la couper seule.
+    monitor_voice: Option<usize>,
     started: Instant,
     duration_ms: Option<u64>,
     looping: bool,
@@ -702,6 +713,14 @@ impl Engine {
                     p.id != id
                 });
             }
+            Command::MuteMonitor(id, muted) => {
+                let volume = if muted { 0.0 } else { self.settings.monitor_volume };
+                for p in self.playing.iter().filter(|p| p.id == id) {
+                    if let Some(v) = p.monitor_voice.and_then(|i| p.voices.get(i)) {
+                        v.set_volume(volume);
+                    }
+                }
+            }
             Command::ListenCable(on, reply) => {
                 let _ = reply.send(self.listen_cable(on));
             }
@@ -788,6 +807,7 @@ impl Engine {
         let fade = if req.looping { FADE } else { STOP_FADE };
         let fade_target = Some(Arc::new(AtomicU32::new(1.0f32.to_bits())));
         let mut voices = Vec::new();
+        let mut monitor_voice = None;
         for (output, out_volume, to_discord) in targets {
             let Some(output) = output else { continue };
             let source = match &rendered {
@@ -805,6 +825,9 @@ impl Engine {
             // sans laisser les passages en opposition de phase s'annuler.
             let source: Box<dyn Source<Item = f32> + Send> =
                 if to_discord && source.channels() == 2 { Box::new(MonoSafe::new(source)) } else { source };
+            if !to_discord {
+                monitor_voice = Some(voices.len());
+            }
             voices.push(output.bus.add_sound(source, out_volume));
         }
         if voices.is_empty() {
@@ -813,6 +836,7 @@ impl Engine {
         self.playing.push(Playing {
             id: req.id,
             voices,
+            monitor_voice,
             started: Instant::now(),
             duration_ms: req.duration_ms,
             looping: req.looping,

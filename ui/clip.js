@@ -128,7 +128,7 @@ function playSound(c, path, startMs, endMs, el) {
         mine.at = performance.now();
         mine.engine = true;
         // Coupé pendant que le son se préparait.
-        if (muted) invoke("clip_mute");
+        if (muted) invoke("clip_mute", { on: true });
       }
       return true;
     },
@@ -379,9 +379,17 @@ muteBtn.addEventListener("click", () => {
     k.el.muted = muted;
     return;
   }
-  if (muted) return void invoke("clip_mute");
-  const atMs = Math.round((k.from + (performance.now() - k.at) / 1000) * 1000);
-  invoke("clip_audio", { path: k.path, startMs: Math.round(k.from * 1000), endMs: k.endMs, volume: c.volume ?? 1, atMs }).catch(() => {});
+  if (muted) return void invoke("clip_mute", { on: true });
+  // Son parti aussi dans Discord : il tourne toujours (coupé dans le casque
+  // seulement), le moteur le remet sans le relancer chez tes potes.
+  invoke("clip_mute", { on: false }).then(
+    (inPlace) => {
+      if (inPlace || muted || current !== c || clock !== k) return;
+      const atMs = Math.round((k.from + (performance.now() - k.at) / 1000) * 1000);
+      invoke("clip_audio", { path: k.path, startMs: Math.round(k.from * 1000), endMs: k.endMs, volume: c.volume ?? 1, atMs }).catch(() => {});
+    },
+    () => {},
+  );
 });
 $('[data-action="keep"]').addEventListener("click", async (e) => {
   const btn = e.currentTarget;

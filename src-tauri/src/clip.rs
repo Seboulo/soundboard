@@ -1298,14 +1298,25 @@ fn advance(app: &AppHandle) {
     }
 }
 
+/// L'extrait `shown` est remplacé par `next` : faut-il le remettre en tête
+/// de file ? Oui quand ton propre « Aperçu » passe devant l'extrait d'un
+/// pote, qui sinon était perdu ; il repassera juste après, depuis le début.
+fn comes_back(shown: &ClipShow, next: &ClipShow) -> bool {
+    next.preview && !shown.preview
+}
+
 fn show_now(app: &AppHandle, show: ClipShow) -> Result<(), String> {
     #[cfg(windows)]
     foreground::remember();
     let state = app.state::<AppState>();
     let ask = show.ask;
-    *state.clips.pending.lock().unwrap() = Some(show.clone());
+    let before = state.clips.pending.lock().unwrap().replace(show.clone());
     let current = state.clips.window.lock().unwrap().clone();
     if let Some(w) = current.as_deref().and_then(|l| app.get_webview_window(l)) {
+        if let Some(before) = before.filter(|b| comes_back(b, &show)) {
+            journal::write(&format!("Extrait de {} remis en attente (aperçu)", before.from));
+            state.clips.queue.lock().unwrap().push_front(before);
+        }
         // L'extrait d'avant est remplacé : son son s'arrête avec lui (sinon il
         // continuait jusqu'à 30 s sous la carte « Afficher / Refuser »).
         stop_audio(&state);
@@ -1389,10 +1400,21 @@ fn still_shown(state: &AppState, path: &Path) -> bool {
 /// Fondu de sortie du son à la fin du passage.
 const CLIP_END_FADE_MS: u32 = 250;
 
-/// 🔇 sur la carte : coupe le son de l'extrait sans le fermer.
+/// 🔇 sur la carte : coupe (ou remet, `on` faux) le son de l'extrait sans le
+/// fermer. Un extrait dont le son part aussi dans Discord n'est coupé que
+/// dans ton casque : tes potes continuent de l'entendre. Rend vrai dans ce
+/// cas (le son tourne toujours, rien à relancer pour le remettre).
 #[tauri::command]
-pub fn clip_mute(state: State<AppState>) {
-    stop_audio(&state);
+pub fn clip_mute(state: State<AppState>, on: Option<bool>) -> bool {
+    let on = on.unwrap_or(true);
+    if state.clips.audio_discord.load(Ordering::SeqCst) {
+        state.audio.mute_monitor(CLIP_SOUND_ID, on);
+        return true;
+    }
+    if on {
+        stop_audio(&state);
+    }
+    false
 }
 
 /// Forme du son de la vidéo choisie, pour s'y repérer en coupant le passage.
@@ -1666,6 +1688,32 @@ pub fn is_clip_window(label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn friend_clip_comes_back_after_my_own_preview() {
+        let clip = |preview: bool| ClipShow {
+            from: String::new(),
+            title: String::new(),
+            kind: "image",
+            media: String::new(),
+            sound: None,
+            start_ms: 0,
+            end_ms: None,
+            volume: 1.0,
+            style: String::new(),
+            from_id: String::new(),
+            ask: false,
+            preview,
+            direct: false,
+        };
+        // Mon aperçu passe devant l'extrait d'un pote : il repassera après.
+        assert!(comes_back(&clip(false), &clip(true)));
+        // Un aperçu remplacé par un autre aperçu, ou par l'extrait suivant
+        // de la file : rien à remettre.
+        assert!(!comes_back(&clip(true), &clip(true)));
+        assert!(!comes_back(&clip(false), &clip(false)));
+        assert!(!comes_back(&clip(true), &clip(false)));
+    }
 
     #[test]
     fn window_takes_the_shape_of_the_video() {
