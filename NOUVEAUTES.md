@@ -1,13 +1,26 @@
 Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
 Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
-À venir (pas encore publié) — son du micro :
+Nouveautés de la 3.1.0 — extraits vidéo :
+- Un extrait qui arrive pendant un autre attend son tour (3 au plus) au lieu de le couper. Si tu lances ton propre « Aperçu » pendant l'extrait d'un pote, celui-ci repasse juste après.
+- L'extrait s'affiche sur l'écran où se trouve ton jeu.
+- Bouton 🔊/🔇 sur la carte : il coupe le son dans ton casque seulement, tes potes continuent de l'entendre dans Discord.
+- La barre de temps suit la vraie lecture de la vidéo, la carte s'efface en douceur et le son finit en fondu.
+- Corrigé : un extrait remplacé par un autre gardait son son ; un son en retard restait décalé et sa fin était coupée.
+- « Ne pas déranger » (🌙) : plus aucun son ni extrait de tes potes chez toi, les extraits t'attendent dans Envoyer → Historique.
+- « Mes extraits » : une étoile sur un extrait de l'historique le garde pour le renvoyer en un clic (30 au plus).
+- Éditeur d'extrait : ▶ joue l'image et le son ensemble, barre de temps avec la forme du son et un zoom, « Début ici », « Fin ici », durées rapides 5, 10, 15, 30 s.
+- Texte en gros : en haut ou en bas, grand ou petit.
+
+Nouveautés de la 3.1.0 — son du micro :
 - La télé ou quelqu'un d'autre dans la pièce n'ouvre plus ton micro : la porte de voix apprend le niveau de ta voix et ignore les voix nettement plus lointaines (25 dB sous la tienne). Mesuré : micro ouvert 56 % du temps de silence avant, 11 % maintenant (la demi-seconde de fin de phrase).
 - Micro très faible : après le test de voix, la porte s'ouvre dès le premier mot (avant, une voix sous -55 dBFS était coupée). Sans test de voix, elle s'ouvre sur les syllabes fortes.
 - Réduction de bruit forte sans test de voix : la première phrase après le lancement n'est plus étouffée sur un micro faible ou une pièce bruyante.
 - Volume de voix automatique : il peut monter jusqu'à +24 dB (avant +18), un pote au micro faible n'est plus plus bas que les autres. Il ne se règle plus sur une voix lointaine.
 - Nouveau réglage « Voix lointaines » (Réglages avancés du micro) : Ignorées, Ignorées (strict) pour une télé proche (15 dB sous ta voix : micro ouvert 56 % de tes silences en normal, 10 % en strict), ou Acceptées comme avant.
 - L'appli retient le niveau de ta voix d'un lancement à l'autre : même sans test de voix, la réduction de bruit, le volume automatique et la porte sont bien réglés dès ton premier mot.
+- Si ta voix arrive bien plus faible que la dernière fois (volume du micro baissé dans Windows, micro éloigné), l'appli s'en rend compte en une fraction de seconde au lieu de garder ton micro fermé.
+- Le niveau retenu vaut pour un micro précis : si tu changes de micro par défaut dans Windows, l'appli le réapprend.
 - Micro branché sur une seule entrée d'une carte son à deux entrées : la voix n'est plus divisée par deux. Micro dont les deux canaux sont inversés : la voix n'est plus annulée.
 - Micros qui envoient un format rare (entiers 32 bits, 8 bits) : ils marchent au lieu d'afficher « format non géré ».
 

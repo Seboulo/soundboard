@@ -1,6 +1,6 @@
 [package]
 name = "soundboard"
-version = "3.0.2"
+version = "3.1.0"
 description = "Soundboard pour Discord : joue des sons dans ton micro via un câble audio virtuel"
 authors = ["Sébastien"]
 license = "MIT"
