@@ -367,7 +367,7 @@
     $("get-link").onclick = (e) => {
       const v = $("link").value.trim();
       if (!v) return;
-      if (/^https?:\/\/\S+$/i.test(v)) fetchLink(v, e.currentTarget);
+      if (/^https?:\/\/\S+$/i.test(v) && !/spotify\./i.test(v)) fetchLink(v, e.currentTarget);
       else busy(e.currentTarget, () => searchVids(false));
     };
     const fetchLink = (url, btn) => busy(btn, async () => {
