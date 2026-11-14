@@ -61,6 +61,30 @@ pub enum Msg {
         #[serde(default, skip_serializing_if = "is_zero")]
         size: u64,
     },
+    /// « Voici un son pour ta soundboard » : `to` choisit s'il l'ajoute. Le
+    /// fichier est en pièce jointe.
+    Gift {
+        from: String,
+        name: String,
+        to: String,
+        hash: String,
+        title: String,
+        ext: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emoji: Option<String>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        color: String,
+        #[serde(default)]
+        start_ms: u64,
+        #[serde(default)]
+        end_ms: Option<u64>,
+        #[serde(default = "one")]
+        volume: f32,
+        #[serde(default)]
+        fx: crate::sound_fx::SoundFx,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        size: u64,
+    },
     /// « Je n'ai pas ce son, envoie-le. »
     Need { from: String, to: String, hash: String },
     /// « Arrête ce que je t'ai envoyé » (son et extrait) ; `to` vide : tout le salon.
@@ -105,8 +129,10 @@ fn is_zero(n: &u64) -> bool {
 pub const CAP_LINK: u32 = 1;
 /// L'appli sait ne récupérer que le passage d'une vidéo longue reçue par lien.
 pub const CAP_CUT: u32 = 2;
+/// L'appli sait recevoir un son partagé (et proposer de l'ajouter).
+pub const CAP_GIFT: u32 = 4;
 /// Ce que cette version sait faire.
-const MY_CAPS: u32 = CAP_LINK | CAP_CUT;
+const MY_CAPS: u32 = CAP_LINK | CAP_CUT | CAP_GIFT;
 /// Un fichier déjà envoyé au relais y reste 3 h : pendant 2 h 30, on renvoie
 /// son adresse au lieu de le renvoyer (ça ne compte pas dans la limite
 /// d'envois du relais, et ça part tout de suite).
@@ -118,7 +144,7 @@ const RESUME_WITHIN: Duration = Duration::from_secs(120);
 impl Msg {
     pub fn from(&self) -> &str {
         match self {
-            Msg::Hi { from, .. } | Msg::Bye { from } | Msg::Play { from, .. } | Msg::Need { from, .. } | Msg::Clip { from, .. } | Msg::Stop { from, .. } => from,
+            Msg::Hi { from, .. } | Msg::Bye { from } | Msg::Play { from, .. } | Msg::Need { from, .. } | Msg::Gift { from, .. } | Msg::Clip { from, .. } | Msg::Stop { from, .. } => from,
         }
     }
 }
@@ -133,6 +159,8 @@ pub struct Incoming {
 pub struct Member {
     pub id: String,
     pub name: String,
+    /// Son appli sait recevoir un son partagé.
+    pub gift: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -217,7 +245,11 @@ impl Room {
         let mut inner = self.inner.lock().unwrap();
         inner.members.retain(|_, (_, seen, _)| seen.elapsed() < MEMBER_TTL);
         let mut members: Vec<Member> =
-            inner.members.iter().map(|(id, (name, _, _))| Member { id: id.clone(), name: name.clone() }).collect();
+            inner
+            .members
+            .iter()
+            .map(|(id, (name, _, caps))| Member { id: id.clone(), name: name.clone(), gift: caps & CAP_GIFT != 0 })
+            .collect();
         members.sort_by_key(|m| m.name.to_lowercase());
         if inner.target.as_ref().is_some_and(|t| !inner.members.contains_key(t)) {
             inner.target = None;
@@ -402,6 +434,10 @@ impl Room {
                 on_event(incoming);
             }
             Msg::Clip { to, from, name, .. } if to.is_empty() || *to == me => {
+                self.inner.lock().unwrap().seen(from, name, None);
+                on_event(incoming);
+            }
+            Msg::Gift { to, from, name, .. } if *to == me => {
                 self.inner.lock().unwrap().seen(from, name, None);
                 on_event(incoming);
             }
@@ -625,6 +661,36 @@ mod tests {
         // Une pièce jointe hébergée ailleurs est ignorée.
         let evil = line.replace("https://ntfy.sh/file", "https://ailleurs.fr");
         assert!(parse_line(&evil).unwrap().1.attachment.is_none());
+    }
+
+    #[test]
+    fn shared_sounds_go_only_to_apps_that_know_them() {
+        let msg = Msg::Gift {
+            from: "a".into(),
+            name: "Max".into(),
+            to: "b".into(),
+            hash: "abc".into(),
+            title: "Ouais".into(),
+            ext: "mp3".into(),
+            emoji: Some("🎺".into()),
+            color: "#ff0000".into(),
+            start_ms: 100,
+            end_ms: Some(900),
+            volume: 0.8,
+            fx: Default::default(),
+            size: 1234,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(serde_json::from_str::<Msg>(&json).unwrap(), msg);
+        let room = Room::default();
+        {
+            let mut inner = room.inner.lock().unwrap();
+            inner.seen("new", "Neuf", Some(MY_CAPS));
+            inner.seen("old", "Vieux", Some(CAP_LINK | CAP_CUT));
+        }
+        let members = room.status().members;
+        assert!(members.iter().find(|m| m.id == "new").unwrap().gift);
+        assert!(!members.iter().find(|m| m.id == "old").unwrap().gift);
     }
 
     #[test]

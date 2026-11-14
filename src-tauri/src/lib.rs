@@ -2142,25 +2142,36 @@ fn read_pack(
     Ok((added, errors, keys))
 }
 
-/// Enregistre les sons (d'un onglet ou tous) dans un .zip à partager.
+/// Enregistre les sons (d'un onglet, tous, ou un seul avec `id`) dans un
+/// .zip à partager.
 #[tauri::command]
-async fn export_pack(app: AppHandle, category: Option<String>) -> Result<Option<usize>, String> {
+async fn export_pack(app: AppHandle, category: Option<String>, id: Option<String>) -> Result<Option<usize>, String> {
     let state = app.state::<AppState>();
-    let sounds: Vec<Sound> = state
+    let mut sounds: Vec<Sound> = state
         .config
         .lock()
         .unwrap()
         .sounds
         .iter()
-        .filter(|s| category.is_none() || s.category == category)
+        .filter(|s| match &id {
+            Some(id) => &s.id == id,
+            None => category.is_none() || s.category == category,
+        })
         .cloned()
         .collect();
     if sounds.is_empty() {
         return Err("aucun son à exporter".into());
     }
+    // Un son partagé seul arrive chez le pote dans « Tous », sans le
+    // raccourci ni l'étoile de celui qui partage.
+    let single = id.is_some().then(|| sounds[0].name.clone());
+    if single.is_some() {
+        let s = &mut sounds[0];
+        (s.category, s.hotkey, s.favorite) = (None, None, false);
+    }
     let file_name = format!(
         "{}.zip",
-        category.as_deref().unwrap_or("Soundboard").replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_")
+        single.as_deref().or(category.as_deref()).unwrap_or("Soundboard").replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_")
     );
     let Some(dest) = app
         .dialog()
@@ -2568,6 +2579,8 @@ pub fn run() {
             clip::clip_preview,
             clip::clip_keep,
             extras::set_friend_blocked,
+            extras::share_sound,
+            extras::accept_gift,
             clip::send_clip,
             clip::clip_pending,
             clip::clip_fit,
