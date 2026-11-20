@@ -22,6 +22,7 @@ mod share;
 mod tts;
 mod clip;
 mod keyhook;
+mod winpos;
 
 use audio::{AudioEvent, AudioHandle, DeviceList, PlayOutcome, PlayRequest};
 use config::{Config, Settings, Sound};
@@ -360,6 +361,7 @@ fn show_window(app: &AppHandle) {
         webview_low_memory(&window, false);
         let _ = window.show();
         let _ = window.unminimize();
+        winpos::after_show(&window);
         let _ = window.set_focus();
     }
 }
@@ -2325,7 +2327,12 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 clip::close(app);
                 extras::stop_sent(app);
             }
-            "quit" => app.exit(0),
+            "quit" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    winpos::save(&w);
+                }
+                app.exit(0)
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -2458,6 +2465,9 @@ pub fn run() {
             build_tray(app.handle())?;
             apply_phone(app.handle());
 
+            if let Some(w) = app.get_webview_window("main") {
+                winpos::restore(&w);
+            }
             // Lancé avec Windows : on reste discret près de l'horloge.
             if !std::env::args().any(|a| a == MINIMIZED_ARG) {
                 show_window(app.handle());
@@ -2477,6 +2487,9 @@ pub fn run() {
                 // La fenêtre des extraits se ferme simplement (sans quitter l'app).
                 if clip::is_clip_window(window.label()) {
                     return;
+                }
+                if let Some(w) = window.app_handle().get_webview_window(window.label()) {
+                    winpos::save(&w);
                 }
                 let state = window.state::<AppState>();
                 let to_tray = state.config.lock().unwrap().settings.close_to_tray;
