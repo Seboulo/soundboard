@@ -41,7 +41,10 @@ pub fn analyze(raw: &[f32]) -> Result<(MicCalibration, VoiceReport), String> {
     }
     // Comme le traitement : le grondement sous 80 Hz ne compte pas.
     let mut high_pass = Biquad::high_pass(80.0);
-    let mut filters: Vec<Biquad> = EQ_BANDS_HZ.iter().map(|&f| Biquad::band_pass(f, 1.4)).collect();
+    let mut filters: Vec<Biquad> = EQ_BANDS_HZ
+        .iter()
+        .map(|&f| Biquad::band_pass(f, 1.4))
+        .collect();
     // Un micro Bluetooth en mode « mains libres » (ou un micro 16 kHz) n'a
     // rien au-dessus de 8 kHz : on compare l'énergie au-dessus de 10 kHz
     // (filtre très raide) à celle autour de 6,5 kHz.
@@ -80,7 +83,9 @@ pub fn analyze(raw: &[f32]) -> Result<(MicCalibration, VoiceReport), String> {
     let sum = |k: usize| speech.iter().map(|&i| energy[i][k]).sum::<f64>();
     let speech_db = power_db(sum(0) / (speech.len() * FRAME) as f64);
     let band_db: Vec<f32> = (1..7).map(|k| power_db(sum(k))).collect();
-    let peak = raw[(phase + 50) * FRAME..].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    let peak = raw[(phase + 50) * FRAME..]
+        .iter()
+        .fold(0.0f32, |m, v| m.max(v.abs()));
     let peak_db = 20.0 * peak.max(1e-6).log10();
     let mut eq_db = match_eq(&band_db);
     // Énergie moyenne par trame, dans le silence et dans la parole.
@@ -103,7 +108,11 @@ pub fn analyze(raw: &[f32]) -> Result<(MicCalibration, VoiceReport), String> {
     if narrow {
         eq_db[5] = eq_db[5].min(0.0);
     }
-    let eq = if eq_db.iter().any(|g| g.abs() >= 2.0) { VoiceEq::Custom } else { VoiceEq::Natural };
+    let eq = if eq_db.iter().any(|g| g.abs() >= 2.0) {
+        VoiceEq::Custom
+    } else {
+        VoiceEq::Natural
+    };
 
     let mut advice = Vec::new();
     if noise_db < -100.0 {
@@ -116,7 +125,9 @@ pub fn analyze(raw: &[f32]) -> Result<(MicCalibration, VoiceReport), String> {
         advice.push("Ta voix sature le micro : baisse son volume dans Windows (Paramètres > Son > ton micro), sinon elle grésille.".into());
     }
     if speech_db < -36.0 {
-        advice.push("Ta voix arrive faible : rapproche le micro ou monte son volume dans Windows.".into());
+        advice.push(
+            "Ta voix arrive faible : rapproche le micro ou monte son volume dans Windows.".into(),
+        );
     }
     if speech_db - noise_db < 20.0 {
         advice.push("Ta voix dépasse peu le bruit de ta pièce : rapproche-toi du micro et garde la réduction de bruit forte.".into());
@@ -124,14 +135,29 @@ pub fn analyze(raw: &[f32]) -> Result<(MicCalibration, VoiceReport), String> {
         advice.push("Ta pièce est un peu bruyante : garde la réduction de bruit forte.".into());
     }
     if eq == VoiceEq::Custom {
-        advice.push(format!("Égaliseur sur mesure pour ton micro : {}.", describe_eq(&eq_db)));
+        advice.push(format!(
+            "Égaliseur sur mesure pour ton micro : {}.",
+            describe_eq(&eq_db)
+        ));
     }
     if advice.is_empty() {
         advice.push("Tout est bon : ton micro est bien réglé.".into());
     }
 
-    let calibration = MicCalibration { noise_db, speech_db, eq_db };
-    let report = VoiceReport { noise_db, speech_db, peak_db, eq_db, eq, advice, folder: String::new() };
+    let calibration = MicCalibration {
+        noise_db,
+        speech_db,
+        eq_db,
+    };
+    let report = VoiceReport {
+        noise_db,
+        speech_db,
+        peak_db,
+        eq_db,
+        eq,
+        advice,
+        folder: String::new(),
+    };
     Ok((calibration, report))
 }
 
@@ -145,7 +171,11 @@ const REFERENCE_DB: [f32; 6] = [-2.0, 0.0, -5.5, -11.0, -13.5, -17.0];
 /// le résultat dépend des mots prononcés), jamais plus de 4 dB (3 dB pour
 /// les aigus extrêmes), et on ne remonte jamais le grave (ronflement).
 fn match_eq(band_db: &[f32]) -> [f32; 6] {
-    let deviation: Vec<f32> = band_db.iter().zip(REFERENCE_DB).map(|(m, r)| m - r).collect();
+    let deviation: Vec<f32> = band_db
+        .iter()
+        .zip(REFERENCE_DB)
+        .map(|(m, r)| m - r)
+        .collect();
     // Le niveau global ne compte pas : on se cale sur les médiums.
     let center = (deviation[1] + deviation[2] + deviation[3]) / 3.0;
     let mut eq = [0.0f32; 6];
@@ -160,7 +190,14 @@ fn match_eq(band_db: &[f32]) -> [f32; 6] {
 }
 
 fn describe_eq(eq_db: &[f32; 6]) -> String {
-    const NAMES: [&str; 6] = ["graves", "bas-médiums", "médiums", "présence", "clarté", "aigus"];
+    const NAMES: [&str; 6] = [
+        "graves",
+        "bas-médiums",
+        "médiums",
+        "présence",
+        "clarté",
+        "aigus",
+    ];
     let parts: Vec<String> = NAMES
         .iter()
         .zip(eq_db)
@@ -220,7 +257,9 @@ mod tests {
             .map(|i| {
                 let t = i as f32 / RATE as f32;
                 let on = if (t * 4.0).fract() < 0.7 { 1.0 } else { 0.0 };
-                let tone: f32 = (1..20).map(|h| (t * 150.0 * h as f32 * std::f32::consts::TAU).sin() / h as f32).sum();
+                let tone: f32 = (1..20)
+                    .map(|h| (t * 150.0 * h as f32 * std::f32::consts::TAU).sin() / h as f32)
+                    .sum();
                 tone * 0.05 * on
             })
             .collect();
@@ -228,7 +267,11 @@ mod tests {
         raw.extend(voice.iter().zip(&room).map(|(v, r)| v + r));
         let (cal, report) = analyze(&raw).unwrap();
         assert!((cal.noise_db + 55.0).abs() < 3.0, "bruit {}", cal.noise_db);
-        assert!(cal.speech_db > -30.0 && cal.speech_db < -20.0, "voix {}", cal.speech_db);
+        assert!(
+            cal.speech_db > -30.0 && cal.speech_db < -20.0,
+            "voix {}",
+            cal.speech_db
+        );
         assert!(report.peak_db < -6.0);
         assert!(!report.advice.is_empty());
     }
@@ -256,7 +299,9 @@ mod tests {
                 let on = if (t * 4.0).fract() < 0.7 { 1.0 } else { 0.0 };
                 let tone: f32 = (1..110)
                     .filter(|h| 150.0 * *h as f32 <= top)
-                    .map(|h| (t * 150.0 * h as f32 * std::f32::consts::TAU).sin() / (h as f32).sqrt())
+                    .map(|h| {
+                        (t * 150.0 * h as f32 * std::f32::consts::TAU).sin() / (h as f32).sqrt()
+                    })
                     .sum();
                 tone * 0.01 * on
             }));
@@ -265,10 +310,18 @@ mod tests {
         // Micro 16 kHz : plus rien au-dessus de 7,5 kHz.
         let (cal, report) = test(7500.0);
         assert!(cal.eq_db[5] <= 0.0, "{:?}", cal.eq_db);
-        assert!(report.advice.iter().any(|a| a.contains("Bluetooth")), "{:?}", report.advice);
+        assert!(
+            report.advice.iter().any(|a| a.contains("Bluetooth")),
+            "{:?}",
+            report.advice
+        );
         // Vrai micro : pas d'alerte.
         let (_, report) = test(16_000.0);
-        assert!(!report.advice.iter().any(|a| a.contains("Bluetooth")), "{:?}", report.advice);
+        assert!(
+            !report.advice.iter().any(|a| a.contains("Bluetooth")),
+            "{:?}",
+            report.advice
+        );
     }
 
     #[test]
@@ -287,6 +340,9 @@ mod tests {
         let bytes = fs::read(&path).unwrap();
         assert_eq!(bytes.len(), 44 + 6);
         assert_eq!(&bytes[0..4], b"RIFF");
-        assert_eq!(u32::from_le_bytes(bytes[24..28].try_into().unwrap()), 48_000);
+        assert_eq!(
+            u32::from_le_bytes(bytes[24..28].try_into().unwrap()),
+            48_000
+        );
     }
 }

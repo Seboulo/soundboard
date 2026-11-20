@@ -37,7 +37,11 @@ fn k_weighting(rate: f64) -> [Biquad; 2] {
     let vb = vh.powf(0.4996667741545416);
     let a0 = 1.0 + k / q + k * k;
     let shelf = Biquad {
-        b: [(vh + vb * k / q + k * k) / a0, 2.0 * (k * k - vh) / a0, (vh - vb * k / q + k * k) / a0],
+        b: [
+            (vh + vb * k / q + k * k) / a0,
+            2.0 * (k * k - vh) / a0,
+            (vh - vb * k / q + k * k) / a0,
+        ],
         a: [2.0 * (k * k - 1.0) / a0, (1.0 - k / q + k * k) / a0],
         z: [0.0; 2],
     };
@@ -78,17 +82,28 @@ fn loudness(blocks: &[f64]) -> (f32, f32, f32) {
     let momentary: Vec<f64> = if blocks.len() < 4 {
         vec![blocks.iter().sum::<f64>() / blocks.len() as f64]
     } else {
-        blocks.windows(4).map(|w| w.iter().sum::<f64>() / 4.0).collect()
+        blocks
+            .windows(4)
+            .map(|w| w.iter().sum::<f64>() / 4.0)
+            .collect()
     };
     let gated = |threshold: f64| {
-        let kept: Vec<f64> = momentary.iter().copied().filter(|&m| m > threshold).collect();
+        let kept: Vec<f64> = momentary
+            .iter()
+            .copied()
+            .filter(|&m| m > threshold)
+            .collect();
         (!kept.is_empty()).then(|| kept.iter().sum::<f64>() / kept.len() as f64)
     };
     let abs_gate = 10f64.powf((-70.0 + 0.691) / 10.0);
     let integrated = gated(abs_gate)
         .and_then(|mean| gated(mean * 0.1))
         .map_or(-70.0, lufs);
-    (integrated, lufs(max_window(blocks, 4)), lufs(max_window(blocks, 30)))
+    (
+        integrated,
+        lufs(max_window(blocks, 4)),
+        lufs(max_window(blocks, 30)),
+    )
 }
 
 pub fn analyze(path: &Path) -> Result<Analysis, String> {
@@ -105,7 +120,11 @@ pub fn analyze_segment(path: &Path, key: &SegmentKey) -> Result<Analysis, String
     analyze_samples(r.data.iter().copied(), r.channels, r.rate)
 }
 
-fn analyze_samples(samples: impl Iterator<Item = f32>, channels: u16, rate: u32) -> Result<Analysis, String> {
+fn analyze_samples(
+    samples: impl Iterator<Item = f32>,
+    channels: u16,
+    rate: u32,
+) -> Result<Analysis, String> {
     let decoder = samples;
     let channels = channels.max(1) as usize;
     let rate = rate.max(1) as u64;
@@ -186,7 +205,12 @@ fn analyze_samples(samples: impl Iterator<Item = f32>, channels: u16, rate: u32)
         peak,
         rms,
         // Jamais 0, sinon le son serait réanalysé à chaque lancement.
-        loudness: (if loud_n > 0 { (loud_sq / loud_n as f64).sqrt() as f32 } else { rms }).max(1e-6),
+        loudness: (if loud_n > 0 {
+            (loud_sq / loud_n as f64).sqrt() as f32
+        } else {
+            rms
+        })
+        .max(1e-6),
         // Toujours négatif : 0 veut dire « pas encore mesuré ».
         lufs: integrated.min(-0.01),
         max_momentary: max_momentary.min(-0.01),
@@ -219,7 +243,9 @@ mod tests {
     use super::*;
 
     fn lufs(channels: u16, frames: impl Iterator<Item = Vec<f32>>) -> f32 {
-        analyze_samples(frames.flatten(), channels, 48_000).unwrap().lufs
+        analyze_samples(frames.flatten(), channels, 48_000)
+            .unwrap()
+            .lufs
     }
 
     #[test]

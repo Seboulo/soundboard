@@ -52,7 +52,11 @@ mod imp {
             out.push(VoiceInfo {
                 id: v.Id().map(|s| s.to_string()).unwrap_or_default(),
                 name: v.DisplayName().map(|s| s.to_string()).unwrap_or_default(),
-                language: v.Language().map(|s| s.to_string()).unwrap_or_default().to_lowercase(),
+                language: v
+                    .Language()
+                    .map(|s| s.to_string())
+                    .unwrap_or_default()
+                    .to_lowercase(),
             });
         }
         Ok(out)
@@ -60,7 +64,8 @@ mod imp {
 
     pub fn speak(text: &str, voice: Option<&str>, rate: f64) -> Result<Vec<u8>, String> {
         init();
-        let err = |e: windows::core::Error| format!("la voix de Windows ne répond pas ({})", e.message());
+        let err =
+            |e: windows::core::Error| format!("la voix de Windows ne répond pas ({})", e.message());
         let synth = SpeechSynthesizer::new().map_err(err)?;
         if let Some(id) = voice.filter(|v| !v.is_empty()) {
             if let Some(v) = SpeechSynthesizer::AllVoices()
@@ -74,7 +79,11 @@ mod imp {
         if let Ok(options) = synth.Options() {
             let _ = options.SetSpeakingRate(rate);
         }
-        let stream = synth.SynthesizeTextToStreamAsync(&HSTRING::from(text)).map_err(err)?.join().map_err(err)?;
+        let stream = synth
+            .SynthesizeTextToStreamAsync(&HSTRING::from(text))
+            .map_err(err)?
+            .join()
+            .map_err(err)?;
         let size = stream.Size().map_err(err)? as u32;
         let input = stream.GetInputStreamAt(0).map_err(err)?;
         let reader = DataReader::CreateDataReader(&input).map_err(err)?;

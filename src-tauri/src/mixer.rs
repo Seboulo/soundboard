@@ -232,7 +232,11 @@ impl BusSource {
 
         let wanted = current_target.min(next_target);
         let start = self.gain.min(current_target);
-        let end = if wanted < start { wanted } else { (start + self.release_step).min(wanted) };
+        let end = if wanted < start {
+            wanted
+        } else {
+            (start + self.release_step).min(wanted)
+        };
         let ch = self.channels;
         self.out.clear();
         for f in 0..self.block {

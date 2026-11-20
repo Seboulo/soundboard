@@ -19,7 +19,10 @@ pub fn init(dir: PathBuf) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let thread = std::thread::current();
-        write(&format!("PLANTAGE ({}) : {info}", thread.name().unwrap_or("?")));
+        write(&format!(
+            "PLANTAGE ({}) : {info}",
+            thread.name().unwrap_or("?")
+        ));
         previous(info);
     }));
     write(&format!("--- Démarrage v{} ---", env!("CARGO_PKG_VERSION")));
@@ -38,7 +41,9 @@ pub fn write(message: &str) {
 
 /// Les dernières lignes du journal, pour le rapport.
 pub fn tail(lines: usize) -> String {
-    let Some(path) = PATH.get() else { return String::new() };
+    let Some(path) = PATH.get() else {
+        return String::new();
+    };
     let text = fs::read_to_string(path).unwrap_or_default();
     let all: Vec<&str> = text.lines().collect();
     all[all.len().saturating_sub(lines)..].join("\n")
@@ -61,7 +66,12 @@ fn timestamp() -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y}-{m:02}-{d:02} {:02}:{:02}:{:02} UTC", rem / 3600, rem % 3600 / 60, rem % 60)
+    format!(
+        "{y}-{m:02}-{d:02} {:02}:{:02}:{:02} UTC",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
 }
 
 #[cfg(test)]

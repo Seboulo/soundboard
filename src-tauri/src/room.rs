@@ -38,7 +38,9 @@ pub enum Msg {
         #[serde(default)]
         caps: u32,
     },
-    Bye { from: String },
+    Bye {
+        from: String,
+    },
     /// Joue ce son chez `to`.
     Play {
         from: String,
@@ -62,9 +64,17 @@ pub enum Msg {
         size: u64,
     },
     /// « Je n'ai pas ce son, envoie-le. »
-    Need { from: String, to: String, hash: String },
+    Need {
+        from: String,
+        to: String,
+        hash: String,
+    },
     /// « Arrête ce que je t'ai envoyé » (son et extrait) ; `to` vide : tout le salon.
-    Stop { from: String, #[serde(default)] to: String },
+    Stop {
+        from: String,
+        #[serde(default)]
+        to: String,
+    },
     /// Extrait à afficher sur l'écran de `to` (vide : tout le salon), en pièce jointe.
     Clip {
         from: String,
@@ -118,7 +128,12 @@ const RESUME_WITHIN: Duration = Duration::from_secs(120);
 impl Msg {
     pub fn from(&self) -> &str {
         match self {
-            Msg::Hi { from, .. } | Msg::Bye { from } | Msg::Play { from, .. } | Msg::Need { from, .. } | Msg::Clip { from, .. } | Msg::Stop { from, .. } => from,
+            Msg::Hi { from, .. }
+            | Msg::Bye { from }
+            | Msg::Play { from, .. }
+            | Msg::Need { from, .. }
+            | Msg::Clip { from, .. }
+            | Msg::Stop { from, .. } => from,
         }
     }
 }
@@ -167,7 +182,9 @@ impl Inner {
         let name: String = name.chars().take(32).collect();
         let old_caps = self.members.get(from).map(|m| m.2);
         let caps = caps.or(old_caps).unwrap_or(0);
-        self.members.insert(from.to_string(), (name, Instant::now(), caps)).is_none()
+        self.members
+            .insert(from.to_string(), (name, Instant::now(), caps))
+            .is_none()
     }
 }
 
@@ -189,14 +206,22 @@ pub fn topic_of(code: &str) -> String {
 }
 
 pub fn normalize_code(code: &str) -> String {
-    code.trim().to_uppercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect()
+    code.trim()
+        .to_uppercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect()
 }
 
 /// Nouveau code, facile à dicter : 12 lettres et chiffres sans ambiguïté.
 pub fn new_code() -> String {
     const A: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     let bytes = uuid::Uuid::new_v4().into_bytes();
-    let s: String = bytes.iter().take(12).map(|b| A[*b as usize % A.len()] as char).collect();
+    let s: String = bytes
+        .iter()
+        .take(12)
+        .map(|b| A[*b as usize % A.len()] as char)
+        .collect();
     format!("{}-{}-{}", &s[..4], &s[4..8], &s[8..])
 }
 
@@ -208,21 +233,42 @@ fn client(streaming: bool) -> Result<reqwest::Client, String> {
         .user_agent(concat!("Soundboard/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(15));
     // ntfy envoie un « keepalive » toutes les 45 s : au-delà, la connexion est morte.
-    let b = if streaming { b.read_timeout(Duration::from_secs(120)) } else { b.timeout(Duration::from_secs(60)) };
+    let b = if streaming {
+        b.read_timeout(Duration::from_secs(120))
+    } else {
+        b.timeout(Duration::from_secs(60))
+    };
     b.build().map_err(|e| e.to_string())
 }
 
 impl Room {
     pub fn status(&self) -> RoomStatus {
         let mut inner = self.inner.lock().unwrap();
-        inner.members.retain(|_, (_, seen, _)| seen.elapsed() < MEMBER_TTL);
-        let mut members: Vec<Member> =
-            inner.members.iter().map(|(id, (name, _, _))| Member { id: id.clone(), name: name.clone() }).collect();
+        inner
+            .members
+            .retain(|_, (_, seen, _)| seen.elapsed() < MEMBER_TTL);
+        let mut members: Vec<Member> = inner
+            .members
+            .iter()
+            .map(|(id, (name, _, _))| Member {
+                id: id.clone(),
+                name: name.clone(),
+            })
+            .collect();
         members.sort_by_key(|m| m.name.to_lowercase());
-        if inner.target.as_ref().is_some_and(|t| !inner.members.contains_key(t)) {
+        if inner
+            .target
+            .as_ref()
+            .is_some_and(|t| !inner.members.contains_key(t))
+        {
             inner.target = None;
         }
-        RoomStatus { on: !inner.topic.is_empty(), connected: inner.connected, members, target: inner.target.clone() }
+        RoomStatus {
+            on: !inner.topic.is_empty(),
+            connected: inner.connected,
+            members,
+            target: inner.target.clone(),
+        }
     }
 
     /// Le prochain extrait qu'on envoie nous revient aussi (pour tester),
@@ -247,7 +293,11 @@ impl Room {
         let inner = self.inner.lock().unwrap();
         let ok = |m: &(String, Instant, u32)| m.2 & caps == caps;
         if to.is_empty() {
-            inner.members.values().filter(|m| m.1.elapsed() < MEMBER_TTL).all(ok)
+            inner
+                .members
+                .values()
+                .filter(|m| m.1.elapsed() < MEMBER_TTL)
+                .all(ok)
         } else {
             inner.members.get(to).is_some_and(ok)
         }
@@ -284,7 +334,11 @@ impl Room {
             let mut inner = self.inner.lock().unwrap();
             let old = std::mem::take(&mut inner.topic);
             let old_id = inner.my_id.clone();
-            *inner = Inner { my_id: my_id.clone(), my_name: my_name.clone(), ..Default::default() };
+            *inner = Inner {
+                my_id: my_id.clone(),
+                my_name: my_name.clone(),
+                ..Default::default()
+            };
             if !normalize_code(code).is_empty() {
                 inner.topic = topic_of(code);
             }
@@ -293,7 +347,9 @@ impl Room {
         if !old_topic.0.is_empty() {
             let me = self.clone();
             tauri::async_runtime::spawn(async move {
-                let _ = me.publish_to(&old_topic.0, &Msg::Bye { from: old_topic.1 }).await;
+                let _ = me
+                    .publish_to(&old_topic.0, &Msg::Bye { from: old_topic.1 })
+                    .await;
             });
         }
         on_change();
@@ -323,10 +379,15 @@ impl Room {
     ) -> Result<(), String> {
         let (topic, since) = {
             let inner = self.inner.lock().unwrap();
-            let since = inner.last_msg.as_ref().filter(|(_, t)| t.elapsed() < RESUME_WITHIN).map(|(id, _)| id.clone());
+            let since = inner
+                .last_msg
+                .as_ref()
+                .filter(|(_, t)| t.elapsed() < RESUME_WITHIN)
+                .map(|(id, _)| id.clone());
             (inner.topic.clone(), since)
         };
-        let mut url = reqwest::Url::parse(&format!("{SERVER}/{topic}/json")).map_err(|e| e.to_string())?;
+        let mut url =
+            reqwest::Url::parse(&format!("{SERVER}/{topic}/json")).map_err(|e| e.to_string())?;
         if let Some(id) = since.filter(|id| id.chars().all(|c| c.is_ascii_alphanumeric())) {
             url.query_pairs_mut().append_pair("since", &id);
         }
@@ -363,14 +424,24 @@ impl Room {
                     self.receive(incoming, &*on_event, &*on_change).await;
                 }
             }
-            let stale = self.inner.lock().unwrap().last_hello.is_none_or(|t| t.elapsed() > HELLO_EVERY);
+            let stale = self
+                .inner
+                .lock()
+                .unwrap()
+                .last_hello
+                .is_none_or(|t| t.elapsed() > HELLO_EVERY);
             if stale {
                 self.hello(false).await;
             }
         }
     }
 
-    async fn receive(&self, incoming: Incoming, on_event: &impl Fn(Incoming), on_change: &impl Fn()) {
+    async fn receive(
+        &self,
+        incoming: Incoming,
+        on_event: &impl Fn(Incoming),
+        on_change: &impl Fn(),
+    ) {
         let me = self.my_id();
         if incoming.msg.from() == me {
             // Son propre extrait, envoyé « moi compris » : on le reçoit
@@ -385,7 +456,12 @@ impl Room {
             return;
         }
         match &incoming.msg {
-            Msg::Hi { from, name, reply, caps } => {
+            Msg::Hi {
+                from,
+                name,
+                reply,
+                caps,
+            } => {
                 let new = self.inner.lock().unwrap().seen(from, name, Some(*caps));
                 // Un nouveau venu ne connaît personne : on se présente.
                 if !reply && new {
@@ -417,7 +493,14 @@ impl Room {
             inner.last_hello = Some(Instant::now());
             (inner.my_id.clone(), inner.my_name.clone())
         };
-        let _ = self.publish(&Msg::Hi { from, name, reply, caps: MY_CAPS }).await;
+        let _ = self
+            .publish(&Msg::Hi {
+                from,
+                name,
+                reply,
+                caps: MY_CAPS,
+            })
+            .await;
     }
 
     pub async fn publish(&self, msg: &Msg) -> Result<(), String> {
@@ -461,18 +544,25 @@ impl Room {
         if let Some(url) = cached {
             match self.publish_attached(msg, &url, file_name).await {
                 Ok(()) => {
-                    crate::journal::write("Salon : fichier déjà sur le relais, renvoyé sans le réenvoyer");
+                    crate::journal::write(
+                        "Salon : fichier déjà sur le relais, renvoyé sans le réenvoyer",
+                    );
                     return Ok(());
                 }
                 Err(e) => {
-                    crate::journal::write(&format!("Salon : renvoi par adresse raté ({e}), envoi du fichier"));
+                    crate::journal::write(&format!(
+                        "Salon : renvoi par adresse raté ({e}), envoi du fichier"
+                    ));
                     self.uploads.lock().unwrap().remove(key);
                 }
             }
         }
         let url = self.publish_file(msg, file_name, data()?).await?;
         if let Some(url) = url {
-            self.uploads.lock().unwrap().insert(key.to_string(), (url, Instant::now()));
+            self.uploads
+                .lock()
+                .unwrap()
+                .insert(key.to_string(), (url, Instant::now()));
         }
         Ok(())
     }
@@ -487,8 +577,12 @@ impl Room {
             return Err("adresse non autorisée".into());
         }
         let body = serde_json::to_string(msg).map_err(|e| e.to_string())?;
-        let mut target = reqwest::Url::parse(&format!("{SERVER}/{topic}")).map_err(|e| e.to_string())?;
-        target.query_pairs_mut().append_pair("attach", url).append_pair("filename", file_name);
+        let mut target =
+            reqwest::Url::parse(&format!("{SERVER}/{topic}")).map_err(|e| e.to_string())?;
+        target
+            .query_pairs_mut()
+            .append_pair("attach", url)
+            .append_pair("filename", file_name);
         let res = client(false)?
             .post(target)
             .body(body)
@@ -503,14 +597,22 @@ impl Room {
 
     /// Envoie le fichier en pièce jointe, avec le message qui dit quoi en
     /// faire. Renvoie l'adresse du fichier sur le relais (pour le réutiliser).
-    async fn publish_file(&self, msg: &Msg, file_name: &str, data: Vec<u8>) -> Result<Option<String>, String> {
+    async fn publish_file(
+        &self,
+        msg: &Msg,
+        file_name: &str,
+        data: Vec<u8>,
+    ) -> Result<Option<String>, String> {
         let topic = self.inner.lock().unwrap().topic.clone();
         if topic.is_empty() {
             return Err("tu n'es dans aucun salon".into());
         }
         let body = serde_json::to_string(msg).map_err(|e| e.to_string())?;
-        let mut url = reqwest::Url::parse(&format!("{SERVER}/{topic}")).map_err(|e| e.to_string())?;
-        url.query_pairs_mut().append_pair("message", &body).append_pair("filename", file_name);
+        let mut url =
+            reqwest::Url::parse(&format!("{SERVER}/{topic}")).map_err(|e| e.to_string())?;
+        url.query_pairs_mut()
+            .append_pair("message", &body)
+            .append_pair("filename", file_name);
         // Un extrait de 14 Mo met plus d'une minute à partir avec une petite
         // connexion : on lui laisse 4 minutes.
         let res = client(false)?
@@ -561,7 +663,10 @@ fn parse_line(line: &str) -> Option<(String, Incoming)> {
         return None;
     }
     let msg: Msg = serde_json::from_str(&l.message).ok()?;
-    let attachment = l.attachment.map(|a| a.url).filter(|u| u.starts_with(SERVER));
+    let attachment = l
+        .attachment
+        .map(|a| a.url)
+        .filter(|u| u.starts_with(SERVER));
     Some((l.id, Incoming { msg, attachment }))
 }
 
@@ -570,7 +675,12 @@ pub async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     if !url.starts_with(SERVER) {
         return Err("adresse non autorisée".into());
     }
-    let mut res = client(false)?.get(url).timeout(FILE_TIMEOUT).send().await.map_err(|e| e.to_string())?;
+    let mut res = client(false)?
+        .get(url)
+        .timeout(FILE_TIMEOUT)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
     if !res.status().is_success() {
         return Err(format!("erreur {}", res.status().as_u16()));
     }
@@ -609,7 +719,11 @@ mod tests {
 
     #[test]
     fn ntfy_lines_are_parsed() {
-        let msg = Msg::Need { from: "a".into(), to: "b".into(), hash: "h".into() };
+        let msg = Msg::Need {
+            from: "a".into(),
+            to: "b".into(),
+            hash: "h".into(),
+        };
         let line = serde_json::json!({
             "id": "x", "time": 1, "event": "message", "topic": "t",
             "message": serde_json::to_string(&msg).unwrap(),
@@ -619,7 +733,10 @@ mod tests {
         let (id, got) = parse_line(&line).unwrap();
         assert_eq!(id, "x");
         assert_eq!(got.msg, msg);
-        assert_eq!(got.attachment.as_deref(), Some("https://ntfy.sh/file/abc.mp3"));
+        assert_eq!(
+            got.attachment.as_deref(),
+            Some("https://ntfy.sh/file/abc.mp3")
+        );
         assert!(parse_line(r#"{"event":"keepalive"}"#).is_none());
         assert!(parse_line(r#"{"event":"message","message":"bonjour"}"#).is_none());
         // Une pièce jointe hébergée ailleurs est ignorée.
@@ -644,10 +761,21 @@ mod tests {
         assert!(room.links_ok("new"));
         // Une 2.4 (lien sans passage seul) reçoit les vidéos longues en fichier.
         assert!(!room.cut_links_ok("new"));
-        room.inner.lock().unwrap().seen("new", "Léa", Some(CAP_LINK | CAP_CUT));
+        room.inner
+            .lock()
+            .unwrap()
+            .seen("new", "Léa", Some(CAP_LINK | CAP_CUT));
         assert!(room.cut_links_ok("new"));
         // Un ancien « Hi » (sans caps) se lit toujours.
         let hi: Msg = serde_json::from_str(r#"{"t":"hi","from":"a","name":"b"}"#).unwrap();
-        assert_eq!(hi, Msg::Hi { from: "a".into(), name: "b".into(), reply: false, caps: 0 });
+        assert_eq!(
+            hi,
+            Msg::Hi {
+                from: "a".into(),
+                name: "b".into(),
+                reply: false,
+                caps: 0
+            }
+        );
     }
 }

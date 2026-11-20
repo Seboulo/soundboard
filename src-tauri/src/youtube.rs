@@ -31,7 +31,10 @@ pub fn is_youtube(url: &str) -> bool {
     }
     let host = parsed.host_str().unwrap_or("").to_lowercase();
     let host = host.strip_prefix("www.").unwrap_or(&host);
-    matches!(host, "youtube.com" | "m.youtube.com" | "music.youtube.com" | "youtu.be")
+    matches!(
+        host,
+        "youtube.com" | "m.youtube.com" | "music.youtube.com" | "youtu.be"
+    )
 }
 
 fn client() -> Result<reqwest::Client, String> {
@@ -63,7 +66,8 @@ async fn fetch(url: &str, max: usize) -> Result<Vec<u8>, String> {
 pub fn expected_hash(sums: &str, file: &str) -> Option<String> {
     sums.lines().find_map(|line| {
         let (hash, name) = line.split_once(char::is_whitespace)?;
-        (name.trim().trim_start_matches('*') == file && hash.len() == 64).then(|| hash.to_lowercase())
+        (name.trim().trim_start_matches('*') == file && hash.len() == 64)
+            .then(|| hash.to_lowercase())
     })
 }
 
@@ -74,13 +78,16 @@ fn hex(bytes: &[u8]) -> String {
 /// Deno : depuis novembre 2025, yt-dlp a besoin d'un moteur JavaScript pour
 /// YouTube (sinon des formats manquent). Posé à côté de yt-dlp.exe, il est
 /// trouvé tout seul.
-const DENO_ZIP: &str = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip";
+const DENO_ZIP: &str =
+    "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip";
 const DENO_MAX: usize = 120 * 1024 * 1024;
 static DENO_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Empreinte du fichier « .sha256sum » de Deno (« Hash : ABCD… »).
 fn deno_hash(text: &str) -> Option<String> {
-    text.split(|c: char| !c.is_ascii_hexdigit()).find(|w| w.len() == 64).map(|h| h.to_lowercase())
+    text.split(|c: char| !c.is_ascii_hexdigit())
+        .find(|w| w.len() == 64)
+        .map(|h| h.to_lowercase())
 }
 
 /// Installe Deno à côté de yt-dlp, en arrière-plan (une seule fois) : la
@@ -105,7 +112,8 @@ fn ensure_deno(tools_dir: &Path) {
 
 async fn install_deno(dir: &Path) -> Result<(), String> {
     let sums = fetch(&format!("{DENO_ZIP}.sha256sum"), 4096).await?;
-    let expected = deno_hash(&String::from_utf8_lossy(&sums)).ok_or("empreinte de Deno introuvable")?;
+    let expected =
+        deno_hash(&String::from_utf8_lossy(&sums)).ok_or("empreinte de Deno introuvable")?;
     let data = fetch(DENO_ZIP, DENO_MAX).await?;
     if hex(&Sha256::digest(&data)) != expected {
         return Err("empreinte de Deno différente".into());
@@ -140,7 +148,11 @@ pub const FFMPEG_BLOCKED: &str = "Windows refuse de lancer l'outil vidéo ffmpeg
 
 fn ffmpeg_installed(tools_dir: &Path) -> Option<PathBuf> {
     let dir = tools_dir.join("ffmpeg");
-    let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    let exe = if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
     dir.join(exe).exists().then_some(dir)
 }
 
@@ -150,7 +162,11 @@ fn ffmpeg_starts(dir: &Path) -> bool {
     if let Some(ok) = *FFMPEG_WORKS.lock().unwrap() {
         return ok;
     }
-    let exe = dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
+    let exe = dir.join(if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    });
     let ok = command(&exe)
         .arg("-version")
         .stdin(std::process::Stdio::null())
@@ -177,13 +193,31 @@ const NORMALIZE_LONG_SIDE: u32 = 1280;
 /// seconde, index au début du fichier (`+faststart`), 720p au plus et débit
 /// plafonné (30 s tiennent dans le relais). Le passage choisi est coupé ici :
 /// chez le pote, la vidéo commence à 0, sans saut à faire.
-pub fn normalize_args(video: &Path, audio: Option<&Path>, start_s: f64, dur_s: f64, with_sound: bool, out: &Path) -> Vec<std::ffi::OsString> {
+pub fn normalize_args(
+    video: &Path,
+    audio: Option<&Path>,
+    start_s: f64,
+    dur_s: f64,
+    with_sound: bool,
+    out: &Path,
+) -> Vec<std::ffi::OsString> {
     let n = NORMALIZE_LONG_SIDE;
     let start = format!("{:.3}", start_s.max(0.0));
     let dur = format!("{:.3}", dur_s.clamp(0.5, 30.0));
     let mut a: Vec<std::ffi::OsString> = Vec::new();
     let mut push = |x: &str| a.push(x.into());
-    for x in ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-ss", &start, "-t", &dur, "-i"] {
+    for x in [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-y",
+        "-ss",
+        &start,
+        "-t",
+        &dur,
+        "-i",
+    ] {
         push(x);
     }
     a.push(video.into());
@@ -194,7 +228,9 @@ pub fn normalize_args(video: &Path, audio: Option<&Path>, start_s: f64, dur_s: f
         }
         a.push(s.into());
     }
-    let scale = format!("scale=w='if(gt(iw\\,ih)\\,min({n}\\,iw)\\,-2)':h='if(gt(iw\\,ih)\\,-2\\,min({n}\\,ih))'");
+    let scale = format!(
+        "scale=w='if(gt(iw\\,ih)\\,min({n}\\,iw)\\,-2)':h='if(gt(iw\\,ih)\\,-2\\,min({n}\\,ih))'"
+    );
     let mut push = |x: &str| a.push(x.into());
     push("-map");
     push("0:v:0");
@@ -203,8 +239,22 @@ pub fn normalize_args(video: &Path, audio: Option<&Path>, start_s: f64, dur_s: f
         push(if sidecar.is_some() { "1:a:0" } else { "0:a:0?" });
     }
     for x in [
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-maxrate", "2M", "-bufsize", "4M", "-pix_fmt", "yuv420p", "-vf", &scale,
-        "-force_key_frames", "expr:gte(t,n_forced*1)",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-maxrate",
+        "2M",
+        "-bufsize",
+        "4M",
+        "-pix_fmt",
+        "yuv420p",
+        "-vf",
+        &scale,
+        "-force_key_frames",
+        "expr:gte(t,n_forced*1)",
     ] {
         push(x);
     }
@@ -224,11 +274,25 @@ pub fn normalize_args(video: &Path, audio: Option<&Path>, start_s: f64, dur_s: f
 
 /// Convertit le passage d'une vidéo en extrait « propre » (voir
 /// `normalize_args`) dans `out`.
-pub fn normalize_clip(ffmpeg_dir: &Path, video: &Path, audio: Option<&Path>, start_s: f64, dur_s: f64, with_sound: bool, out: &Path) -> Result<(), String> {
-    let exe = ffmpeg_dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
+pub fn normalize_clip(
+    ffmpeg_dir: &Path,
+    video: &Path,
+    audio: Option<&Path>,
+    start_s: f64,
+    dur_s: f64,
+    with_sound: bool,
+    out: &Path,
+) -> Result<(), String> {
+    let exe = ffmpeg_dir.join(if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    });
     let _ = fs::remove_file(out);
     let res = command(&exe)
-        .args(normalize_args(video, audio, start_s, dur_s, with_sound, out))
+        .args(normalize_args(
+            video, audio, start_s, dur_s, with_sound, out,
+        ))
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| format!("ffmpeg ne démarre pas ({e})"))?;
@@ -236,7 +300,11 @@ pub fn normalize_clip(ffmpeg_dir: &Path, video: &Path, audio: Option<&Path>, sta
     let size = fs::metadata(out).map(|m| m.len()).unwrap_or(0);
     if !res.status.success() || size < 2048 {
         let _ = fs::remove_file(out);
-        let why = String::from_utf8_lossy(&res.stderr).lines().last().unwrap_or("").to_string();
+        let why = String::from_utf8_lossy(&res.stderr)
+            .lines()
+            .last()
+            .unwrap_or("")
+            .to_string();
         return Err(format!("conversion impossible ({why})"));
     }
     Ok(())
@@ -251,7 +319,10 @@ pub async fn ensure_ffmpeg(tools_dir: &Path, on_status: impl Fn(&str)) -> Result
     // abîmé). S'il ne démarre toujours pas, Windows le bloque : inutile
     // d'insister.
     let blocked_before = ffmpeg_installed(tools_dir).is_some_and(|d| d.join(BLOCKED_MARK).exists());
-    if blocked_before || ffmpeg_installed(tools_dir).is_some() && FFMPEG_RETRIED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+    if blocked_before
+        || ffmpeg_installed(tools_dir).is_some()
+            && FFMPEG_RETRIED.swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
         return Err(FFMPEG_BLOCKED.into());
     }
     if !cfg!(windows) {
@@ -264,7 +335,8 @@ pub async fn ensure_ffmpeg(tools_dir: &Path, on_status: impl Fn(&str)) -> Result
         return Ok(dir);
     }
     let sums = fetch(&format!("{FFMPEG_BASE}checksums.sha256"), 64 * 1024).await?;
-    let expected = expected_hash(&String::from_utf8_lossy(&sums), FFMPEG_ZIP).ok_or("empreinte de ffmpeg introuvable")?;
+    let expected = expected_hash(&String::from_utf8_lossy(&sums), FFMPEG_ZIP)
+        .ok_or("empreinte de ffmpeg introuvable")?;
     let data = fetch(&format!("{FFMPEG_BASE}{FFMPEG_ZIP}"), FFMPEG_MAX).await?;
     let dir = tools_dir.to_path_buf();
     let res = tauri::async_runtime::spawn_blocking(move || unpack_ffmpeg(&data, &expected, &dir))
@@ -300,8 +372,11 @@ fn unpack_ffmpeg(data: &[u8], expected: &str, tools_dir: &Path) -> Result<(), St
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
         let name = entry.name().replace('\\', "/");
-        let Some((folder, file)) = name.rsplit_once('/') else { continue };
-        let wanted = file == "ffmpeg.exe" || file == "ffprobe.exe" || file.to_lowercase().ends_with(".dll");
+        let Some((folder, file)) = name.rsplit_once('/') else {
+            continue;
+        };
+        let wanted =
+            file == "ffmpeg.exe" || file == "ffprobe.exe" || file.to_lowercase().ends_with(".dll");
         if !folder.ends_with("bin") || !wanted || file.contains("..") {
             continue;
         }
@@ -374,7 +449,11 @@ fn command(exe: &Path) -> Command {
 pub fn explain(line: &str) -> Option<String> {
     let l = line.to_lowercase();
     let says = |keys: &[&str]| keys.iter().any(|k| l.contains(k));
-    let why = if says(&["confirm your age", "age-restricted", "inappropriate for some users"]) {
+    let why = if says(&[
+        "confirm your age",
+        "age-restricted",
+        "inappropriate for some users",
+    ]) {
         "vidéo réservée aux adultes : YouTube demande d'être connecté, elle ne peut pas être récupérée"
     } else if says(&["not a bot", "sign in to confirm"]) {
         "YouTube bloque les récupérations depuis ta connexion pour le moment : réessaie dans quelques minutes"
@@ -382,19 +461,43 @@ pub fn explain(line: &str) -> Option<String> {
         "vidéo privée : seul son auteur peut la voir"
     } else if says(&["members-only", "join this channel", "members only"]) {
         "vidéo réservée aux membres de la chaîne"
-    } else if says(&["not available in your country", "blocked it in your country", "geo restrict", "geo-restrict"]) {
+    } else if says(&[
+        "not available in your country",
+        "blocked it in your country",
+        "geo restrict",
+        "geo-restrict",
+    ]) {
         "vidéo bloquée dans ton pays"
     } else if says(&["is live", "live event", "premieres in", "this live"]) {
         "c'est un direct (ou une première pas encore diffusée) : prends une vidéo déjà publiée"
-    } else if says(&["video unavailable", "has been removed", "no longer available", "account associated", "terminated"]) {
+    } else if says(&[
+        "video unavailable",
+        "has been removed",
+        "no longer available",
+        "account associated",
+        "terminated",
+    ]) {
         "vidéo supprimée ou indisponible"
     } else if says(&["copyright"]) {
         "vidéo retirée pour droits d'auteur"
-    } else if says(&["login required", "log in", "logged-in", "requires authentication", "rate-limit reached", "cookies"]) {
+    } else if says(&[
+        "login required",
+        "log in",
+        "logged-in",
+        "requires authentication",
+        "rate-limit reached",
+        "cookies",
+    ]) {
         "ce site demande d'être connecté pour cette vidéo (Instagram, Facebook…) : essaie un autre lien"
     } else if says(&["unsupported url"]) {
         "ce site n'est pas pris en charge"
-    } else if says(&["unable to download webpage", "getaddrinfo", "timed out", "connection", "network is unreachable"]) {
+    } else if says(&[
+        "unable to download webpage",
+        "getaddrinfo",
+        "timed out",
+        "connection",
+        "network is unreachable",
+    ]) {
         "vidéo injoignable, vérifie le lien et ta connexion"
     } else if says(&["http error 404", "not found"]) {
         "lien introuvable : vérifie qu'il est complet"
@@ -451,10 +554,17 @@ pub fn download_audio(exe: &Path, url: &str, work_dir: &Path) -> Result<(Vec<u8>
         .map_err(|e| format!("yt-dlp n'a pas pu démarrer : {e}"))?;
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
-        let line = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("erreur inconnue");
+        let line = err
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("erreur inconnue");
         let line = line.trim().trim_start_matches("ERROR: ");
         if line.contains("does not pass filter") {
-            return Err(format!("vidéo ignorée : plus de {} minutes", MAX_DURATION_S / 60));
+            return Err(format!(
+                "vidéo ignorée : plus de {} minutes",
+                MAX_DURATION_S / 60
+            ));
         }
         if let Some(why) = explain(line) {
             return Err(why);
@@ -467,13 +577,28 @@ pub fn download_audio(exe: &Path, url: &str, work_dir: &Path) -> Result<(Vec<u8>
         .filter_map(|e| e.ok().map(|e| e.path()))
         .find(|p| p.extension().is_some_and(|e| e == "m4a" || e == "mp4"))
         .ok_or_else(|| {
-            format!("vidéo ignorée : pas de piste audio compatible, ou plus de {} minutes", MAX_DURATION_S / 60)
+            format!(
+                "vidéo ignorée : pas de piste audio compatible, ou plus de {} minutes",
+                MAX_DURATION_S / 60
+            )
         })?;
-    let title = String::from_utf8_lossy(&output.stdout).lines().next().unwrap_or("").trim().to_string();
+    let title = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let data = fs::read(&file).map_err(|e| e.to_string())?;
     let _ = fs::remove_dir_all(work_dir);
     let title: String = title.chars().take(60).collect();
-    Ok((data, if title.is_empty() { "Son YouTube".into() } else { title }))
+    Ok((
+        data,
+        if title.is_empty() {
+            "Son YouTube".into()
+        } else {
+            title
+        },
+    ))
 }
 
 /// Vrai pour un lien web qu'on peut donner à yt-dlp (YouTube, TikTok, X…).
@@ -481,17 +606,32 @@ pub fn download_audio(exe: &Path, url: &str, work_dir: &Path) -> Result<(Vec<u8>
 /// télécharge que depuis ces sites connus (jamais une adresse de son réseau).
 pub fn is_shareable_link(url: &str) -> bool {
     const SITES: [&str; 12] = [
-        "youtube.com", "youtu.be", "tiktok.com", "x.com", "twitter.com", "reddit.com",
-        "redd.it", "instagram.com", "twitch.tv", "streamable.com", "dailymotion.com", "vimeo.com",
+        "youtube.com",
+        "youtu.be",
+        "tiktok.com",
+        "x.com",
+        "twitter.com",
+        "reddit.com",
+        "redd.it",
+        "instagram.com",
+        "twitch.tv",
+        "streamable.com",
+        "dailymotion.com",
+        "vimeo.com",
     ];
     reqwest::Url::parse(url.trim()).is_ok_and(|u| {
         u.scheme() == "https"
-            && u.host_str().is_some_and(|h| SITES.iter().any(|s| h == *s || h.ends_with(&format!(".{s}"))))
+            && u.host_str().is_some_and(|h| {
+                SITES
+                    .iter()
+                    .any(|s| h == *s || h.ends_with(&format!(".{s}")))
+            })
     })
 }
 
 pub fn is_web_link(url: &str) -> bool {
-    reqwest::Url::parse(url.trim()).is_ok_and(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
+    reqwest::Url::parse(url.trim())
+        .is_ok_and(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
 }
 
 /// Une vidéo récupérée pour un extrait : le fichier vidéo, et à part la
@@ -529,7 +669,13 @@ pub fn update_in_background(exe: &Path) {
 
 /// Pourcentage d'une ligne de progression (« SBPCT  42.3% »).
 fn progress_of(line: &str) -> Option<f32> {
-    line.trim().strip_prefix("SBPCT")?.trim().trim_end_matches('%').trim().parse().ok()
+    line.trim()
+        .strip_prefix("SBPCT")?
+        .trim()
+        .trim_end_matches('%')
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// Vidéo entière trop lourde : on peut alors n'en récupérer qu'un passage.
@@ -553,7 +699,13 @@ enum Fetch<'a> {
 /// Avec `cut` (début en secondes, dossier de ffmpeg), seul le passage de
 /// `CUT_WINDOW_S` secondes est récupéré ; le fichier commence alors à 0.
 /// `on_progress` reçoit l'avancement (0 à 100) de chaque fichier.
-pub fn download_video(exe: &Path, url: &str, work_dir: &Path, cut: Option<(f64, &Path)>, on_progress: impl Fn(f32)) -> Result<WebVideo, String> {
+pub fn download_video(
+    exe: &Path,
+    url: &str,
+    work_dir: &Path,
+    cut: Option<(f64, &Path)>,
+    on_progress: impl Fn(f32),
+) -> Result<WebVideo, String> {
     if !is_web_link(url) {
         return Err("colle un lien qui commence par https://".into());
     }
@@ -583,25 +735,49 @@ pub fn download_video(exe: &Path, url: &str, work_dir: &Path, cut: Option<(f64, 
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| !p.to_string_lossy().ends_with(".part"))
         .collect();
-    let ext_is = |p: &PathBuf, exts: &[&str]| p.extension().and_then(|e| e.to_str()).is_some_and(|e| exts.contains(&e));
-    let audio = files.iter().find(|p| ext_is(p, &["m4a", "mp3", "aac"])).cloned();
+    let ext_is = |p: &PathBuf, exts: &[&str]| {
+        p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| exts.contains(&e))
+    };
+    let audio = files
+        .iter()
+        .find(|p| ext_is(p, &["m4a", "mp3", "aac"]))
+        .cloned();
     let video = files
         .iter()
         .find(|p| ext_is(p, &["mp4", "webm"]))
         .cloned()
         .ok_or(TOO_BIG)?;
-    Ok(WebVideo { video, audio, title: title.chars().take(60).collect() })
+    Ok(WebVideo {
+        video,
+        audio,
+        title: title.chars().take(60).collect(),
+    })
 }
 
 /// Lance yt-dlp pour `download_video` ; renvoie le titre, ou la dernière
 /// ligne d'erreur.
-fn run_video(exe: &Path, url: &str, work_dir: &Path, how: Fetch, on_progress: &impl Fn(f32)) -> Result<String, String> {
+fn run_video(
+    exe: &Path,
+    url: &str,
+    work_dir: &Path,
+    how: Fetch,
+    on_progress: &impl Fn(f32),
+) -> Result<String, String> {
     use std::io::{BufRead, BufReader, Read};
     use std::process::Stdio;
     let _ = fs::remove_dir_all(work_dir);
     fs::create_dir_all(work_dir).map_err(|e| e.to_string())?;
     let mut cmd = command(exe);
-    cmd.args(["--no-playlist", "--no-warnings", "--quiet", "--no-simulate", "--print", "title"]);
+    cmd.args([
+        "--no-playlist",
+        "--no-warnings",
+        "--quiet",
+        "--no-simulate",
+        "--print",
+        "title",
+    ]);
     if !matches!(how, Fetch::Simple) {
         cmd.args([
             // Avancement, une ligne par étape, sur la sortie standard.
@@ -621,12 +797,16 @@ fn run_video(exe: &Path, url: &str, work_dir: &Path, how: Fetch, on_progress: &i
             let start = start.max(0.0);
             cmd.arg("--ffmpeg-location")
                 .arg(ffmpeg)
-                .args(["--download-sections", &format!("*{start:.1}-{:.1}", start + CUT_WINDOW_S)])
+                .args([
+                    "--download-sections",
+                    &format!("*{start:.1}-{:.1}", start + CUT_WINDOW_S),
+                ])
                 .args(["-f", CUT_FORMATS, "--merge-output-format", "mp4", "-o"])
                 .arg(work_dir.join("video.%(ext)s"));
         }
         _ => {
-            cmd.args(["-f", VIDEO_FORMATS, "--max-filesize", "8M", "-o"]).arg(work_dir.join("video.%(format_id)s.%(ext)s"));
+            cmd.args(["-f", VIDEO_FORMATS, "--max-filesize", "8M", "-o"])
+                .arg(work_dir.join("video.%(format_id)s.%(ext)s"));
         }
     }
     let mut child = cmd
@@ -649,7 +829,9 @@ fn run_video(exe: &Path, url: &str, work_dir: &Path, how: Fetch, on_progress: &i
         for line in BufReader::new(out).lines().map_while(Result::ok) {
             match progress_of(&line) {
                 Some(p) => on_progress(p),
-                None if title.is_empty() && !line.trim().is_empty() => title = line.trim().to_string(),
+                None if title.is_empty() && !line.trim().is_empty() => {
+                    title = line.trim().to_string()
+                }
                 None => {}
             }
         }
@@ -657,7 +839,11 @@ fn run_video(exe: &Path, url: &str, work_dir: &Path, how: Fetch, on_progress: &i
     let status = child.wait().map_err(|e| e.to_string())?;
     let err = err_reader.join().unwrap_or_default();
     if !status.success() {
-        let line = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("erreur inconnue");
+        let line = err
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("erreur inconnue");
         return Err(line.trim().trim_start_matches("ERROR: ").to_string());
     }
     Ok(title)
@@ -681,7 +867,11 @@ pub fn parse_found(out: &str) -> Vec<Found> {
             let id = it.next()?.trim();
             let dur = it.next()?.trim();
             let title = it.next()?.trim();
-            if id.len() != 11 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            if id.len() != 11
+                || !id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
                 return None;
             }
             Some(Found {
@@ -697,14 +887,25 @@ pub fn parse_found(out: &str) -> Vec<Found> {
 /// Cherche des vidéos YouTube par mots-clés (sans rien télécharger) :
 /// `count` résultats à partir du n° `start` (1 pour la première page).
 pub fn search(exe: &Path, query: &str, start: u32, count: u32) -> Result<Vec<Found>, String> {
-    let q: String = query.trim().chars().filter(|c| !c.is_control()).take(100).collect();
+    let q: String = query
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(100)
+        .collect();
     if q.is_empty() {
         return Err("tape quelques mots".into());
     }
     let start = start.clamp(1, 100);
     let end = start + count.clamp(1, 24) - 1;
     let output = command(exe)
-        .args(["--flat-playlist", "--no-warnings", "--ignore-errors", "--print", "%(id)s\t%(duration)s\t%(title)s"])
+        .args([
+            "--flat-playlist",
+            "--no-warnings",
+            "--ignore-errors",
+            "--print",
+            "%(id)s\t%(duration)s\t%(title)s",
+        ])
         .arg("-I")
         .arg(format!("{start}:{end}"))
         .arg("--")
@@ -726,14 +927,41 @@ mod tests {
     /// bien un MP4 H.264 + AAC, à la bonne taille et coupé au passage.
     #[test]
     fn normalized_clip_is_h264_aac_720p() {
-        let Some(bin) = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"].into_iter().map(Path::new).find(|p| p.exists()) else { return };
+        let Some(bin) = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"]
+            .into_iter()
+            .map(Path::new)
+            .find(|p| p.exists())
+        else {
+            return;
+        };
         let ff = bin.parent().unwrap();
         let dir = std::env::temp_dir().join(format!("sb-norm-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let src = dir.join("haute.webm");
         let ok = Command::new(bin)
-            .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=1080x1920:rate=30", "-f", "lavfi", "-i", "sine=frequency=440"])
-            .args(["-t", "8", "-c:v", "libvpx-vp9", "-deadline", "realtime", "-c:a", "libopus"])
+            .args([
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=1080x1920:rate=30",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440",
+            ])
+            .args([
+                "-t",
+                "8",
+                "-c:v",
+                "libvpx-vp9",
+                "-deadline",
+                "realtime",
+                "-c:a",
+                "libopus",
+            ])
             .arg(&src)
             .status()
             .unwrap();
@@ -741,14 +969,34 @@ mod tests {
         let out = dir.join("pret.mp4");
         normalize_clip(ff, &src, None, 2.0, 4.0, true, &out).unwrap();
         let probe = Command::new(ff.join("ffprobe"))
-            .args(["-v", "error", "-show_entries", "stream=codec_name,width,height,pix_fmt:format=duration", "-of", "default=nw=1"])
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_name,width,height,pix_fmt:format=duration",
+                "-of",
+                "default=nw=1",
+            ])
             .arg(&out)
             .output()
             .unwrap();
         let info = String::from_utf8_lossy(&probe.stdout).to_string();
-        assert!(info.contains("codec_name=h264") && info.contains("codec_name=aac"), "{info}");
-        assert!(info.contains("width=720") && info.contains("height=1280") && info.contains("pix_fmt=yuv420p"), "{info}");
-        let d: f64 = info.lines().find_map(|l| l.strip_prefix("duration=")).unwrap().parse().unwrap();
+        assert!(
+            info.contains("codec_name=h264") && info.contains("codec_name=aac"),
+            "{info}"
+        );
+        assert!(
+            info.contains("width=720")
+                && info.contains("height=1280")
+                && info.contains("pix_fmt=yuv420p"),
+            "{info}"
+        );
+        let d: f64 = info
+            .lines()
+            .find_map(|l| l.strip_prefix("duration="))
+            .unwrap()
+            .parse()
+            .unwrap();
         assert!((d - 4.0).abs() < 0.2, "{d}");
         // Début après la fin : erreur claire, pas de fichier vide.
         assert!(normalize_clip(ff, &src, None, 20.0, 4.0, true, &out).is_err());
@@ -779,7 +1027,10 @@ mod tests {
     #[test]
     fn reads_deno_hash() {
         let text = "\r\nAlgorithm : SHA256\r\nHash      : CBA84B26E0DF5AE7F74FC66B86A95B866872A86292EBD84FA1E959927EDD93BF\r\nPath      : C:\\a\\deno.zip\r\n";
-        assert_eq!(deno_hash(text).as_deref(), Some("cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf"));
+        assert_eq!(
+            deno_hash(text).as_deref(),
+            Some("cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf")
+        );
     }
 
     #[test]
@@ -797,7 +1048,13 @@ mod tests {
             let mut z = zip::ZipWriter::new(&mut buf);
             let o = zip::write::SimpleFileOptions::default();
             z.add_directory("ff/bin/", o).unwrap();
-            for (name, data) in [("ff/bin/ffmpeg.exe", "a"), ("ff/bin/ffprobe.exe", "b"), ("ff/bin/avcodec-63.dll", "c"), ("ff/bin/ffplay.exe", "d"), ("ff/doc/x.dll", "e")] {
+            for (name, data) in [
+                ("ff/bin/ffmpeg.exe", "a"),
+                ("ff/bin/ffprobe.exe", "b"),
+                ("ff/bin/avcodec-63.dll", "c"),
+                ("ff/bin/ffplay.exe", "d"),
+                ("ff/doc/x.dll", "e"),
+            ] {
                 z.start_file(name, o).unwrap();
                 z.write_all(data.as_bytes()).unwrap();
             }
@@ -808,7 +1065,10 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         assert!(unpack_ffmpeg(&data, "bad", &dir).is_err());
         unpack_ffmpeg(&data, &hex(&Sha256::digest(&data)), &dir).unwrap();
-        let mut got: Vec<_> = fs::read_dir(dir.join("ffmpeg")).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        let mut got: Vec<_> = fs::read_dir(dir.join("ffmpeg"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
         got.sort();
         assert_eq!(got, ["avcodec-63.dll", "ffmpeg.exe", "ffprobe.exe"]);
         assert!(!dir.join("ffmpeg.download").exists());
@@ -818,9 +1078,19 @@ mod tests {
     #[test]
     fn explains_known_refusals() {
         assert!(explain("ERROR: [youtube] x: Sign in to confirm your age. This video may be inappropriate for some users.").unwrap().contains("adultes"));
-        assert!(explain("ERROR: [youtube] x: Sign in to confirm you're not a bot").unwrap().contains("bloque"));
-        assert!(explain("ERROR: [youtube] x: Private video. Sign in if you've been granted access").unwrap().contains("privée"));
-        assert!(explain("ERROR: [youtube] x: Video unavailable").unwrap().contains("supprimée"));
+        assert!(
+            explain("ERROR: [youtube] x: Sign in to confirm you're not a bot")
+                .unwrap()
+                .contains("bloque")
+        );
+        assert!(explain(
+            "ERROR: [youtube] x: Private video. Sign in if you've been granted access"
+        )
+        .unwrap()
+        .contains("privée"));
+        assert!(explain("ERROR: [youtube] x: Video unavailable")
+            .unwrap()
+            .contains("supprimée"));
         assert!(explain("[Errno 22] Invalid argument").is_none());
     }
 
@@ -830,7 +1100,10 @@ mod tests {
         let f = parse_found(out);
         assert_eq!(f.len(), 2);
         assert_eq!(f[0].url, "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
-        assert_eq!(f[0].thumb, "https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg");
+        assert_eq!(
+            f[0].thumb,
+            "https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg"
+        );
         assert_eq!(f[0].duration_s, Some(212));
         assert_eq!(f[1].duration_s, None);
         assert_eq!(f[1].title, "Sans durée");

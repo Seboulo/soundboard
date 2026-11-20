@@ -18,7 +18,8 @@ pub fn write(dest: &Path, config: &Config) -> Result<usize, String> {
     let file = fs::File::create(dest).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipWriter::new(file);
     // Les sons sont déjà compressés (mp3, ogg…) : on les range tels quels.
-    let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     let mut saved = config.clone();
     let mut count = 0;
     // Un même fichier (image animée = image fixe) n'est rangé qu'une fois,
@@ -31,15 +32,20 @@ pub fn write(dest: &Path, config: &Config) -> Result<usize, String> {
             *path = entry.clone();
             return Ok(true);
         }
-        let Some(name) = path.file_name().and_then(|n| n.to_str()).map(String::from) else { return Ok(false) };
-        let Ok(data) = fs::read(&*path) else { return Ok(false) };
+        let Some(name) = path.file_name().and_then(|n| n.to_str()).map(String::from) else {
+            return Ok(false);
+        };
+        let Ok(data) = fs::read(&*path) else {
+            return Ok(false);
+        };
         let mut entry = format!("{folder}/{name}");
         let mut n = 2;
         while names.contains(&entry) {
             entry = format!("{folder}/{n}-{name}");
             n += 1;
         }
-        zip.start_file(entry.as_str(), options).map_err(|e| e.to_string())?;
+        zip.start_file(entry.as_str(), options)
+            .map_err(|e| e.to_string())?;
         zip.write_all(&data).map_err(|e| e.to_string())?;
         names.insert(entry.clone());
         stored.insert(path.clone(), PathBuf::from(&entry));
@@ -58,7 +64,8 @@ pub fn write(dest: &Path, config: &Config) -> Result<usize, String> {
             }
         }
     }
-    zip.start_file(CONFIG_ENTRY, options).map_err(|e| e.to_string())?;
+    zip.start_file(CONFIG_ENTRY, options)
+        .map_err(|e| e.to_string())?;
     let json = serde_json::to_vec_pretty(&saved).map_err(|e| e.to_string())?;
     zip.write_all(&json).map_err(|e| e.to_string())?;
     zip.finish().map_err(|e| e.to_string())?;
@@ -69,13 +76,18 @@ pub fn write(dest: &Path, config: &Config) -> Result<usize, String> {
 /// renvoie la config avec des chemins absolus.
 pub fn read(src: &Path, sounds_dir: &Path, images_dir: &Path) -> Result<Config, String> {
     let file = fs::File::open(src).map_err(|e| e.to_string())?;
-    let mut zip = zip::ZipArchive::new(file).map_err(|_| "ce fichier n'est pas une sauvegarde de la soundboard".to_string())?;
+    let mut zip = zip::ZipArchive::new(file)
+        .map_err(|_| "ce fichier n'est pas une sauvegarde de la soundboard".to_string())?;
     let mut config: Config = {
         let mut entry = zip
             .by_name(CONFIG_ENTRY)
             .map_err(|_| "ce fichier n'est pas une sauvegarde de la soundboard (c'est peut-être un pack de sons : utilise « Importer un pack »)".to_string())?;
         let mut text = String::new();
-        entry.by_ref().take(MAX_CONFIG).read_to_string(&mut text).map_err(|e| e.to_string())?;
+        entry
+            .by_ref()
+            .take(MAX_CONFIG)
+            .read_to_string(&mut text)
+            .map_err(|e| e.to_string())?;
         serde_json::from_str(&text).map_err(|e| format!("sauvegarde illisible : {e}"))?
     };
     fs::create_dir_all(sounds_dir).map_err(|e| e.to_string())?;
@@ -116,7 +128,9 @@ pub fn read(src: &Path, sounds_dir: &Path, images_dir: &Path) -> Result<Config, 
     };
     let mut kept = Vec::new();
     for mut sound in std::mem::take(&mut config.sounds) {
-        let Some(path) = extract(&sound.path, sounds_dir) else { continue };
+        let Some(path) = extract(&sound.path, sounds_dir) else {
+            continue;
+        };
         sound.path = path;
         for img in [&mut sound.image, &mut sound.image_still] {
             *img = img.as_deref().and_then(|p| extract(p, images_dir));
@@ -129,11 +143,17 @@ pub fn read(src: &Path, sounds_dir: &Path, images_dir: &Path) -> Result<Config, 
 
 /// Même contenu qu'un fichier déjà sur le disque ?
 fn same_content(mut entry: impl Read, path: &Path) -> bool {
-    let Ok(mut file) = fs::File::open(path) else { return false };
+    let Ok(mut file) = fs::File::open(path) else {
+        return false;
+    };
     let (mut a, mut b) = (vec![0u8; 64 * 1024], vec![0u8; 64 * 1024]);
     loop {
-        let Ok(n) = read_full(&mut entry, &mut a) else { return false };
-        let Ok(m) = read_full(&mut file, &mut b) else { return false };
+        let Ok(n) = read_full(&mut entry, &mut a) else {
+            return false;
+        };
+        let Ok(m) = read_full(&mut file, &mut b) else {
+            return false;
+        };
         if n != m || a[..n] != b[..m] {
             return false;
         }
