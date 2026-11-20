@@ -356,6 +356,12 @@ impl Room {
                 }
                 let text = String::from_utf8_lossy(&line).into_owned();
                 line.clear();
+                // Salon quitté ou changé entre-temps : plus rien de l'ancien
+                // n'est joué (sinon un pote de l'ancien salon pouvait encore
+                // lancer des sons jusqu'au prochain « keepalive », 45 s).
+                if self.gen.load(Ordering::SeqCst) != gen {
+                    return Ok(());
+                }
                 if let Some((id, incoming)) = parse_line(&text) {
                     if !id.is_empty() {
                         self.inner.lock().unwrap().last_msg = Some((id, Instant::now()));
@@ -483,7 +489,7 @@ impl Room {
         if topic.is_empty() {
             return Err("tu n'es dans aucun salon".into());
         }
-        if !url.starts_with(SERVER) {
+        if !from_relay(url) {
             return Err("adresse non autorisée".into());
         }
         let body = serde_json::to_string(msg).map_err(|e| e.to_string())?;
@@ -531,7 +537,7 @@ impl Room {
                     url: String,
                 }
                 let sent: Option<Sent> = res.bytes().await.ok().and_then(|b| serde_json::from_slice(&b).ok());
-                Ok(sent.and_then(|s| s.attachment).map(|a| a.url).filter(|u| u.starts_with(SERVER)))
+                Ok(sent.and_then(|s| s.attachment).map(|a| a.url).filter(|u| from_relay(u)))
             }
             413 => Err("le relais refuse ce fichier : trop lourd, ou limite d'envois atteinte (environ 100 Mo toutes les 3 h). Réessaie plus tard, ou envoie un passage plus court ou une image".into()),
             429 => Err("trop d'envois d'un coup pour le relais : réessaie dans quelques minutes".into()),
@@ -561,13 +567,19 @@ fn parse_line(line: &str) -> Option<(String, Incoming)> {
         return None;
     }
     let msg: Msg = serde_json::from_str(&l.message).ok()?;
-    let attachment = l.attachment.map(|a| a.url).filter(|u| u.starts_with(SERVER));
+    let attachment = l.attachment.map(|a| a.url).filter(|u| from_relay(u));
     Some((l.id, Incoming { msg, attachment }))
+}
+
+/// Adresse sur le relais lui-même (« https://ntfy.sh/… ») : pas
+/// « https://ntfy.sh.autre-site.com/… », qui commence pareil.
+fn from_relay(url: &str) -> bool {
+    url.strip_prefix(SERVER).is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// Télécharge une pièce jointe (taille limitée).
 pub async fn fetch(url: &str) -> Result<Vec<u8>, String> {
-    if !url.starts_with(SERVER) {
+    if !from_relay(url) {
         return Err("adresse non autorisée".into());
     }
     let mut res = client(false)?.get(url).timeout(FILE_TIMEOUT).send().await.map_err(|e| e.to_string())?;
@@ -605,6 +617,14 @@ mod tests {
         assert_eq!(c.len(), 14);
         assert_eq!(normalize_code(&c).len(), 12);
         assert!(!c.contains('O') && !c.contains('0') && !c.contains('I') && !c.contains('1'));
+    }
+
+    #[test]
+    fn only_the_relay_itself_is_trusted() {
+        assert!(from_relay("https://ntfy.sh/file/abc.mp3"));
+        assert!(!from_relay("https://ntfy.sh.example.com/file/abc.mp3"));
+        assert!(!from_relay("https://ntfy.sh@example.com/x"));
+        assert!(!from_relay("https://ntfy.sh"));
     }
 
     #[test]
