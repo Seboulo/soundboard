@@ -21,6 +21,7 @@ mod room;
 mod share;
 mod tts;
 mod clip;
+mod keyhook;
 mod winpos;
 
 use audio::{AudioEvent, AudioHandle, DeviceList, PlayOutcome, PlayRequest};
@@ -563,6 +564,7 @@ fn register_hotkeys(app: &AppHandle) {
     }
 
     let mut map = HashMap::new();
+    let mut bindings = Vec::new();
     let mut errors = Vec::new();
     for (hotkey, action, label) in entries {
         let shortcut = match Shortcut::from_str(&hotkey) {
@@ -579,17 +581,24 @@ fn register_hotkeys(app: &AppHandle) {
         match gs.register(shortcut) {
             Ok(()) => {
                 map.insert(shortcut.id(), action);
+                bindings.extend(keyhook::binding(&shortcut));
             }
             Err(e) => errors.push(format!("« {hotkey} » ({label}) indisponible : {e}")),
         }
     }
     *state.hotkeys.lock().unwrap() = map;
+    keyhook::set_bindings(bindings);
     state.set_warnings(WARN_HOTKEY, errors);
 }
 
-fn on_hotkey(app: &AppHandle, shortcut: &Shortcut) {
+/// Appelé par les deux voies (raccourci Windows et crochet clavier en jeu) :
+/// une même pression n'est jouée qu'une fois.
+fn on_hotkey(app: &AppHandle, id: u32) {
+    if !keyhook::first_press(id) {
+        return;
+    }
     let state = app.state::<AppState>();
-    let action = state.hotkeys.lock().unwrap().get(&shortcut.id()).cloned();
+    let action = state.hotkeys.lock().unwrap().get(&id).cloned();
     match action {
         Some(HotkeyAction::Play(id)) => {
             let sound = state
@@ -2589,7 +2598,7 @@ pub fn run() {
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
                     if event.state() == ShortcutState::Pressed {
-                        on_hotkey(app, shortcut);
+                        on_hotkey(app, shortcut.id());
                     }
                 })
                 .build(),
@@ -2663,6 +2672,8 @@ pub fn run() {
                 state.set_warnings(WARN_CONFIG, vec![note]);
             }
             app.manage(state);
+            let handle = app.handle().clone();
+            keyhook::start(move |id| on_hotkey(&handle, id));
             register_hotkeys(app.handle());
             // Ouvrir le casque, le câble et le micro (et charger le
             // débruiteur) prend du temps : la fenêtre s'affiche sans attendre.
