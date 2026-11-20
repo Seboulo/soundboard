@@ -257,7 +257,9 @@ const TOP_TAB = "\u0000top";
 const TOP_COUNT = 20;
 // Onglet spécial des favoris, quel que soit leur onglet.
 const FAV_TAB = "\u0000fav";
-const isSpecialTab = (tab) => tab === RECENT_TAB || tab === TOP_TAB || tab === FAV_TAB;
+// Onglet spécial des sons qui ont un raccourci clavier.
+const KEY_TAB = "\u0000keys";
+const isSpecialTab = (tab) => tab === RECENT_TAB || tab === TOP_TAB || tab === FAV_TAB || tab === KEY_TAB;
 const RECENT_KEY = "soundboard.recent";
 let recent = [];
 try {
@@ -351,8 +353,11 @@ function renderTabs() {
   document.body.classList.toggle("no-sounds", empty);
   const special = empty
     ? []
-    : [tab("Tous", null, "grid", state.config.sounds.length), tab("Récents", RECENT_TAB, "clock"), tab("Les plus joués", TOP_TAB, "chart"), tab("Favoris", FAV_TAB, "star", state.config.sounds.filter((s) => s.favorite).length)];
-  if (special.length) special[2].title = "Tes 20 sons les plus joués";
+    : [tab("Tous", null, "grid", state.config.sounds.length), tab("Récents", RECENT_TAB, "clock"), tab("Les plus joués", TOP_TAB, "chart"), tab("Favoris", FAV_TAB, "star", state.config.sounds.filter((s) => s.favorite).length), tab("Avec raccourci", KEY_TAB, "keyboard", state.config.sounds.filter((s) => s.hotkey).length)];
+  if (special.length) {
+    special[2].title = "Tes 20 sons les plus joués";
+    special[4].title = "Les sons que tu lances avec une touche du clavier";
+  }
   // Barre latérale : la bibliothèque, « Envoyer », puis tes onglets.
   const head = document.createElement("div");
   head.className = "side-head";
@@ -458,6 +463,8 @@ function renderGrid() {
     sounds = recent.map((id) => byId.get(id)).filter((s) => s && matches(s));
   } else if (currentTab === FAV_TAB) {
     sounds = sortSounds(state.config.sounds.filter((s) => s.favorite && matches(s)));
+  } else if (currentTab === KEY_TAB) {
+    sounds = sortSounds(state.config.sounds.filter((s) => s.hotkey && matches(s)));
   } else {
     sounds = sortSounds(state.config.sounds.filter((s) => (!currentTab || s.category === currentTab) && matches(s)));
   }
@@ -490,6 +497,7 @@ function renderGrid() {
   $("#tab-empty").hidden = !(currentTab && !isSpecialTab(currentTab) && sounds.length === 0 && !q);
   $("#recent-empty").hidden = !(currentTab === RECENT_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
   $("#fav-empty").hidden = !(currentTab === FAV_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
+  $("#key-empty").hidden = !(currentTab === KEY_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
   $("#search-empty").hidden = !(q && sounds.length === 0 && state.config.sounds.length > 0);
   $('#search-empty [data-action="search-online"] span').textContent = `Chercher « ${$("#search").value.trim()} » en ligne`;
   // Rien dans cet onglet, mais peut-être dans un autre : on le propose.
@@ -505,7 +513,7 @@ function renderGrid() {
 let lastShown = 0;
 function renderViewTitle(shown = lastShown) {
   lastShown = shown;
-  const title = sendOpen ? "Envoyer" : currentTab === RECENT_TAB ? "Récents" : currentTab === TOP_TAB ? "Les plus joués" : currentTab === FAV_TAB ? "Favoris" : currentTab || "Tous";
+  const title = sendOpen ? "Envoyer" : currentTab === RECENT_TAB ? "Récents" : currentTab === TOP_TAB ? "Les plus joués" : currentTab === FAV_TAB ? "Favoris" : currentTab === KEY_TAB ? "Avec raccourci" : currentTab || "Tous";
   $("#view-title").textContent = title;
   const n = sendOpen || !shown ? null : shown;
   $("#view-count").textContent = n == null ? "" : `${n} son${n > 1 ? "s" : ""}`;
