@@ -855,7 +855,15 @@ impl Engine {
                     Leveler::new(RenderedSource::new(r.clone(), req.looping), Levels::of(&req)),
                     output.rate(),
                 )),
-                None => open_source(&req, output.rate())?,
+                None => match open_source(&req, output.rate()) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        // Le casque joue peut-être déjà : sans ça, il
+                        // continuait sans pouvoir être arrêté.
+                        voices.iter().for_each(Voice::stop);
+                        return Err(e);
+                    }
+                },
             };
             let source: Box<dyn Source<Item = f32> + Send> = match &fade_target {
                 Some(target) => Box::new(Fader::new(source, target.clone(), fade)),

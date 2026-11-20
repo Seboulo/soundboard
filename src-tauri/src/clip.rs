@@ -1433,7 +1433,7 @@ const CLIP_SOUND_ID: &str = "extrait-recu";
 /// passage est décodé et mesuré (pas toute la vidéo, qui peut durer des
 /// minutes) : moins de calcul, pas d'à-coup.
 fn level_of(state: &AppState, path: &Path, start_ms: u64, end_ms: Option<u64>) -> Result<(crate::config::Analysis, u64), String> {
-    let end = end_ms.unwrap_or(u64::MAX).min(start_ms + 30_500);
+    let end = end_ms.unwrap_or(u64::MAX).min(start_ms.saturating_add(30_500));
     let cache_key = (path.to_path_buf(), start_ms, end);
     let known = state.clips.levels.lock().unwrap().iter().find(|(k, _)| *k == cache_key).map(|(_, a)| *a);
     if let Some(a) = known {
@@ -1574,7 +1574,7 @@ pub async fn clip_keep(app: AppHandle) -> Result<String, String> {
         .await
         .map_err(|e| e.to_string())??;
     sound.start_ms = c.start_ms;
-    sound.end_ms = c.end_ms.or_else(|| (c.kind == "video").then_some(c.start_ms + 30_000));
+    sound.end_ms = c.end_ms.or_else(|| (c.kind == "video").then_some(c.start_ms.saturating_add(30_000)));
     sound.volume = c.volume;
     let id = sound.id.clone();
     let name = sound.name.clone();
