@@ -287,6 +287,19 @@ function tabCategory() {
   return isSpecialTab(currentTab) ? null : currentTab;
 }
 
+function openTab(value) {
+  closeSendView();
+  currentTab = value;
+  try {
+    if (value) localStorage.setItem(TAB_KEY, value);
+    else localStorage.removeItem(TAB_KEY);
+  } catch {}
+  renderTabs();
+  renderGrid();
+  // La barre des onglets reste visible : on repart du haut du nouvel onglet.
+  window.scrollTo({ top: 0 });
+}
+
 function renderTabs() {
   const cats = categories();
   if (currentTab && !isSpecialTab(currentTab) && !cats.includes(currentTab)) currentTab = null;
@@ -324,16 +337,7 @@ function renderTabs() {
     }
     b.addEventListener("click", () => {
       if (reorder.justDropped) return;
-      closeSendView();
-      currentTab = value;
-      try {
-        if (value) localStorage.setItem(TAB_KEY, value);
-        else localStorage.removeItem(TAB_KEY);
-      } catch {}
-      renderTabs();
-      renderGrid();
-      // La barre des onglets reste visible : on repart du haut du nouvel onglet.
-      window.scrollTo({ top: 0 });
+      openTab(value);
     });
     return b;
   };
@@ -482,6 +486,11 @@ function renderGrid() {
   $("#fav-empty").hidden = !(currentTab === FAV_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
   $("#search-empty").hidden = !(q && sounds.length === 0 && state.config.sounds.length > 0);
   $('#search-empty [data-action="search-online"] span').textContent = `Chercher « ${$("#search").value.trim()} » en ligne`;
+  // Rien dans cet onglet, mais peut-être dans un autre : on le propose.
+  const elsewhere = q && currentTab && sounds.length === 0 ? state.config.sounds.filter(matches).length : 0;
+  const all = $('#search-empty [data-action="search-all"]');
+  all.hidden = !elsewhere;
+  if (elsewhere) all.lastElementChild.textContent = `Voir ${elsewhere > 1 ? `les ${elsewhere} sons trouvés` : "le son trouvé"} dans Tous`;
   renderPlaying();
   renderViewTitle(sounds.length);
 }
@@ -2882,6 +2891,27 @@ $("#search").addEventListener("keydown", (e) => {
     }
   }
 });
+// Ctrl+F : la recherche. Ctrl+Tab / Ctrl+Maj+Tab : onglet suivant / précédent.
+// Échap, quand il n'y a rien d'autre à fermer : arrête les sons comme « Stop ».
+document.addEventListener("keydown", (e) => {
+  if (e.defaultPrevented || e.altKey || e.metaKey || document.querySelector("dialog[open]")) return;
+  if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "f") {
+    e.preventDefault();
+    const q = sendOpen ? formClip.q : $("#search");
+    q.focus();
+    q.select();
+  } else if (e.ctrlKey && e.key === "Tab") {
+    const tabs = $$("#tabs .tab");
+    if (tabs.length < 2) return;
+    e.preventDefault();
+    const i = tabs.findIndex((b) => b.classList.contains("active"));
+    tabs[(i + (e.shiftKey ? tabs.length - 1 : 1)) % tabs.length].click();
+  } else if (e.key === "Escape" && !e.ctrlKey && !e.shiftKey && playing.length && !selecting && !selection.size) {
+    if (e.target.closest?.("input, textarea, select, [contenteditable]")) return;
+    e.preventDefault();
+    call("stop_all");
+  }
+});
 // Taper une lettre n'importe où lance la recherche, sans cliquer dedans.
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && (selecting || selection.size) && !document.querySelector("dialog[open]")) {
@@ -3242,6 +3272,7 @@ $("#btn-online").addEventListener("click", () => {
 });
 $('[data-action="close"]', dlgOnline).addEventListener("click", () => dlgOnline.close());
 // Recherche sans résultat dans mes sons : on la relance sur internet.
+$('#search-empty [data-action="search-all"]').addEventListener("click", () => openTab(null));
 $('#search-empty [data-action="search-online"]').addEventListener("click", () => {
   $("#btn-online").click();
   onlineForm.q.value = $("#search").value.trim();
