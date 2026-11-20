@@ -428,7 +428,7 @@ impl Config {
     pub fn load(path: &Path) -> (Self, Option<String>) {
         let backup = backup_path(path);
         let read = |p: &Path| -> Option<Result<Self, ()>> {
-            let text = fs::read_to_string(p).ok()?;
+            let text = read_patiently(p)?;
             Some(serde_json::from_str(&text).map_err(|_| ()))
         };
         match read(path) {
@@ -489,6 +489,22 @@ impl Config {
         }
         Err(last.map_or_else(|| "enregistrement impossible".into(), |e| e.to_string()))
     }
+}
+
+/// Lit un fichier présent mais bloqué un instant (antivirus au démarrage de
+/// Windows) en réessayant : sinon il passait pour disparu, la sauvegarde de
+/// secours (plus ancienne) le remplaçait et les derniers sons ajoutés étaient
+/// perdus.
+fn read_patiently(p: &Path) -> Option<String> {
+    for wait_ms in [0, 50, 100, 200, 400, 800, 1500] {
+        std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+        match fs::read_to_string(p) {
+            Ok(text) => return Some(text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(_) => {}
+        }
+    }
+    None
 }
 
 fn backup_path(path: &Path) -> PathBuf {

@@ -1167,7 +1167,12 @@ fn move_to_trash(state: &AppState, mut sound: Sound) -> Sound {
         }
         if let Some(name) = path.file_name() {
             let dest = trash.join(name);
-            if fs::rename(&*path, &dest).is_ok() {
+            // Le moteur audio peut lâcher le fichier un peu après l'arrêt.
+            let moved = [0u64, 30, 100, 250].into_iter().any(|ms| {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+                fs::rename(&*path, &dest).is_ok()
+            });
+            if moved {
                 *path = dest;
             } else {
                 let _ = fs::remove_file(&*path);
