@@ -27,18 +27,9 @@ pub enum Request {
     /// Extraits : préparer un GIF, une vidéo par lien, ou un fichier envoyé.
     ClipGif(String),
     ClipLink(String),
-    ClipUpload {
-        ext: String,
-        data: Vec<u8>,
-    },
+    ClipUpload { ext: String, data: Vec<u8> },
     /// Extraits : envoyer ce qui a été préparé.
-    ClipSend {
-        media: String,
-        title: String,
-        to: Option<String>,
-        start: Option<f64>,
-        sound: Option<String>,
-    },
+    ClipSend { media: String, title: String, to: Option<String>, start: Option<f64>, sound: Option<String> },
 }
 
 /// Fichier envoyé depuis le téléphone (image, GIF ou vidéo) : 14 Mo au plus.
@@ -53,10 +44,10 @@ pub struct PhoneServer {
 
 impl PhoneServer {
     pub fn start(port: u16, token: String, handler: Handler) -> Result<Self, String> {
-        let server =
-            Arc::new(Server::http(("0.0.0.0", port)).map_err(|e| {
-                format!("le port {port} est déjà pris par un autre programme ({e})")
-            })?);
+        let server = Arc::new(
+            Server::http(("0.0.0.0", port))
+                .map_err(|e| format!("le port {port} est déjà pris par un autre programme ({e})"))?,
+        );
         let srv = server.clone();
         let thread = thread::Builder::new()
             .name("phone".into())
@@ -115,11 +106,7 @@ fn param<'a>(params: &[(&str, &'a str)], key: &str) -> Option<&'a str> {
 
 /// Compare sans s'arrêter au premier caractère différent.
 fn same_token(a: &str, b: &str) -> bool {
-    a.len() == b.len()
-        && a.bytes()
-            .zip(b.bytes())
-            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
-            == 0
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// Décide quoi faire d'une requête ; `None` si la route n'existe pas.
@@ -132,51 +119,28 @@ pub fn route(method: &Method, url: &str, token: &str) -> Result<Option<Option<Re
         (Method::Get, "/") => Some(None),
         (Method::Get, "/api/state") => Some(Some(Request::State)),
         (Method::Post, "/api/play") => param(&params, "id")
-            .filter(|id| {
-                id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-            })
+            .filter(|id| id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
             .map(|id| Some(Request::Play(id.to_string()))),
         (Method::Post, "/api/stop") => Some(Some(Request::Stop)),
         (Method::Post, "/api/random") => Some(Some(Request::Random(
-            param(&params, "cat")
-                .map(percent_decode)
-                .filter(|c| !c.is_empty()),
+            param(&params, "cat").map(percent_decode).filter(|c| !c.is_empty()),
         ))),
-        (Method::Post, "/api/target") => Some(Some(Request::Target(
-            param(&params, "id")
-                .map(percent_decode)
-                .filter(|c| !c.is_empty()),
-        ))),
+        (Method::Post, "/api/target") => {
+            Some(Some(Request::Target(param(&params, "id").map(percent_decode).filter(|c| !c.is_empty()))))
+        }
         (Method::Get, "/api/videos") => param(&params, "q").map(|q| {
-            let start = param(&params, "start")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(1);
+            let start = param(&params, "start").and_then(|s| s.parse().ok()).unwrap_or(1);
             Some(Request::Videos(percent_decode(q), start))
         }),
-        (Method::Get, "/api/gifs") => {
-            param(&params, "q").map(|q| Some(Request::Gifs(percent_decode(q))))
-        }
-        (Method::Post, "/api/clip/gif") => {
-            param(&params, "url").map(|u| Some(Request::ClipGif(percent_decode(u))))
-        }
-        (Method::Post, "/api/clip/link") => {
-            param(&params, "url").map(|u| Some(Request::ClipLink(percent_decode(u))))
-        }
+        (Method::Get, "/api/gifs") => param(&params, "q").map(|q| Some(Request::Gifs(percent_decode(q)))),
+        (Method::Post, "/api/clip/gif") => param(&params, "url").map(|u| Some(Request::ClipGif(percent_decode(u)))),
+        (Method::Post, "/api/clip/link") => param(&params, "url").map(|u| Some(Request::ClipLink(percent_decode(u)))),
         (Method::Post, "/api/clip/upload") => param(&params, "ext")
             .map(|e| e.to_ascii_lowercase())
             .filter(|e| e.len() <= 5 && e.chars().all(|c| c.is_ascii_alphanumeric()))
-            .map(|ext| {
-                Some(Request::ClipUpload {
-                    ext,
-                    data: Vec::new(),
-                })
-            }),
+            .map(|ext| Some(Request::ClipUpload { ext, data: Vec::new() })),
         (Method::Post, "/api/clip/send") => param(&params, "media").map(|m| {
-            let get = |k: &str| {
-                param(&params, k)
-                    .map(percent_decode)
-                    .filter(|v| !v.is_empty())
-            };
+            let get = |k: &str| param(&params, k).map(percent_decode).filter(|v| !v.is_empty());
             Some(Request::ClipSend {
                 media: percent_decode(m),
                 title: get("title").unwrap_or_default(),
@@ -196,13 +160,9 @@ fn respond(mut request: tiny_http::Request, token: &str, handler: &Handler) {
     if let Ok(Some(Some(Request::ClipUpload { data, .. }))) = &mut route {
         use std::io::Read;
         let mut body = Vec::new();
-        let read = request
-            .as_reader()
-            .take(MAX_UPLOAD + 1)
-            .read_to_end(&mut body);
+        let read = request.as_reader().take(MAX_UPLOAD + 1).read_to_end(&mut body);
         if read.is_err() || body.len() as u64 > MAX_UPLOAD {
-            let e =
-                serde_json::json!({ "error": "fichier trop lourd (14 Mo au plus)" }).to_string();
+            let e = serde_json::json!({ "error": "fichier trop lourd (14 Mo au plus)" }).to_string();
             return send(request, 400, "application/json", e);
         }
         *data = body;
@@ -277,29 +237,20 @@ mod tests {
         assert_eq!(route(&Method::Get, "/?t=wrong1", t), Err(()));
         assert_eq!(route(&Method::Get, "/?t=abc123", ""), Err(()));
         assert_eq!(route(&Method::Get, "/?t=abc123", t), Ok(Some(None)));
-        assert_eq!(
-            route(&Method::Get, "/api/state?t=abc123", t),
-            Ok(Some(Some(Request::State)))
-        );
+        assert_eq!(route(&Method::Get, "/api/state?t=abc123", t), Ok(Some(Some(Request::State))));
         assert_eq!(
             route(&Method::Post, "/api/play?t=abc123&id=1f2e-3d", t),
             Ok(Some(Some(Request::Play("1f2e-3d".into()))))
         );
         // Un identifiant bizarre est refusé.
-        assert_eq!(
-            route(&Method::Post, "/api/play?t=abc123&id=../x", t),
-            Ok(None)
-        );
+        assert_eq!(route(&Method::Post, "/api/play?t=abc123&id=../x", t), Ok(None));
         // Jouer demande un POST.
         assert_eq!(route(&Method::Get, "/api/play?t=abc123&id=a", t), Ok(None));
         assert_eq!(
             route(&Method::Post, "/api/random?t=abc123&cat=M%C3%A8mes+fun", t),
             Ok(Some(Some(Request::Random(Some("Mèmes fun".into())))))
         );
-        assert_eq!(
-            route(&Method::Post, "/api/random?cat=&t=abc123", t),
-            Ok(Some(Some(Request::Random(None))))
-        );
+        assert_eq!(route(&Method::Post, "/api/random?cat=&t=abc123", t), Ok(Some(Some(Request::Random(None)))));
     }
 
     #[test]

@@ -61,11 +61,7 @@ fn true_peak_coefs() -> &'static [[f32; TAPS]; 3] {
             for (k, c) in row.iter_mut().enumerate() {
                 // Distance au point à reconstruire (situé à 3 + frac).
                 let x = k as f32 - 3.0 - frac;
-                let sinc = if x.abs() < 1e-6 {
-                    1.0
-                } else {
-                    (std::f32::consts::PI * x).sin() / (std::f32::consts::PI * x)
-                };
+                let sinc = if x.abs() < 1e-6 { 1.0 } else { (std::f32::consts::PI * x).sin() / (std::f32::consts::PI * x) };
                 // Fenêtre de Hann sur ±4 échantillons.
                 let w = 0.5 + 0.5 * (std::f32::consts::PI * x / 4.0).cos();
                 *c = sinc * w;
@@ -122,21 +118,13 @@ impl LookaheadLimiter {
         self.at_delay = (self.at_delay + 1) % self.latency();
 
         let n = self.need.len();
-        self.need[self.at] = if peak > self.ceiling {
-            self.ceiling / peak
-        } else {
-            1.0
-        };
+        self.need[self.at] = if peak > self.ceiling { self.ceiling / peak } else { 1.0 };
         let min = self.need.iter().fold(1.0f32, |m, &g| m.min(g));
         self.sum += min as f64 - self.mins[self.at] as f64;
         self.mins[self.at] = min;
         self.at = (self.at + 1) % n;
         let wanted = (self.sum / n as f64) as f32;
-        self.gain = if wanted < self.gain {
-            wanted
-        } else {
-            wanted + (self.gain - wanted) * self.release
-        };
+        self.gain = if wanted < self.gain { wanted } else { wanted + (self.gain - wanted) * self.release };
         for f in frame.iter_mut().take(ch) {
             *f *= self.gain;
         }
@@ -154,8 +142,7 @@ mod tests {
         let mut l = LookaheadLimiter::new(1, 96, 0.8, 0.999);
         let mut out = Vec::new();
         for i in 0..4000 {
-            let mut f =
-                [(std::f32::consts::FRAC_PI_2 * i as f32 + std::f32::consts::FRAC_PI_4).sin()];
+            let mut f = [(std::f32::consts::FRAC_PI_2 * i as f32 + std::f32::consts::FRAC_PI_4).sin()];
             l.process(&mut f);
             out.push(f[0]);
         }

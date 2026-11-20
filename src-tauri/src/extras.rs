@@ -30,11 +30,7 @@ pub struct Extras {
 }
 
 fn data_dir(state: &AppState) -> PathBuf {
-    state
-        .sounds_dir
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| state.sounds_dir.clone())
+    state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone())
 }
 
 /// Lancé une fois, quand l'audio est prêt.
@@ -72,21 +68,13 @@ pub fn start(app: &AppHandle) {
 }
 
 /// Ajoute un son à partir de données en mémoire et le range.
-async fn add_data(
-    app: &AppHandle,
-    data: Vec<u8>,
-    ext: &'static str,
-    name: String,
-    emoji: Option<&str>,
-) -> Result<AddedSound, String> {
+async fn add_data(app: &AppHandle, data: Vec<u8>, ext: &'static str, name: String, emoji: Option<&str>) -> Result<AddedSound, String> {
     let state = app.state::<AppState>();
     let index = state.config.lock().unwrap().sounds.len();
     let sounds_dir = state.sounds_dir.clone();
-    let mut sound = tauri::async_runtime::spawn_blocking(move || {
-        store_sound(&data, ext, name, &sounds_dir, index)
-    })
-    .await
-    .map_err(|e| e.to_string())??;
+    let mut sound = tauri::async_runtime::spawn_blocking(move || store_sound(&data, ext, name, &sounds_dir, index))
+        .await
+        .map_err(|e| e.to_string())??;
     sound.emoji = emoji.map(String::from);
     let id = sound.id.clone();
     {
@@ -94,22 +82,14 @@ async fn add_data(
         config.sounds.push(sound);
         state.save(&config)?;
     }
-    Ok(AddedSound {
-        id,
-        snapshot: state.snapshot(),
-    })
+    Ok(AddedSound { id, snapshot: state.snapshot() })
 }
 
 /// « Extrait 3 » : premier numéro libre.
 fn next_name(state: &AppState, prefix: &str) -> String {
     let config = state.config.lock().unwrap();
     let n = (1..)
-        .find(|n| {
-            !config
-                .sounds
-                .iter()
-                .any(|s| s.name == format!("{prefix} {n}"))
-        })
+        .find(|n| !config.sounds.iter().any(|s| s.name == format!("{prefix} {n}")))
         .unwrap_or(1);
     format!("{prefix} {n}")
 }
@@ -129,18 +109,9 @@ pub async fn save_replay(app: AppHandle) -> Result<AddedSound, String> {
         let samples = tauri::async_runtime::spawn_blocking(replay::snapshot)
             .await
             .map_err(|e| e.to_string())?
-            .ok_or(
-                "rien à rejouer : aucun son n'est passé par Discord ces 30 dernières secondes",
-            )?;
+            .ok_or("rien à rejouer : aucun son n'est passé par Discord ces 30 dernières secondes")?;
         let name = next_name(&state, "Extrait");
-        add_data(
-            &app,
-            calibration::wav_bytes(&samples),
-            "wav",
-            name,
-            Some("⏪"),
-        )
-        .await
+        add_data(&app, calibration::wav_bytes(&samples), "wav", name, Some("⏪")).await
     }
     .await;
     state.extras.replay_busy.store(false, Ordering::SeqCst);
@@ -182,15 +153,7 @@ pub async fn mic_record_stop(app: AppHandle, keep: bool) -> Result<Option<AddedS
         return Err("rien d'enregistré : parle un peu plus longtemps (ou vérifie que ton micro n'est pas coupé)".into());
     }
     let name = next_name(&state, "Enregistrement");
-    add_data(
-        &app,
-        calibration::wav_bytes(samples),
-        "wav",
-        name,
-        Some("🎙️"),
-    )
-    .await
-    .map(Some)
+    add_data(&app, calibration::wav_bytes(samples), "wav", name, Some("🎙️")).await.map(Some)
 }
 
 /// Enlève le silence (micro coupé entre les phrases) au début et à la fin,
@@ -198,11 +161,7 @@ pub async fn mic_record_stop(app: AppHandle, keep: bool) -> Result<Option<AddedS
 fn trim_silence(s: &[f32]) -> &[f32] {
     let margin = denoise::RATE as usize / 10;
     let first = s.iter().position(|v| v.abs() > 0.003).unwrap_or(s.len());
-    let last = s
-        .iter()
-        .rposition(|v| v.abs() > 0.003)
-        .map(|i| i + 1)
-        .unwrap_or(0);
+    let last = s.iter().rposition(|v| v.abs() > 0.003).map(|i| i + 1).unwrap_or(0);
     if first >= last {
         return &[];
     }
@@ -213,9 +172,7 @@ fn trim_silence(s: &[f32]) -> &[f32] {
 
 #[tauri::command]
 pub async fn tts_voices() -> Result<Vec<tts::VoiceInfo>, String> {
-    tauri::async_runtime::spawn_blocking(tts::voices)
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(tts::voices).await.map_err(|e| e.to_string())?
 }
 
 async fn speak(text: String, voice: Option<String>, rate: f64) -> Result<Vec<u8>, String> {
@@ -226,12 +183,7 @@ async fn speak(text: String, voice: Option<String>, rate: f64) -> Result<Vec<u8>
 
 /// Dit la phrase tout de suite dans Discord, sans créer de pad.
 #[tauri::command]
-pub async fn tts_say(
-    app: AppHandle,
-    text: String,
-    voice: Option<String>,
-    rate: f64,
-) -> Result<(), String> {
+pub async fn tts_say(app: AppHandle, text: String, voice: Option<String>, rate: f64) -> Result<(), String> {
     let wav = speak(text, voice, rate).await?;
     let state = app.state::<AppState>();
     // Deux fichiers en alternance : le précédent peut encore être en lecture.
@@ -247,12 +199,7 @@ pub async fn tts_say(
 
 /// Crée un pad avec la phrase.
 #[tauri::command]
-pub async fn tts_create(
-    app: AppHandle,
-    text: String,
-    voice: Option<String>,
-    rate: f64,
-) -> Result<AddedSound, String> {
+pub async fn tts_create(app: AppHandle, text: String, voice: Option<String>, rate: f64) -> Result<AddedSound, String> {
     let name: String = text.trim().chars().take(40).collect();
     let wav = speak(text, voice, rate).await?;
     add_data(&app, wav, "wav", name, Some("🗣️")).await
@@ -300,11 +247,7 @@ pub struct SyncResult {
 
 /// S'abonne au pack d'un pote. `name` : onglet où ranger ses sons.
 #[tauri::command]
-pub async fn subscribe_pack(
-    app: AppHandle,
-    url: String,
-    name: Option<String>,
-) -> Result<SyncResult, String> {
+pub async fn subscribe_pack(app: AppHandle, url: String, name: Option<String>) -> Result<SyncResult, String> {
     let url = url.trim().to_string();
     share::direct_url(&url)?;
     let state = app.state::<AppState>();
@@ -321,12 +264,7 @@ pub async fn subscribe_pack(
         state.save(&config)?;
     }
     match sync_one(&app, &url).await {
-        Ok((added, removed, errors)) => Ok(SyncResult {
-            added,
-            removed,
-            errors,
-            snapshot: state.snapshot(),
-        }),
+        Ok((added, removed, errors)) => Ok(SyncResult { added, removed, errors, snapshot: state.snapshot() }),
         Err(e) => {
             // Lien qui ne marche pas du tout : on ne le garde pas.
             let mut config = state.config.lock().unwrap();
@@ -338,30 +276,21 @@ pub async fn subscribe_pack(
 }
 
 #[tauri::command]
-pub fn unsubscribe_pack(
-    app: AppHandle,
-    url: String,
-    remove_sounds: bool,
-) -> Result<Snapshot, String> {
+pub fn unsubscribe_pack(app: AppHandle, url: String, remove_sounds: bool) -> Result<Snapshot, String> {
     let state = app.state::<AppState>();
     {
         let mut config = state.config.lock().unwrap();
         config.settings.subscriptions.retain(|s| s.url != url);
         if remove_sounds {
-            let (gone, kept): (Vec<Sound>, Vec<Sound>) = std::mem::take(&mut config.sounds)
-                .into_iter()
-                .partition(|s| s.pack_link.as_deref() == Some(&url));
+            let (gone, kept): (Vec<Sound>, Vec<Sound>) =
+                std::mem::take(&mut config.sounds).into_iter().partition(|s| s.pack_link.as_deref() == Some(&url));
             config.sounds = kept;
             for s in gone {
                 let _ = fs::remove_file(&s.path);
             }
         } else {
             // Les sons restent, comme des sons à toi.
-            for s in config
-                .sounds
-                .iter_mut()
-                .filter(|s| s.pack_link.as_deref() == Some(&url))
-            {
+            for s in config.sounds.iter_mut().filter(|s| s.pack_link.as_deref() == Some(&url)) {
                 s.pack_link = None;
             }
         }
@@ -378,15 +307,7 @@ pub async fn sync_packs(app: AppHandle) -> Result<SyncResult, String> {
     if state.extras.sync_busy.swap(true, Ordering::SeqCst) {
         return Err("vérification déjà en cours".into());
     }
-    let urls: Vec<String> = state
-        .config
-        .lock()
-        .unwrap()
-        .settings
-        .subscriptions
-        .iter()
-        .map(|s| s.url.clone())
-        .collect();
+    let urls: Vec<String> = state.config.lock().unwrap().settings.subscriptions.iter().map(|s| s.url.clone()).collect();
     let (mut added, mut removed, mut errors) = (0, 0, Vec::new());
     for url in urls {
         match sync_one(&app, &url).await {
@@ -404,12 +325,7 @@ pub async fn sync_packs(app: AppHandle) -> Result<SyncResult, String> {
         let _ = app.emit("snapshot", &snapshot);
         let _ = app.emit("packs-updated", (added, removed));
     }
-    Ok(SyncResult {
-        added,
-        removed,
-        errors,
-        snapshot,
-    })
+    Ok(SyncResult { added, removed, errors, snapshot })
 }
 
 /// Met un pack suivi à jour : nouveaux sons ajoutés, sons retirés par le
@@ -419,12 +335,7 @@ async fn sync_one(app: &AppHandle, url: &str) -> Result<(usize, usize, Vec<Strin
     let res = share::download(url).await;
     let note = |error: Option<String>, hash: Option<String>| {
         let mut config = state.config.lock().unwrap();
-        if let Some(sub) = config
-            .settings
-            .subscriptions
-            .iter_mut()
-            .find(|s| s.url == url)
-        {
+        if let Some(sub) = config.settings.subscriptions.iter_mut().find(|s| s.url == url) {
             sub.last_check = now_secs();
             sub.error = error;
             if let Some(h) = hash {
@@ -442,12 +353,7 @@ async fn sync_one(app: &AppHandle, url: &str) -> Result<(usize, usize, Vec<Strin
     };
     let (unchanged, name) = {
         let config = state.config.lock().unwrap();
-        let sub = config
-            .settings
-            .subscriptions
-            .iter()
-            .find(|s| s.url == url)
-            .ok_or("abonnement retiré")?;
+        let sub = config.settings.subscriptions.iter().find(|s| s.url == url).ok_or("abonnement retiré")?;
         (sub.last_hash == hash, sub.name.clone())
     };
     if unchanged {
@@ -466,11 +372,9 @@ async fn sync_one(app: &AppHandle, url: &str) -> Result<(usize, usize, Vec<Strin
     let sounds_dir = state.sounds_dir.clone();
     let tmp2 = tmp.clone();
     let have2 = have.clone();
-    let read = tauri::async_runtime::spawn_blocking(move || {
-        read_pack(&tmp2, &config, &sounds_dir, &have2)
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+    let read = tauri::async_runtime::spawn_blocking(move || read_pack(&tmp2, &config, &sounds_dir, &have2))
+        .await
+        .map_err(|e| e.to_string())?;
     let _ = fs::remove_file(&tmp);
     let (mut added, errors, keys) = match read {
         Ok(x) => x,
@@ -483,9 +387,7 @@ async fn sync_one(app: &AppHandle, url: &str) -> Result<(usize, usize, Vec<Strin
     let tab = if name.is_empty() {
         let mut counts: HashMap<String, usize> = HashMap::new();
         for s in &added {
-            *counts
-                .entry(s.category.clone().unwrap_or_default())
-                .or_default() += 1;
+            *counts.entry(s.category.clone().unwrap_or_default()).or_default() += 1;
         }
         counts
             .into_iter()
@@ -509,8 +411,7 @@ async fn sync_one(app: &AppHandle, url: &str) -> Result<(usize, usize, Vec<Strin
         let mut config = state.config.lock().unwrap();
         let mut gone = Vec::new();
         config.sounds.retain(|s| {
-            let drop = s.pack_link.as_deref() == Some(url)
-                && s.pack_key.as_ref().is_some_and(|k| !keys.contains(k));
+            let drop = s.pack_link.as_deref() == Some(url) && s.pack_key.as_ref().is_some_and(|k| !keys.contains(k));
             if drop {
                 gone.push(s.path.clone());
             }
@@ -521,12 +422,7 @@ async fn sync_one(app: &AppHandle, url: &str) -> Result<(usize, usize, Vec<Strin
             let _ = fs::remove_file(p);
         }
         config.sounds.extend(added);
-        if let Some(sub) = config
-            .settings
-            .subscriptions
-            .iter_mut()
-            .find(|s| s.url == url)
-        {
+        if let Some(sub) = config.settings.subscriptions.iter_mut().find(|s| s.url == url) {
             sub.name = tab;
         }
         state.save(&config)?;
@@ -547,21 +443,14 @@ pub struct CloudFolder {
 pub fn cloud_folders() -> Vec<CloudFolder> {
     share::cloud_folders()
         .into_iter()
-        .map(|(name, p)| CloudFolder {
-            name,
-            path: p.to_string_lossy().into_owned(),
-        })
+        .map(|(name, p)| CloudFolder { name, path: p.to_string_lossy().into_owned() })
         .collect()
 }
 
 /// Partage un onglet : son pack est rangé dans `folder` (ou un dossier
 /// choisi) et tenu à jour.
 #[tauri::command]
-pub async fn publish_tab(
-    app: AppHandle,
-    category: String,
-    folder: Option<String>,
-) -> Result<Option<Snapshot>, String> {
+pub async fn publish_tab(app: AppHandle, category: String, folder: Option<String>) -> Result<Option<Snapshot>, String> {
     let folder = match folder {
         Some(f) => PathBuf::from(f),
         None => match app
@@ -584,17 +473,11 @@ pub async fn publish_tab(
     {
         let mut config = state.config.lock().unwrap();
         config.settings.published.retain(|p| p.category != category);
-        config.settings.published.push(config::Published {
-            category,
-            path,
-            ..Default::default()
-        });
+        config.settings.published.push(config::Published { category, path, ..Default::default() });
         state.save(&config)?;
     }
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || refresh_published(&handle))
-        .await
-        .map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || refresh_published(&handle)).await.map_err(|e| e.to_string())?;
     Ok(Some(state.snapshot()))
 }
 
@@ -622,9 +505,7 @@ pub fn reveal_published(app: AppHandle, category: String) -> Result<(), String> 
         .find(|p| p.category == category)
         .map(|p| p.path.clone())
         .ok_or("cet onglet n'est pas partagé")?;
-    app.opener()
-        .reveal_item_in_dir(path)
-        .map_err(|e| e.to_string())
+    app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
 }
 
 /// Ce qui change le pack d'un onglet.
@@ -632,18 +513,8 @@ fn signature(sounds: &[Sound]) -> String {
     let parts: Vec<_> = sounds
         .iter()
         .map(|s| {
-            serde_json::json!([
-                s.id,
-                s.name,
-                s.start_ms,
-                s.end_ms,
-                s.volume,
-                s.emoji,
-                s.color,
-                s.looping,
-                s.fx,
-                fs::metadata(&s.path).map(|m| m.len()).unwrap_or(0)
-            ])
+            serde_json::json!([s.id, s.name, s.start_ms, s.end_ms, s.volume, s.emoji, s.color, s.looping, s.fx,
+                fs::metadata(&s.path).map(|m| m.len()).unwrap_or(0)])
         })
         .collect();
     share::key_of(serde_json::to_string(&parts).unwrap_or_default().as_bytes())
@@ -657,11 +528,7 @@ fn refresh_published(app: &AppHandle) {
         (config.settings.published.clone(), config.sounds.clone())
     };
     for p in published {
-        let tab: Vec<Sound> = sounds
-            .iter()
-            .filter(|s| s.category.as_deref() == Some(p.category.as_str()))
-            .cloned()
-            .collect();
+        let tab: Vec<Sound> = sounds.iter().filter(|s| s.category.as_deref() == Some(p.category.as_str())).cloned().collect();
         let sig = signature(&tab);
         if sig == p.signature && p.path.exists() {
             continue;
@@ -671,17 +538,11 @@ fn refresh_published(app: &AppHandle) {
         let res = if tab.is_empty() {
             Err("onglet vide".to_string())
         } else {
-            write_pack(&tmp, &tab)
-                .and_then(|_| fs::rename(&tmp, &p.path).map_err(|e| e.to_string()))
+            write_pack(&tmp, &tab).and_then(|_| fs::rename(&tmp, &p.path).map_err(|e| e.to_string()))
         };
         let _ = fs::remove_file(&tmp);
         let mut config = state.config.lock().unwrap();
-        if let Some(q) = config
-            .settings
-            .published
-            .iter_mut()
-            .find(|q| q.category == p.category)
-        {
+        if let Some(q) = config.settings.published.iter_mut().find(|q| q.category == p.category) {
             match res {
                 Ok(_) => {
                     q.signature = sig;
@@ -765,12 +626,7 @@ fn sound_key(state: &AppState, sound: &Sound) -> Result<String, String> {
         }
     }
     let key = share::key_of(&fs::read(&sound.path).map_err(|e| e.to_string())?);
-    state
-        .extras
-        .keys
-        .lock()
-        .unwrap()
-        .insert(sound.path.clone(), (size, key.clone()));
+    state.extras.keys.lock().unwrap().insert(sound.path.clone(), (size, key.clone()));
     Ok(key)
 }
 
@@ -781,12 +637,7 @@ fn play_msg(state: &AppState, sound: &Sound, to: String, hash: String) -> Msg {
         to,
         hash,
         title: sound.name.chars().take(60).collect(),
-        ext: sound
-            .path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("mp3")
-            .to_lowercase(),
+        ext: sound.path.extension().and_then(|e| e.to_str()).unwrap_or("mp3").to_lowercase(),
         start_ms: sound.start_ms,
         end_ms: sound.end_ms,
         volume: sound.volume,
@@ -816,12 +667,7 @@ pub fn send_to_friend(app: &AppHandle, sound: Sound) -> Result<PlayOutcome, Stri
     let to = state.extras.room.target().ok_or("aucun pote choisi")?;
     let hash = sound_key(&state, &sound)?;
     let msg = play_msg(&state, &sound, to, hash.clone());
-    state
-        .extras
-        .sent
-        .lock()
-        .unwrap()
-        .insert(hash, sound.clone());
+    state.extras.sent.lock().unwrap().insert(hash, sound.clone());
     let room = state.extras.room.clone();
     let app2 = app.clone();
     journal::write(&format!("Salon : « {} » envoyé", sound.name));
@@ -854,67 +700,29 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
                 journal::write("Salon : un pote demande un son inconnu");
                 return Ok(());
             };
-            journal::write(&format!(
-                "Salon : un pote n'a pas « {} », envoi du fichier",
-                sound.name
-            ));
+            journal::write(&format!("Salon : un pote n'a pas « {} », envoi du fichier", sound.name));
             let data = fs::read(&sound.path).map_err(|e| e.to_string())?;
             if data.len() as u64 > room::MAX_ATTACHMENT {
-                let _ = app.emit(
-                    "room-error",
-                    format!(
-                        "« {} » est trop lourd pour être envoyé (15 Mo au plus)",
-                        sound.name
-                    ),
-                );
+                let _ = app.emit("room-error", format!("« {} » est trop lourd pour être envoyé (15 Mo au plus)", sound.name));
                 return Ok(());
             }
             let msg = play_msg(&state, &sound, from, hash.clone());
-            let file = format!(
-                "{hash}.{}",
-                sound
-                    .path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("mp3")
-            );
+            let file = format!("{hash}.{}", sound.path.extension().and_then(|e| e.to_str()).unwrap_or("mp3"));
             // Déjà envoyé à un autre pote il y a peu : il est encore sur le
             // relais, on ne le renvoie pas.
-            state
-                .extras
-                .room
-                .send_file(&msg, &hash, &file, || Ok(data))
-                .await
+            state.extras.room.send_file(&msg, &hash, &file, || Ok(data)).await
         }
-        Msg::Play {
-            from,
-            name,
-            hash,
-            title,
-            ext,
-            start_ms,
-            end_ms,
-            volume,
-            fx,
-            size,
-            ..
-        } => {
+        Msg::Play { from, name, hash, title, ext, start_ms, end_ms, volume, fx, size, .. } => {
             journal::write(&format!(
                 "Salon : « {title} » reçu de {name}{}",
-                if inc.attachment.is_some() {
-                    " (avec le fichier)"
-                } else {
-                    ""
-                }
+                if inc.attachment.is_some() { " (avec le fichier)" } else { "" }
             ));
             if is_blocked(&state, &from) {
                 journal::write(&format!("Salon : ignoré ({name} est bloqué)"));
                 return Ok(());
             }
             if !state.config.lock().unwrap().settings.room_accept {
-                journal::write(
-                    "Salon : ignoré (« Mes potes peuvent jouer des sons chez moi » est coupé)",
-                );
+                journal::write("Salon : ignoré (« Mes potes peuvent jouer des sons chez moi » est coupé)");
                 return Ok(());
             }
             if clip::dnd(&state) {
@@ -925,25 +733,14 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
             // fichier qu'on vient de lui demander, qui arrive juste après).
             if inc.attachment.is_none() {
                 let mut last = state.extras.last_from.lock().unwrap();
-                if last
-                    .get(&from)
-                    .is_some_and(|t| t.elapsed() < Duration::from_millis(1500))
-                {
+                if last.get(&from).is_some_and(|t| t.elapsed() < Duration::from_millis(1500)) {
                     journal::write("Salon : ignoré (trop rapproché du précédent)");
                     return Ok(());
                 }
                 last.insert(from.clone(), Instant::now());
             }
-            let ext = if AUDIO_EXTENSIONS.contains(&ext.as_str()) {
-                ext
-            } else {
-                "mp3".into()
-            };
-            let hash: String = hash
-                .chars()
-                .filter(|c| c.is_ascii_hexdigit())
-                .take(32)
-                .collect();
+            let ext = if AUDIO_EXTENSIONS.contains(&ext.as_str()) { ext } else { "mp3".into() };
+            let hash: String = hash.chars().filter(|c| c.is_ascii_hexdigit()).take(32).collect();
             let cache = data_dir(&state).join("salon").join(format!("{hash}.{ext}"));
             // Le son est-il déjà là ? Reçu avant (le plus courant, et sans
             // rien lire), ou dans la soundboard (lu à côté, sans bloquer).
@@ -951,21 +748,11 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
                 None
             } else {
                 let (app2, h2) = (app.clone(), hash.clone());
-                tauri::async_runtime::spawn_blocking(move || {
-                    find_local(&app2.state::<AppState>(), &h2, size)
-                })
-                .await
-                .map_err(|e| e.to_string())?
+                tauri::async_runtime::spawn_blocking(move || find_local(&app2.state::<AppState>(), &h2, size))
+                    .await
+                    .map_err(|e| e.to_string())?
             };
-            let known = local.as_ref().and_then(|s| s.analysis).or_else(|| {
-                state
-                    .extras
-                    .received_levels
-                    .lock()
-                    .unwrap()
-                    .get(&hash)
-                    .copied()
-            });
+            let known = local.as_ref().and_then(|s| s.analysis).or_else(|| state.extras.received_levels.lock().unwrap().get(&hash).copied());
             let path = match (local, &inc.attachment) {
                 (Some(s), _) => s.path,
                 (None, _) if cache.exists() => cache,
@@ -980,11 +767,7 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
                     cache
                 }
                 (None, None) => {
-                    let msg = Msg::Need {
-                        from: state.extras.room.my_id(),
-                        to: from,
-                        hash,
-                    };
+                    let msg = Msg::Need { from: state.extras.room.my_id(), to: from, hash };
                     return state.extras.room.publish(&msg).await;
                 }
             };
@@ -1017,12 +800,7 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
             // n'arrête pas celui en cours comme un clic sur un pad).
             state.audio.stop(&sound.id);
             state.audio.toggle_detached(play_request(&state, &sound));
-            state
-                .extras
-                .playing_from
-                .lock()
-                .unwrap()
-                .insert(from.clone(), sound.id.clone());
+            state.extras.playing_from.lock().unwrap().insert(from.clone(), sound.id.clone());
             let _ = app.emit("room-played", (name, title));
             Ok(())
         }
@@ -1035,26 +813,9 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
             journal::write("Salon : un pote a arrêté son envoi");
             Ok(())
         }
-        Msg::Clip {
-            from,
-            name,
-            title,
-            to,
-            link,
-            start_ms,
-            end_ms,
-            volume,
-            cut,
-            style,
-        } => {
+        Msg::Clip { from, name, title, to, link, start_ms, end_ms, volume, cut, style } => {
             let direct = !to.is_empty() && to == state.extras.room.my_id();
-            let link = (!link.is_empty()).then_some(clip::LinkClip {
-                url: link,
-                start_ms,
-                end_ms,
-                volume: volume.unwrap_or(1.0),
-                cut,
-            });
+            let link = (!link.is_empty()).then_some(clip::LinkClip { url: link, start_ms, end_ms, volume: volume.unwrap_or(1.0), cut });
             clip::receive(app, from, name, title, inc.attachment, direct, link, style).await
         }
         _ => Ok(()),
@@ -1065,21 +826,12 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
 /// envoyer (dans la dernière minute).
 pub fn stop_sent(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let recent = state
-        .extras
-        .last_sent
-        .lock()
-        .unwrap()
-        .take()
-        .is_some_and(|t| t.elapsed() < Duration::from_secs(60));
+    let recent = state.extras.last_sent.lock().unwrap().take().is_some_and(|t| t.elapsed() < Duration::from_secs(60));
     if !recent {
         return;
     }
     let room = state.extras.room.clone();
-    let msg = Msg::Stop {
-        from: room.my_id(),
-        to: String::new(),
-    };
+    let msg = Msg::Stop { from: room.my_id(), to: String::new() };
     tauri::async_runtime::spawn(async move {
         let _ = room.publish(&msg).await;
     });
@@ -1087,34 +839,19 @@ pub fn stop_sent(app: &AppHandle) {
 
 /// Ce pote est-il bloqué (ni sons ni extraits) ?
 pub(crate) fn is_blocked(state: &AppState, id: &str) -> bool {
-    state
-        .config
-        .lock()
-        .unwrap()
-        .settings
-        .room_blocked
-        .iter()
-        .any(|b| b.id == id)
+    state.config.lock().unwrap().settings.room_blocked.iter().any(|b| b.id == id)
 }
 
 /// Bloque ou débloque un pote du salon.
 #[tauri::command]
-pub fn set_friend_blocked(
-    app: AppHandle,
-    id: String,
-    name: String,
-    blocked: bool,
-) -> Result<Snapshot, String> {
+pub fn set_friend_blocked(app: AppHandle, id: String, name: String, blocked: bool) -> Result<Snapshot, String> {
     let state = app.state::<AppState>();
     {
         let mut config = state.config.lock().unwrap();
         let list = &mut config.settings.room_blocked;
         list.retain(|b| b.id != id);
         if blocked {
-            list.push(config::BlockedFriend {
-                id: id.clone(),
-                name: name.chars().take(32).collect(),
-            });
+            list.push(config::BlockedFriend { id: id.clone(), name: name.chars().take(32).collect() });
         }
         state.save(&config)?;
     }
@@ -1131,9 +868,7 @@ pub fn set_friend_blocked(
 
 /// Garde au plus 60 sons reçus.
 fn trim_cache(dir: &Path) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
+    let Ok(entries) = fs::read_dir(dir) else { return };
     let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
         .flatten()
         .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))

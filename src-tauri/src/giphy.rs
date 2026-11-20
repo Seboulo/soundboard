@@ -64,9 +64,7 @@ pub async fn search(query: &str, key: &str, limit: u32) -> Result<Vec<GifResult>
         .map_err(|e| format!("recherche d'images impossible : {e}"))?;
     match res.status().as_u16() {
         401 | 403 => return Err("clé GIPHY refusée : vérifie-la dans les réglages".into()),
-        429 => {
-            return Err("trop de recherches GIPHY pour l'instant, réessaie dans une heure".into())
-        }
+        429 => return Err("trop de recherches GIPHY pour l'instant, réessaie dans une heure".into()),
         _ => {}
     }
     let body = res
@@ -79,8 +77,7 @@ pub async fn search(query: &str, key: &str, limit: u32) -> Result<Vec<GifResult>
 }
 
 pub fn parse(json: &str) -> Result<Vec<GifResult>, String> {
-    let page: Page =
-        serde_json::from_str(json).map_err(|e| format!("réponse GIPHY illisible : {e}"))?;
+    let page: Page = serde_json::from_str(json).map_err(|e| format!("réponse GIPHY illisible : {e}"))?;
     Ok(page
         .data
         .into_iter()
@@ -88,32 +85,15 @@ pub fn parse(json: &str) -> Result<Vec<GifResult>, String> {
             let pick = |names: &[&str], webp: bool| {
                 names.iter().find_map(|n| {
                     let r = g.images.get(*n)?;
-                    let url = if webp {
-                        r.webp.clone().or(r.url.clone())
-                    } else {
-                        r.url.clone()
-                    };
+                    let url = if webp { r.webp.clone().or(r.url.clone()) } else { r.url.clone() };
                     url.filter(|u| allowed(u))
                 })
             };
             let anim = pick(&["fixed_height_small", "fixed_height", "downsized"], true)?;
-            let still = pick(
-                &[
-                    "fixed_height_small_still",
-                    "fixed_height_still",
-                    "downsized_still",
-                ],
-                false,
-            )
-            .unwrap_or_else(|| anim.clone());
-            let big = pick(&["downsized_medium", "downsized", "fixed_height"], false)
+            let still = pick(&["fixed_height_small_still", "fixed_height_still", "downsized_still"], false)
                 .unwrap_or_else(|| anim.clone());
-            Some(GifResult {
-                title: g.title,
-                still,
-                anim,
-                big,
-            })
+            let big = pick(&["downsized_medium", "downsized", "fixed_height"], false).unwrap_or_else(|| anim.clone());
+            Some(GifResult { title: g.title, still, anim, big })
         })
         .collect())
 }

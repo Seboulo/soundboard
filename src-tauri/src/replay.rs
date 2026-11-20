@@ -30,11 +30,7 @@ impl Ring {
     pub fn new(rate: u32) -> Arc<Self> {
         let rate = rate.max(1);
         let cap = rate as usize * SECONDS;
-        Arc::new(Self {
-            buf: Mutex::new(VecDeque::with_capacity(cap)),
-            rate,
-            cap,
-        })
+        Arc::new(Self { buf: Mutex::new(VecDeque::with_capacity(cap)), rate, cap })
     }
 
     /// Ajoute des trames entrelacées (repliées en mono). Ne bloque jamais le
@@ -44,9 +40,7 @@ impl Ring {
             return;
         }
         let ch = channels.max(1);
-        let Ok(mut buf) = self.buf.try_lock() else {
-            return;
-        };
+        let Ok(mut buf) = self.buf.try_lock() else { return };
         for frame in data.chunks_exact(ch) {
             buf.push_back(frame.iter().sum::<f32>() / ch as f32);
         }
@@ -127,13 +121,7 @@ pub fn cable_ring(rate: u32) -> Option<Arc<Ring>> {
 /// Ta voix et tes sons, et ce que Discord t'a fait entendre, mélangés.
 /// None si rien n'a été gardé.
 pub fn snapshot() -> Option<Vec<f32>> {
-    let get = |r: &Mutex<Option<Arc<Ring>>>| {
-        r.lock()
-            .unwrap()
-            .as_ref()
-            .map(|r| r.take())
-            .unwrap_or_default()
-    };
+    let get = |r: &Mutex<Option<Arc<Ring>>>| r.lock().unwrap().as_ref().map(|r| r.take()).unwrap_or_default();
     let mine = get(&CABLE);
     let theirs = get(&DISCORD);
     let len = mine.len().max(theirs.len());
@@ -168,10 +156,7 @@ struct Ducker {
 #[cfg_attr(not(windows), allow(dead_code))]
 impl Ducker {
     fn new() -> Self {
-        Self {
-            gain: 1.0,
-            hold: 0.0,
-        }
+        Self { gain: 1.0, hold: 0.0 }
     }
 
     /// `block` : échantillons mono à 48 kHz.
@@ -214,8 +199,7 @@ mod win {
     use wasapi::{AudioClient, Direction, SampleType, StreamMode, WaveFormat};
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-        TH32CS_SNAPPROCESS,
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
     };
 
     const NAMES: [&str; 3] = ["discord.exe", "discordptb.exe", "discordcanary.exe"];
@@ -225,17 +209,10 @@ mod win {
         let mut procs = Vec::new();
         unsafe {
             let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
-            let mut entry = PROCESSENTRY32W {
-                dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
-                ..Default::default()
-            };
+            let mut entry = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
             if Process32FirstW(snap, &mut entry).is_ok() {
                 loop {
-                    let len = entry
-                        .szExeFile
-                        .iter()
-                        .position(|&c| c == 0)
-                        .unwrap_or(entry.szExeFile.len());
+                    let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
                     let name = String::from_utf16_lossy(&entry.szExeFile[..len]).to_lowercase();
                     procs.push((entry.th32ProcessID, entry.th32ParentProcessID, name));
                     if Process32NextW(snap, &mut entry).is_err() {
@@ -245,11 +222,7 @@ mod win {
             }
             let _ = CloseHandle(snap);
         }
-        let is_discord = |pid: u32| {
-            procs
-                .iter()
-                .any(|(p, _, n)| *p == pid && NAMES.contains(&n.as_str()))
-        };
+        let is_discord = |pid: u32| procs.iter().any(|(p, _, n)| *p == pid && NAMES.contains(&n.as_str()));
         procs
             .iter()
             .find(|(_, parent, name)| NAMES.contains(&name.as_str()) && !is_discord(*parent))
@@ -277,15 +250,9 @@ mod win {
 
     fn capture(pid: u32) -> Result<(), String> {
         let format = WaveFormat::new(32, 32, &SampleType::Float, RATE as usize, 2, None);
-        let mut client =
-            AudioClient::new_application_loopback_client(pid, true).map_err(|e| e.to_string())?;
-        let mode = StreamMode::EventsShared {
-            autoconvert: true,
-            buffer_duration_hns: 0,
-        };
-        client
-            .initialize_client(&format, &Direction::Capture, &mode)
-            .map_err(|e| e.to_string())?;
+        let mut client = AudioClient::new_application_loopback_client(pid, true).map_err(|e| e.to_string())?;
+        let mode = StreamMode::EventsShared { autoconvert: true, buffer_duration_hns: 0 };
+        client.initialize_client(&format, &Direction::Capture, &mode).map_err(|e| e.to_string())?;
         let event = client.set_get_eventhandle().map_err(|e| e.to_string())?;
         let capture = client.get_audiocaptureclient().map_err(|e| e.to_string())?;
         client.start_stream().map_err(|e| e.to_string())?;
@@ -310,9 +277,7 @@ mod win {
                 ducker.feed(&[0.0; 960]);
                 continue;
             }
-            capture
-                .read_from_device_to_deque(&mut bytes)
-                .map_err(|e| e.to_string())?;
+            capture.read_from_device_to_deque(&mut bytes).map_err(|e| e.to_string())?;
             let frames = bytes.len() / 8;
             if frames == 0 {
                 continue;

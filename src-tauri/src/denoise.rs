@@ -386,13 +386,7 @@ impl Downmix {
 
     fn decide(&mut self) {
         // Le canal de référence ne change que pour un canal deux fois plus fort.
-        let loudest = (0..self.channels).fold(self.lead, |best, c| {
-            if self.power[c] > self.power[best] {
-                c
-            } else {
-                best
-            }
-        });
+        let loudest = (0..self.channels).fold(self.lead, |best, c| if self.power[c] > self.power[best] { c } else { best });
         if self.power[loudest] > self.power[self.lead] * 2.0 {
             self.lead = loudest;
             // Les produits étaient mesurés avec l'ancien canal de référence.
@@ -443,10 +437,7 @@ impl Biquad {
         let w = std::f32::consts::TAU * freq / RATE as f32;
         let alpha = w.sin() / (2.0 * q);
         let cos = w.cos();
-        Self::from_raw(
-            [1.0 + alpha * a, -2.0 * cos, 1.0 - alpha * a],
-            [1.0 + alpha / a, -2.0 * cos, 1.0 - alpha / a],
-        )
+        Self::from_raw([1.0 + alpha * a, -2.0 * cos, 1.0 - alpha * a], [1.0 + alpha / a, -2.0 * cos, 1.0 - alpha / a])
     }
 
     /// Plateau : monte ou baisse tout ce qui est sous (`high` = false) ou
@@ -459,16 +450,8 @@ impl Biquad {
         let (p, m) = (a + 1.0, a - 1.0);
         let s = if high { 1.0 } else { -1.0 };
         Self::from_raw(
-            [
-                a * (p + s * m * cos + k),
-                -2.0 * s * a * (m + s * p * cos),
-                a * (p + s * m * cos - k),
-            ],
-            [
-                p - s * m * cos + k,
-                2.0 * s * (m - s * p * cos),
-                p - s * m * cos - k,
-            ],
+            [a * (p + s * m * cos + k), -2.0 * s * a * (m + s * p * cos), a * (p + s * m * cos - k)],
+            [p - s * m * cos + k, 2.0 * s * (m - s * p * cos), p - s * m * cos - k],
         )
     }
 
@@ -517,10 +500,7 @@ fn equalizer(eq: VoiceEq, calibration: Option<MicCalibration>) -> Vec<Biquad> {
         VoiceEq::Custom => {
             // Plafonné ici aussi : un test de voix fait avec une ancienne
             // version pouvait demander jusqu'à 8 dB.
-            let gains = calibration
-                .map(|c| c.eq_db)
-                .unwrap_or_default()
-                .map(|g| g.clamp(-EQ_MAX_DB, EQ_MAX_DB));
+            let gains = calibration.map(|c| c.eq_db).unwrap_or_default().map(|g| g.clamp(-EQ_MAX_DB, EQ_MAX_DB));
             let last = EQ_BANDS_HZ.len() - 1;
             EQ_BANDS_HZ
                 .iter()
@@ -603,11 +583,7 @@ impl MicProcessor {
         // réglée dès le premier mot.
         let sure_db = filters.calibration.map(|c| c.speech_db);
         let talker_db = sure_db.or(filters.learned_db).unwrap_or(f32::NAN);
-        let pregain_db = if talker_db.is_nan() {
-            0.0
-        } else {
-            (DF_INPUT_TARGET_DB - talker_db).clamp(0.0, DF_PREGAIN_MAX_DB)
-        };
+        let pregain_db = if talker_db.is_nan() { 0.0 } else { (DF_INPUT_TARGET_DB - talker_db).clamp(0.0, DF_PREGAIN_MAX_DB) };
         Self {
             filters,
             effect: Effect::new(effect),
@@ -650,9 +626,7 @@ impl MicProcessor {
             limiter: voice_limiter(),
             eq: equalizer(filters.eq, filters.calibration),
             recording: None,
-            floor_db: filters
-                .calibration
-                .map_or(f32::NAN, |c| c.noise_db.clamp(-90.0, -20.0)),
+            floor_db: filters.calibration.map_or(f32::NAN, |c| c.noise_db.clamp(-90.0, -20.0)),
             onset: 0,
             dither: 0x2545_f491,
         }
@@ -662,9 +636,7 @@ impl MicProcessor {
     /// à `out` du mono 48 kHz nettoyé.
     pub fn process(&mut self, input: impl Iterator<Item = f32>, out: &mut Vec<f32>) {
         for s in input {
-            let Some(mono) = self.downmix.push(s) else {
-                continue;
-            };
+            let Some(mono) = self.downmix.push(s) else { continue };
 
             if self.step == 1.0 {
                 self.push_sample(mono, out);
@@ -687,13 +659,7 @@ impl MicProcessor {
     /// Commence à enregistrer `samples` échantillons (brut et traité).
     pub fn start_recording(&mut self, samples: usize) {
         let empty = || Vec::with_capacity(samples);
-        self.recording = Some((
-            Recording {
-                raw: empty(),
-                processed: empty(),
-            },
-            samples,
-        ));
+        self.recording = Some((Recording { raw: empty(), processed: empty() }, samples));
     }
 
     /// L'enregistrement, une fois complet.
@@ -702,8 +668,7 @@ impl MicProcessor {
             .recording
             .as_ref()
             .is_some_and(|(r, n)| r.raw.len() >= *n && r.processed.len() >= *n);
-        full.then(|| self.recording.take().map(|(r, _)| r))
-            .flatten()
+        full.then(|| self.recording.take().map(|(r, _)| r)).flatten()
     }
 
     fn push_sample(&mut self, v: f32, out: &mut Vec<f32>) {
@@ -724,13 +689,8 @@ impl MicProcessor {
         let voice = self
             .rnnoise
             .process_frame(&mut self.frame_out, &self.frame_in);
-        let input_rms = (self
-            .frame_in
-            .iter()
-            .map(|s| (s / 32768.0).powi(2))
-            .sum::<f32>()
-            / FRAME as f32)
-            .sqrt();
+        let input_rms =
+            (self.frame_in.iter().map(|s| (s / 32768.0).powi(2)).sum::<f32>() / FRAME as f32).sqrt();
 
         let in_db = 20.0 * input_rms.max(1e-6).log10();
         let fast_start = self.talker_frames < DF_PREGAIN_FAST_FRAMES;
@@ -741,26 +701,17 @@ impl MicProcessor {
         }
         // Assez fort pour être toi (et non une voix au fond de la pièce) :
         // de quoi ouvrir la porte, ou seulement la garder ouverte.
-        let strict = if self.filters.far_voices == FarVoices::Strict {
-            NEAR_STRICT_DB
-        } else {
-            0.0
-        };
+        let strict = if self.filters.far_voices == FarVoices::Strict { NEAR_STRICT_DB } else { 0.0 };
         let near_open = in_db >= self.near_floor_db(NEAR_OPEN_DB - strict);
         // Réglage désactivé : toute voix garde la porte ouverte, comme avant.
-        let near = self.filters.far_voices == FarVoices::Off
-            || in_db >= self.near_floor_db(NEAR_KEEP_DB - strict);
+        let near = self.filters.far_voices == FarVoices::Off || in_db >= self.near_floor_db(NEAR_KEEP_DB - strict);
 
         // Gain d'avant l'IA : la voix lui arrive toujours à un niveau normal.
         let (mut pre, mut post) = (1.0, 1.0);
         if self.deep.is_some() && self.filters.denoise {
             if !self.talker_db.is_nan() {
                 let wanted = (DF_INPUT_TARGET_DB - self.talker_db).clamp(0.0, DF_PREGAIN_MAX_DB);
-                let step = if fast_start {
-                    DF_PREGAIN_FAST_STEP_DB
-                } else {
-                    DF_PREGAIN_STEP_DB
-                };
+                let step = if fast_start { DF_PREGAIN_FAST_STEP_DB } else { DF_PREGAIN_STEP_DB };
                 self.pregain_db += (wanted - self.pregain_db).clamp(-step, step);
             }
             pre = 10f32.powf(self.pregain_db / 20.0);
@@ -776,27 +727,15 @@ impl MicProcessor {
             self.frame_in.clone()
         } else if let Some(df) = self.deep.as_mut() {
             for (d, s) in self.deep_in.iter_mut().zip(&self.frame_in) {
-                self.dither = self
-                    .dither
-                    .wrapping_mul(1_664_525)
-                    .wrapping_add(1_013_904_223);
+                self.dither = self.dither.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                 let white = (self.dither >> 8) as f32 / (1 << 23) as f32 - 1.0;
                 *d = s / 32768.0 * pre + white * DF_DITHER;
             }
             let noisy = ArrayView2::from_shape((1, FRAME), &self.deep_in).expect("trame");
-            let enhanced =
-                ArrayViewMut2::from_shape((1, FRAME), &mut self.deep_out).expect("trame");
+            let enhanced = ArrayViewMut2::from_shape((1, FRAME), &mut self.deep_out).expect("trame");
             self.dry_hist.push_back(self.frame_in.clone());
-            let dry = if self.dry_hist.len() > DF_LAG_FRAMES {
-                self.dry_hist.pop_front()
-            } else {
-                None
-            };
-            self.silent_frames = if input_rms < DF_IDLE_RMS {
-                self.silent_frames.saturating_add(1)
-            } else {
-                0
-            };
+            let dry = if self.dry_hist.len() > DF_LAG_FRAMES { self.dry_hist.pop_front() } else { None };
+            self.silent_frames = if input_rms < DF_IDLE_RMS { self.silent_frames.saturating_add(1) } else { 0 };
             if self.silent_frames > DF_IDLE_FRAMES {
                 // Rien à nettoyer : l'IA rendrait le même silence.
                 self.lsnr = -15.0;
@@ -839,8 +778,7 @@ impl MicProcessor {
                 }
             }
         }
-        let ai_voice =
-            near && self.deep.is_some() && self.filters.denoise && self.lsnr >= DF_KEEP_LSNR_DB;
+        let ai_voice = near && self.deep.is_some() && self.filters.denoise && self.lsnr >= DF_KEEP_LSNR_DB;
 
         let gate_open = if !self.filters.gate {
             true
@@ -880,11 +818,7 @@ impl MicProcessor {
         while self.voices.len() > self.voice_lag + 1 {
             self.voices.pop_front();
         }
-        let voice_out = if self.voices.len() > self.voice_lag {
-            self.voices[0]
-        } else {
-            0.0
-        };
+        let voice_out = if self.voices.len() > self.voice_lag { self.voices[0] } else { 0.0 };
 
         let rms = (source.iter().map(|s| (s / 32768.0).powi(2)).sum::<f32>() / FRAME as f32).sqrt();
         // Échelle en dB ramenée à 0–1 (−60 dB → 0, 0 dB → 1).
@@ -902,11 +836,7 @@ impl MicProcessor {
         } else {
             self.quiet_frames = 0;
         }
-        let pause_target = if pause && self.quiet_frames >= PAUSE_AFTER_FRAMES {
-            PAUSE_DIP
-        } else {
-            1.0
-        };
+        let pause_target = if pause && self.quiet_frames >= PAUSE_AFTER_FRAMES { PAUSE_DIP } else { 1.0 };
         let (down, up) = (smoothing(0.15), smoothing(0.01));
 
         // Porte, baisse des pauses puis égaliseur.
@@ -918,11 +848,7 @@ impl MicProcessor {
             } else if self.gain > target {
                 self.gain = (self.gain - RELEASE).max(target);
             }
-            let c = if pause_target < self.pause_gain {
-                down
-            } else {
-                up
-            };
+            let c = if pause_target < self.pause_gain { down } else { up };
             self.pause_gain = pause_target + (self.pause_gain - pause_target) * c;
             let mut v = s / 32768.0 * self.gain * self.pause_gain;
             *d = v;
@@ -937,23 +863,17 @@ impl MicProcessor {
             // l'égaliseur, seulement quand c'est vraiment de la voix et que
             // la porte est grande ouverte.
             let eq_rms = (self.eq_buf.iter().map(|v| v * v).sum::<f32>() / FRAME as f32).sqrt();
-            self.leveler
-                .begin_frame(eq_rms, voice_out >= 0.5 && self.gain >= 0.99);
+            self.leveler.begin_frame(eq_rms, voice_out >= 0.5 && self.gain >= 0.99);
         }
         for (i, &v) in self.eq_buf.iter().enumerate() {
-            let v = if self.filters.level {
-                self.leveler.process(v, dry[i])
-            } else {
-                v
-            };
+            let v = if self.filters.level { self.leveler.process(v, dry[i]) } else { v };
             let mut frame = [self.effect.process(v)];
             self.limiter.process(&mut frame);
             out.push(frame[0].clamp(-1.0, 1.0));
         }
         if let Some((r, n)) = self.recording.as_mut() {
             let missing = n.saturating_sub(r.processed.len());
-            r.processed
-                .extend(out[out.len() - FRAME..].iter().take(missing));
+            r.processed.extend(out[out.len() - FRAME..].iter().take(missing));
         }
         self.frame_in.clear();
     }
@@ -1018,9 +938,7 @@ impl MicProcessor {
         self.heard_frames = self.heard_frames.saturating_add(1);
         let keep = self.heard_frames >= LEARNED_AFTER_FRAMES && self.talker_db >= LEARNED_MIN_DB;
         if keep && self.heard_frames.is_multiple_of(100) {
-            self.meter
-                .learned
-                .store(self.talker_db.min(-1.0).to_bits(), Ordering::Relaxed);
+            self.meter.learned.store(self.talker_db.min(-1.0).to_bits(), Ordering::Relaxed);
         }
         let slow = (1.0 / (self.talker_frames as f32 + 4.0)).max(0.003);
         let jump = gap > TALKER_JUMP_DB;
@@ -1043,8 +961,7 @@ impl MicProcessor {
             floor = floor.min(OPEN_FLOOR_DB);
         }
         if !self.talker_sure {
-            let unsure =
-                (self.talker_db - UNSURE_OPEN_DB).min(OPEN_FLOOR_DB) - (margin - NEAR_OPEN_DB);
+            let unsure = (self.talker_db - UNSURE_OPEN_DB).min(OPEN_FLOOR_DB) - (margin - NEAR_OPEN_DB);
             floor = floor.max(unsure);
         }
         floor.clamp(NEAR_FLOOR_MIN_DB, NEAR_FLOOR_MAX_DB)
@@ -1150,11 +1067,7 @@ impl VoiceLeveler {
             (Some(_), false) => 80,
             (Some(_), true) => 1000,
         };
-        let min_db = if speech_db.is_some() && sure {
-            -70.0
-        } else {
-            -55.0
-        };
+        let min_db = if speech_db.is_some() && sure { -70.0 } else { -55.0 };
         let speech_db = speech_db.unwrap_or(LEVEL_TARGET_DB);
         let gain_db = (LEVEL_TARGET_DB - speech_db).clamp(LEVEL_MIN_DB, LEVEL_MAX_DB);
         let gain = 10f32.powf(gain_db / 20.0);
@@ -1200,11 +1113,7 @@ impl VoiceLeveler {
         let wanted = (LEVEL_TARGET_DB - self.speech_db).clamp(LEVEL_MIN_DB, LEVEL_MAX_DB);
         // Le gain bouge en ~0,3 s ; bien plus vite s'il est très au-dessus
         // de ce qu'il faut (réglé sur une voix lointaine, puis tu parles).
-        let rate = if wanted < self.gain_db - 6.0 {
-            0.2
-        } else {
-            0.03
-        };
+        let rate = if wanted < self.gain_db - 6.0 { 0.2 } else { 0.03 };
         self.gain_db += (wanted - self.gain_db) * rate;
         self.from = self.to;
         self.to = 10f32.powf(self.gain_db / 20.0);
@@ -1231,11 +1140,7 @@ impl VoiceLeveler {
         } else {
             slope * (over + COMP_KNEE_DB / 2.0).powi(2) / (2.0 * COMP_KNEE_DB)
         };
-        let c = if wanted < self.comp_db {
-            smoothing(0.01)
-        } else {
-            smoothing(0.15)
-        };
+        let c = if wanted < self.comp_db { smoothing(0.01) } else { smoothing(0.15) };
         self.comp_db = wanted + (self.comp_db - wanted) * c;
         let comp = 10f32.powf(self.comp_db / 20.0);
         let x = x * comp;
@@ -1251,16 +1156,8 @@ impl VoiceLeveler {
         self.full_power = self.full_power * c + side * side * (1.0 - c);
         let high_db = to_db(self.high_power);
         let excess = high_db - to_db(self.full_power) - ESS_THRESHOLD_DB;
-        let wanted = if high_db > ESS_FLOOR_DB {
-            excess.clamp(0.0, ESS_MAX_DB)
-        } else {
-            0.0
-        };
-        let c = if wanted > self.ess_db {
-            smoothing(0.001)
-        } else {
-            smoothing(0.06)
-        };
+        let wanted = if high_db > ESS_FLOOR_DB { excess.clamp(0.0, ESS_MAX_DB) } else { 0.0 };
+        let c = if wanted > self.ess_db { smoothing(0.001) } else { smoothing(0.06) };
         self.ess_db = wanted + (self.ess_db - wanted) * c;
         x - high * (1.0 - 10f32.powf(-self.ess_db / 20.0))
     }
@@ -1279,13 +1176,7 @@ mod tests {
     use super::*;
 
     fn run(filters: MicFilters, rate: u32, channels: u16, input: &[f32]) -> Vec<f32> {
-        let mut p = MicProcessor::new(
-            channels,
-            rate,
-            filters,
-            VoiceEffect::None,
-            Default::default(),
-        );
+        let mut p = MicProcessor::new(channels, rate, filters, VoiceEffect::None, Default::default());
         let mut out = Vec::new();
         p.process(input.iter().copied(), &mut out);
         out
@@ -1309,11 +1200,7 @@ mod tests {
         // 1 s de stéréo 44,1 kHz → ~1 s de mono 48 kHz (à une trame près).
         let input = vec![0.1; 44_100 * 2];
         let out = run(OFF, 44_100, 2, &input);
-        assert!(
-            (out.len() as i64 - 48_000).abs() <= FRAME as i64,
-            "{}",
-            out.len()
-        );
+        assert!((out.len() as i64 - 48_000).abs() <= FRAME as i64, "{}", out.len());
         // Même sans filtre, l'anti-grondement (80 Hz) reste là : un continu
         // disparaît en quelques dizaines de ms.
         assert!(out[out.len() / 2..].iter().all(|v| v.abs() < 1e-3));
@@ -1325,9 +1212,7 @@ mod tests {
         // laissait des parasites vers -35 dB, la cubique vers -60 dB.
         let f = 3000.0f64;
         let w = f / 48_000.0 * std::f64::consts::TAU;
-        let input: Vec<f32> = (0..44_100)
-            .map(|i| (i as f64 * f / 44_100.0 * std::f64::consts::TAU).sin() as f32 * 0.5)
-            .collect();
+        let input: Vec<f32> = (0..44_100).map(|i| (i as f64 * f / 44_100.0 * std::f64::consts::TAU).sin() as f32 * 0.5).collect();
         let out = &run(OFF, 44_100, 1, &input)[4800..40_000];
         // Sinusoïde la plus proche (moindres carrés), puis ce qui reste.
         let (mut ss, mut cc, mut sc, mut vs, mut vc) = (0.0, 0.0, 0.0, 0.0, 0.0);
@@ -1391,31 +1276,18 @@ mod tests {
     #[test]
     fn strong_denoise_removes_steady_noise() {
         let input = noise(48_000 * 2, 0.05);
-        let filters = MicFilters {
-            denoise: true,
-            strong: true,
-            ..OFF
-        };
+        let filters = MicFilters { denoise: true, strong: true, ..OFF };
         let out = run(filters, 48_000, 1, &input);
         let tail = &out[out.len() / 2..];
         // Au moins 20 dB de moins sur un souffle constant.
-        assert!(
-            rms(tail) < rms(&input) * 0.1,
-            "{} vs {}",
-            rms(tail),
-            rms(&input)
-        );
+        assert!(rms(tail) < rms(&input) * 0.1, "{} vs {}", rms(tail), rms(&input));
     }
 
     #[test]
     fn light_denoise_is_capped_at_30_db() {
         // Un souffle faible, que RNNoise seul retire presque entièrement.
         let input = noise(48_000 * 2, 0.0005);
-        let filters = MicFilters {
-            denoise: true,
-            strong: false,
-            ..OFF
-        };
+        let filters = MicFilters { denoise: true, strong: false, ..OFF };
         let out = run(filters, 48_000, 1, &input);
         let db = 20.0 * (rms(&out[out.len() / 2..]) / rms(&input)).log10();
         assert!(db > -30.0, "{db}");
@@ -1425,11 +1297,7 @@ mod tests {
     fn gate_ignores_faint_input() {
         // Sous le plancher de -55 dBFS, la porte reste fermée quoi qu'il arrive.
         let input = noise(48_000, 0.001);
-        let filters = MicFilters {
-            gate: true,
-            gate_threshold: 0.0,
-            ..OFF
-        };
+        let filters = MicFilters { gate: true, gate_threshold: 0.0, ..OFF };
         let out = run(filters, 48_000, 1, &input);
         assert!(out.iter().all(|v| v.abs() < 1e-6));
     }
@@ -1467,11 +1335,7 @@ mod tests {
     fn auto_gate_ignores_room_noise_and_opens_on_loud_input() {
         // Souffle constant pendant 2 s : la porte apprend le bruit et reste
         // fermée ; il faut nettement plus fort pour l'ouvrir.
-        let filters = MicFilters {
-            gate: true,
-            gate_auto: true,
-            ..OFF
-        };
+        let filters = MicFilters { gate: true, gate_auto: true, ..OFF };
         let mut p = MicProcessor::new(1, 48_000, filters, VoiceEffect::None, Default::default());
         let mut out = Vec::new();
         p.process(noise(48_000 * 2, 0.01).into_iter(), &mut out);
@@ -1488,11 +1352,7 @@ mod tests {
 
     #[test]
     fn gate_floor_follows_the_talker() {
-        let filters = MicFilters {
-            gate: true,
-            gate_auto: true,
-            ..OFF
-        };
+        let filters = MicFilters { gate: true, gate_auto: true, ..OFF };
         let new = || MicProcessor::new(1, 48_000, filters, VoiceEffect::None, Default::default());
         // Rien entendu encore : plancher fixe.
         let mut p = new();
@@ -1500,226 +1360,98 @@ mod tests {
         // Voix très faible (-65 dBFS) sans test de voix : toi ou la télé ?
         // Le plancher descend juste assez pour ses syllabes fortes.
         (0..100).for_each(|_| assert!(!p.track_talker(0.9, -65.0)));
-        assert!(
-            (p.near_floor_db(NEAR_OPEN_DB) + 63.0).abs() < 0.5,
-            "{}",
-            p.near_floor_db(NEAR_OPEN_DB)
-        );
+        assert!((p.near_floor_db(NEAR_OPEN_DB) + 63.0).abs() < 0.5, "{}", p.near_floor_db(NEAR_OPEN_DB));
         assert!((p.near_floor_db(NEAR_KEEP_DB) + 69.0).abs() < 0.5);
         // Avec le test de voix, on sait que c'est toi : avant, un micro à
         // -57 dBFS n'ouvrait jamais.
-        let weak = MicCalibration {
-            noise_db: -80.0,
-            speech_db: -57.0,
-            eq_db: [0.0; 6],
-        };
-        let sure = MicProcessor::new(
-            1,
-            48_000,
-            MicFilters {
-                calibration: Some(weak),
-                ..filters
-            },
-            VoiceEffect::None,
-            Default::default(),
-        );
+        let weak = MicCalibration { noise_db: -80.0, speech_db: -57.0, eq_db: [0.0; 6] };
+        let sure = MicProcessor::new(1, 48_000, MicFilters { calibration: Some(weak), ..filters }, VoiceEffect::None, Default::default());
         assert_eq!(sure.near_floor_db(NEAR_OPEN_DB), -69.0);
         // Voix normale à -30 dBFS : une télé à -55 n'ouvre plus, et une
         // minute de télé ne déplace presque pas le plancher.
         let mut p = new();
-        (0..300).for_each(|_| {
-            p.track_talker(0.9, -30.0);
-        });
+        (0..300).for_each(|_| { p.track_talker(0.9, -30.0); });
         assert!(p.near_floor_db(NEAR_OPEN_DB) > -45.0);
-        (0..3000).for_each(|_| {
-            p.track_talker(0.9, -55.0);
-        });
+        (0..3000).for_each(|_| { p.track_talker(0.9, -55.0); });
         let floor = p.near_floor_db(NEAR_OPEN_DB);
         assert!(floor > -50.0, "{floor}");
         // Mais si c'est toi qui parles plus bas (-12 dB), on te suit en
         // quelques secondes.
-        (0..600).for_each(|_| {
-            p.track_talker(0.9, -42.0);
-        });
+        (0..600).for_each(|_| { p.track_talker(0.9, -42.0); });
         assert!(p.near_floor_db(NEAR_OPEN_DB) < -50.0);
         // Et une voix bien plus forte est apprise en une demi-seconde.
         assert!(p.track_talker(0.9, -20.0));
         // Sauf au tout début, où ce n'est que la première syllabe qui monte.
         let mut fresh = new();
         assert!(!fresh.track_talker(0.9, -50.0) && !fresh.track_talker(0.9, -25.0));
-        (0..50).for_each(|_| {
-            p.track_talker(0.9, -20.0);
-        });
-        assert!(
-            p.near_floor_db(NEAR_OPEN_DB) > -55.0,
-            "{}",
-            p.near_floor_db(NEAR_OPEN_DB)
-        );
-        (0..600).for_each(|_| {
-            p.track_talker(0.9, -20.0);
-        });
-        assert!(
-            p.near_floor_db(NEAR_OPEN_DB) > -40.0,
-            "{}",
-            p.near_floor_db(NEAR_OPEN_DB)
-        );
+        (0..50).for_each(|_| { p.track_talker(0.9, -20.0); });
+        assert!(p.near_floor_db(NEAR_OPEN_DB) > -55.0, "{}", p.near_floor_db(NEAR_OPEN_DB));
+        (0..600).for_each(|_| { p.track_talker(0.9, -20.0); });
+        assert!(p.near_floor_db(NEAR_OPEN_DB) > -40.0, "{}", p.near_floor_db(NEAR_OPEN_DB));
         // Le bruit de la pièce pris pour de la voix ne compte pas.
         let mut p = new();
         p.floor_db = -50.0;
-        (0..100).for_each(|_| {
-            p.track_talker(0.9, -47.0);
-        });
+        (0..100).for_each(|_| { p.track_talker(0.9, -47.0); });
         assert!(p.talker_db.is_nan());
         // Test de voix fait : plancher connu dès le premier mot.
-        let calibration = MicCalibration {
-            noise_db: -70.0,
-            speech_db: -40.0,
-            eq_db: [0.0; 6],
-        };
-        let p = MicProcessor::new(
-            1,
-            48_000,
-            MicFilters {
-                calibration: Some(calibration),
-                ..filters
-            },
-            VoiceEffect::None,
-            Default::default(),
-        );
+        let calibration = MicCalibration { noise_db: -70.0, speech_db: -40.0, eq_db: [0.0; 6] };
+        let p = MicProcessor::new(1, 48_000, MicFilters { calibration: Some(calibration), ..filters }, VoiceEffect::None, Default::default());
         assert_eq!(p.near_floor_db(NEAR_OPEN_DB), -52.0);
     }
 
     #[test]
     fn stale_level_from_a_previous_launch_is_dropped_when_the_voice_comes_back_weaker() {
-        let filters = MicFilters {
-            gate: true,
-            gate_auto: true,
-            ..OFF
-        };
-        let with =
-            |f: MicFilters| MicProcessor::new(1, 48_000, f, VoiceEffect::None, Default::default());
-        let calibration = MicCalibration {
-            noise_db: -80.0,
-            speech_db: -30.0,
-            eq_db: [0.0; 6],
-        };
-        for f in [
-            MicFilters {
-                learned_db: Some(-30.0),
-                ..filters
-            },
-            MicFilters {
-                calibration: Some(calibration),
-                ..filters
-            },
-        ] {
+        let filters = MicFilters { gate: true, gate_auto: true, ..OFF };
+        let with = |f: MicFilters| MicProcessor::new(1, 48_000, f, VoiceEffect::None, Default::default());
+        let calibration = MicCalibration { noise_db: -80.0, speech_db: -30.0, eq_db: [0.0; 6] };
+        for f in [MicFilters { learned_db: Some(-30.0), ..filters }, MicFilters { calibration: Some(calibration), ..filters }] {
             // Volume du micro baissé de 25 dB depuis la dernière fois : après
             // 0,2 s de parole, ta voix ouvre de nouveau le micro.
             let mut p = with(f);
             assert!(-55.0 < p.near_floor_db(NEAR_OPEN_DB));
-            (0..20).for_each(|_| {
-                p.track_talker(0.9, -55.0);
-            });
-            assert!(
-                -55.0 >= p.near_floor_db(NEAR_OPEN_DB),
-                "{}",
-                p.near_floor_db(NEAR_OPEN_DB)
-            );
+            (0..20).for_each(|_| { p.track_talker(0.9, -55.0); });
+            assert!(-55.0 >= p.near_floor_db(NEAR_OPEN_DB), "{}", p.near_floor_db(NEAR_OPEN_DB));
             // Voix normale entendue d'abord : la télé (25 dB dessous) ne
             // fait pas baisser le niveau, même après 30 s.
             let mut p = with(f);
-            (0..50).for_each(|_| {
-                p.track_talker(0.9, -31.0);
-            });
-            (0..3000).for_each(|_| {
-                p.track_talker(0.9, -55.0);
-            });
-            assert!(
-                p.near_floor_db(NEAR_KEEP_DB) > -55.0,
-                "{}",
-                p.near_floor_db(NEAR_KEEP_DB)
-            );
+            (0..50).for_each(|_| { p.track_talker(0.9, -31.0); });
+            (0..3000).for_each(|_| { p.track_talker(0.9, -55.0); });
+            assert!(p.near_floor_db(NEAR_KEEP_DB) > -55.0, "{}", p.near_floor_db(NEAR_KEEP_DB));
             // La télé parle avant ton premier mot : le niveau baisse, puis
             // remonte quand tu parles (quelques secondes de parole).
             let mut p = with(f);
-            (0..200).for_each(|_| {
-                p.track_talker(0.9, -55.0);
-            });
-            (0..600).for_each(|_| {
-                p.track_talker(0.9, -30.0);
-            });
-            assert!(
-                p.near_floor_db(NEAR_KEEP_DB) > -55.0,
-                "{}",
-                p.near_floor_db(NEAR_KEEP_DB)
-            );
+            (0..200).for_each(|_| { p.track_talker(0.9, -55.0); });
+            (0..600).for_each(|_| { p.track_talker(0.9, -30.0); });
+            assert!(p.near_floor_db(NEAR_KEEP_DB) > -55.0, "{}", p.near_floor_db(NEAR_KEEP_DB));
         }
     }
 
     #[test]
     fn far_voices_setting_and_learned_level() {
-        let filters = MicFilters {
-            gate: true,
-            gate_auto: true,
-            ..OFF
-        };
-        let with =
-            |f: MicFilters| MicProcessor::new(1, 48_000, f, VoiceEffect::None, Default::default());
-        let calibration = MicCalibration {
-            noise_db: -70.0,
-            speech_db: -30.0,
-            eq_db: [0.0; 6],
-        };
-        let sure = MicFilters {
-            calibration: Some(calibration),
-            ..filters
-        };
+        let filters = MicFilters { gate: true, gate_auto: true, ..OFF };
+        let with = |f: MicFilters| MicProcessor::new(1, 48_000, f, VoiceEffect::None, Default::default());
+        let calibration = MicCalibration { noise_db: -70.0, speech_db: -30.0, eq_db: [0.0; 6] };
+        let sure = MicFilters { calibration: Some(calibration), ..filters };
         // Désactivé : l'ancien plancher.
         assert_eq!(with(sure).near_floor_db(NEAR_OPEN_DB), -42.0);
-        assert_eq!(
-            with(MicFilters {
-                far_voices: FarVoices::Off,
-                ..sure
-            })
-            .near_floor_db(NEAR_OPEN_DB),
-            OPEN_FLOOR_DB
-        );
+        assert_eq!(with(MicFilters { far_voices: FarVoices::Off, ..sure }).near_floor_db(NEAR_OPEN_DB), OPEN_FLOOR_DB);
         // Désactivé, un micro très faible ouvre quand même.
-        let weak = MicCalibration {
-            speech_db: -57.0,
-            ..calibration
-        };
-        let off = MicFilters {
-            far_voices: FarVoices::Off,
-            calibration: Some(weak),
-            ..filters
-        };
+        let weak = MicCalibration { speech_db: -57.0, ..calibration };
+        let off = MicFilters { far_voices: FarVoices::Off, calibration: Some(weak), ..filters };
         assert_eq!(with(off).near_floor_db(NEAR_OPEN_DB), -69.0);
         // Niveau appris au lancement précédent : tout est réglé d'avance.
-        let p = with(MicFilters {
-            learned_db: Some(-30.0),
-            denoise: true,
-            strong: true,
-            ..filters
-        });
+        let p = with(MicFilters { learned_db: Some(-30.0), denoise: true, strong: true, ..filters });
         assert_eq!(p.near_floor_db(NEAR_OPEN_DB), -42.0);
         assert!((p.leveler.gain_db - 10.0).abs() < 0.01);
         // Le test de voix passe avant.
-        let p = with(MicFilters {
-            learned_db: Some(-50.0),
-            ..sure
-        });
+        let p = with(MicFilters { learned_db: Some(-50.0), ..sure });
         assert_eq!(p.near_floor_db(NEAR_OPEN_DB), -42.0);
         // Le niveau est donné à garder après 3 s de voix, pas avant.
         let meter = std::sync::Arc::new(MicMeter::default());
         let mut p = MicProcessor::new(1, 48_000, filters, VoiceEffect::None, meter.clone());
-        (0..250).for_each(|_| {
-            p.track_talker(0.9, -33.0);
-        });
+        (0..250).for_each(|_| { p.track_talker(0.9, -33.0); });
         assert_eq!(meter.learned_db(), None);
-        (0..150).for_each(|_| {
-            p.track_talker(0.9, -33.0);
-        });
+        (0..150).for_each(|_| { p.track_talker(0.9, -33.0); });
         assert!((meter.learned_db().unwrap() + 33.0).abs() < 0.5);
         meter.forget();
         assert_eq!(meter.learned_db(), None);
@@ -1730,9 +1462,7 @@ mod tests {
         let mut out = Vec::new();
         // 15 s : le volume automatique prend quelques secondes pour monter.
         for f in 0..1500 {
-            let frame: Vec<f32> = (0..FRAME)
-                .map(|i| ((f * FRAME + i) as f32 * 0.03).sin() * amp)
-                .collect();
+            let frame: Vec<f32> = (0..FRAME).map(|i| ((f * FRAME + i) as f32 * 0.03).sin() * amp).collect();
             l.begin_frame(rms(&frame), true);
             out.extend(frame.iter().map(|&x| l.process(x, x)));
         }
@@ -1764,9 +1494,7 @@ mod tests {
     }
 
     fn tone(freq: f32, amp: f32, n: usize) -> Vec<f32> {
-        (0..n)
-            .map(|i| (i as f32 * freq / RATE as f32 * std::f32::consts::TAU).sin() * amp)
-            .collect()
+        (0..n).map(|i| (i as f32 * freq / RATE as f32 * std::f32::consts::TAU).sin() * amp).collect()
     }
 
     #[test]
@@ -1802,10 +1530,7 @@ mod tests {
 
     fn gain_db(bands: &mut [Biquad], freq: f32) -> f32 {
         let input = tone(freq, 0.1, 48_000);
-        let out: Vec<f32> = input
-            .iter()
-            .map(|&x| bands.iter_mut().fold(x, |v, b| b.run(v)))
-            .collect();
+        let out: Vec<f32> = input.iter().map(|&x| bands.iter_mut().fold(x, |v, b| b.run(v))).collect();
         20.0 * (rms(&out[24_000..]) / rms(&input[24_000..])).log10()
     }
 
@@ -1824,18 +1549,10 @@ mod tests {
     #[test]
     fn custom_equalizer_follows_calibration() {
         // Un ancien test de voix (jusqu'à 8 dB) est ramené à 4 dB au plus.
-        let calibration = MicCalibration {
-            noise_db: -70.0,
-            speech_db: -30.0,
-            eq_db: [-6.0, 0.0, 0.0, 3.0, 8.0, 3.0],
-        };
+        let calibration = MicCalibration { noise_db: -70.0, speech_db: -30.0, eq_db: [-6.0, 0.0, 0.0, 3.0, 8.0, 3.0] };
         let mut eq = equalizer(VoiceEq::Custom, Some(calibration));
         assert!((gain_db(&mut eq, 50.0) + 4.0).abs() < 0.5);
-        assert!(
-            (gain_db(&mut eq, 4000.0) - 4.0).abs() < 1.5,
-            "{}",
-            gain_db(&mut eq, 4000.0)
-        );
+        assert!((gain_db(&mut eq, 4000.0) - 4.0).abs() < 1.5, "{}", gain_db(&mut eq, 4000.0));
         assert!(gain_db(&mut eq, 14_000.0) > 2.5);
         // Sans test de voix, rien ne change.
         assert!(equalizer(VoiceEq::Custom, None).is_empty());
@@ -1845,11 +1562,7 @@ mod tests {
     fn deep_filter_never_cuts_quiet_word_endings() {
         // Une fin de mot qui descend à -75 dBFS sur un micro sans bruit de
         // fond : avant, DeepFilterNet rendait un trou de silence total.
-        let filters = MicFilters {
-            denoise: true,
-            strong: true,
-            ..OFF
-        };
+        let filters = MicFilters { denoise: true, strong: true, ..OFF };
         let mut input = tone(300.0, 0.03, 24_000);
         input.extend(tone(300.0, 0.0003, 9600));
         input.extend(tone(300.0, 0.03, 24_000));
@@ -1865,53 +1578,27 @@ mod tests {
 
     #[test]
     fn deep_filter_rests_on_digital_silence_and_wakes_up() {
-        let filters = MicFilters {
-            denoise: true,
-            strong: true,
-            ..OFF
-        };
+        let filters = MicFilters { denoise: true, strong: true, ..OFF };
         let mut p = MicProcessor::new(1, 48_000, filters, VoiceEffect::None, Default::default());
         let mut out = Vec::new();
         p.process(std::iter::repeat_n(0.0, 48_000 * 3), &mut out);
-        assert!(
-            p.silent_frames > DF_IDLE_FRAMES,
-            "l'IA tourne encore sur le silence"
-        );
+        assert!(p.silent_frames > DF_IDLE_FRAMES, "l'IA tourne encore sur le silence");
         out.clear();
         p.process(tone(300.0, 0.03, 24_000).into_iter(), &mut out);
         assert_eq!(p.silent_frames, 0);
-        let rms = |o: &[f32]| {
-            (o[9600..].iter().map(|v| v * v).sum::<f32>() / (o.len() - 9600) as f32).sqrt()
-        };
+        let rms = |o: &[f32]| (o[9600..].iter().map(|v| v * v).sum::<f32>() / (o.len() - 9600) as f32).sqrt();
         // Même son sur un micro qui n'a jamais été au repos.
         let fresh = run(filters, 48_000, 1, &tone(300.0, 0.03, 24_000));
-        assert!(
-            rms(&out) > rms(&fresh) * 0.5,
-            "la voix revient mal après le silence : {} / {}",
-            rms(&out),
-            rms(&fresh)
-        );
+        assert!(rms(&out) > rms(&fresh) * 0.5, "la voix revient mal après le silence : {} / {}", rms(&out), rms(&fresh));
     }
 
     #[test]
     fn gain_before_deep_filter_is_undone_after_it() {
         // Micro faible connu par le test de voix : +15 dB avant l'IA.
-        let calibration = MicCalibration {
-            noise_db: -70.0,
-            speech_db: -42.0,
-            eq_db: [0.0; 6],
-        };
-        let boosted = MicFilters {
-            denoise: true,
-            strong: true,
-            calibration: Some(calibration),
-            ..OFF
-        };
+        let calibration = MicCalibration { noise_db: -70.0, speech_db: -42.0, eq_db: [0.0; 6] };
+        let boosted = MicFilters { denoise: true, strong: true, calibration: Some(calibration), ..OFF };
         let mut input = tone(300.0, 0.01, 48_000);
-        input
-            .iter_mut()
-            .zip(noise(48_000, 0.001))
-            .for_each(|(s, n)| *s += n);
+        input.iter_mut().zip(noise(48_000, 0.001)).for_each(|(s, n)| *s += n);
         let mut p = MicProcessor::new(1, 48_000, boosted, VoiceEffect::None, Default::default());
         assert!((p.pregain_db - 15.0).abs() < 0.01);
         let mut out = Vec::new();
@@ -1925,14 +1612,9 @@ mod tests {
 
     #[test]
     fn deep_filter_reduction_follows_room_noise() {
-        let filters = MicFilters {
-            denoise: true,
-            strong: true,
-            ..OFF
-        };
+        let filters = MicFilters { denoise: true, strong: true, ..OFF };
         let atten = |amp: f32| {
-            let mut p =
-                MicProcessor::new(1, 48_000, filters, VoiceEffect::None, Default::default());
+            let mut p = MicProcessor::new(1, 48_000, filters, VoiceEffect::None, Default::default());
             let mut out = Vec::new();
             p.process(noise(48_000 * 3, amp).into_iter(), &mut out);
             p.atten_db
@@ -1979,10 +1661,6 @@ mod tests {
         }
         // Et le gain revient après l'éclat.
         let tail = &out[out.len() - 4800..];
-        assert!(
-            (rms(tail) - 0.3 / 2f32.sqrt()).abs() < 0.01,
-            "{}",
-            rms(tail)
-        );
+        assert!((rms(tail) - 0.3 / 2f32.sqrt()).abs() < 0.01, "{}", rms(tail));
     }
 }

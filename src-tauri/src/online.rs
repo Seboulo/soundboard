@@ -114,11 +114,7 @@ struct FreesoundResult {
     previews: std::collections::HashMap<String, String>,
 }
 
-pub async fn search_freesound(
-    query: &str,
-    page: u32,
-    key: &str,
-) -> Result<Vec<OnlineSound>, String> {
+pub async fn search_freesound(query: &str, page: u32, key: &str) -> Result<Vec<OnlineSound>, String> {
     let res = client()?
         .get(FREESOUND)
         .query(&[
@@ -147,17 +143,12 @@ pub async fn search_freesound(
 }
 
 pub fn parse_freesound(json: &str) -> Result<Vec<OnlineSound>, String> {
-    let page: FreesoundPage =
-        serde_json::from_str(json).map_err(|e| format!("réponse Freesound illisible : {e}"))?;
+    let page: FreesoundPage = serde_json::from_str(json).map_err(|e| format!("réponse Freesound illisible : {e}"))?;
     Ok(page
         .results
         .into_iter()
         .filter_map(|r| {
-            let url = r
-                .previews
-                .get("preview-hq-mp3")
-                .or(r.previews.get("preview-lq-mp3"))?
-                .clone();
+            let url = r.previews.get("preview-hq-mp3").or(r.previews.get("preview-lq-mp3"))?.clone();
             if !url.starts_with(FREESOUND_CDN) {
                 return None;
             }
@@ -174,10 +165,7 @@ fn strip_extension(name: &str) -> String {
     let lower = name.to_lowercase();
     for ext in [".wav", ".mp3", ".ogg", ".flac", ".aiff", ".aif", ".m4a"] {
         if lower.ends_with(ext) {
-            return name[..name.len() - ext.len()]
-                .replace(['_', '-'], " ")
-                .trim()
-                .to_string();
+            return name[..name.len() - ext.len()].replace(['_', '-'], " ").trim().to_string();
         }
     }
     name.trim().to_string()
@@ -226,9 +214,7 @@ pub fn link_name(file_name: &str, content_type: &str) -> (String, String) {
     const EXTS: &[&str] = &["mp3", "wav", "ogg", "flac", "m4a", "aac"];
     let decoded = percent_decode(file_name);
     let (stem, ext) = match decoded.rsplit_once('.') {
-        Some((stem, ext)) if EXTS.contains(&ext.to_lowercase().as_str()) => {
-            (stem.to_string(), ext.to_lowercase())
-        }
+        Some((stem, ext)) if EXTS.contains(&ext.to_lowercase().as_str()) => (stem.to_string(), ext.to_lowercase()),
         _ => {
             let ext = match content_type {
                 t if t.contains("wav") => "wav",
@@ -240,17 +226,8 @@ pub fn link_name(file_name: &str, content_type: &str) -> (String, String) {
             (decoded.clone(), ext.to_string())
         }
     };
-    let name: String = stem
-        .replace(['_', '-', '+'], " ")
-        .trim()
-        .chars()
-        .take(60)
-        .collect();
-    let name = if name.is_empty() {
-        "Son".to_string()
-    } else {
-        name
-    };
+    let name: String = stem.replace(['_', '-', '+'], " ").trim().chars().take(60).collect();
+    let name = if name.is_empty() { "Son".to_string() } else { name };
     (ext, name)
 }
 
@@ -299,8 +276,7 @@ pub async fn check_update() -> Result<Option<UpdateInfo>, String> {
         .map_err(|e| e.to_string())?;
     let release: Release = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     let latest = release.tag_name.trim_start_matches('v').to_string();
-    if !is_newer(&latest, env!("CARGO_PKG_VERSION")) || !release.html_url.starts_with(RELEASES_PAGE)
-    {
+    if !is_newer(&latest, env!("CARGO_PKG_VERSION")) || !release.html_url.starts_with(RELEASES_PAGE) {
         return Ok(None);
     }
     Ok(Some(UpdateInfo {
@@ -390,14 +366,8 @@ mod tests {
 
     #[test]
     fn names_links() {
-        assert_eq!(
-            link_name("Vine%20Boom_sound.MP3", ""),
-            ("mp3".into(), "Vine Boom sound".into())
-        );
-        assert_eq!(
-            link_name("download", "audio/wav"),
-            ("wav".into(), "download".into())
-        );
+        assert_eq!(link_name("Vine%20Boom_sound.MP3", ""), ("mp3".into(), "Vine Boom sound".into()));
+        assert_eq!(link_name("download", "audio/wav"), ("wav".into(), "download".into()));
         assert_eq!(link_name("", "audio/mpeg"), ("mp3".into(), "Son".into()));
         assert_eq!(link_name("a%2", ""), ("mp3".into(), "a%2".into()));
     }

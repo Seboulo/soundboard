@@ -9,20 +9,20 @@
 //! vit dans un thread dédié piloté par des messages.
 
 use crate::config::Settings;
-use crate::decoder::AudioFile;
 use crate::denoise::{self, MicFilters, MicLevel, MicMeter, MicProcessor, Recording};
 use crate::dynamics::LookaheadLimiter;
-use crate::mixer::{Bus, Voice};
 use crate::resample::{self, Kernel, SincWindow};
 use crate::sound_fx::{self, Rendered, RenderedSource, SoundFx};
 use rodio::cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rodio::cpal::{self, SampleFormat};
+use crate::decoder::AudioFile;
+use crate::mixer::{Bus, Voice};
 use rodio::{OutputStream, Source};
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -31,6 +31,7 @@ use std::time::{Duration, Instant};
 pub const VB_CABLE_OUTPUT: &str = "CABLE Input";
 /// Côté enregistrement du câble : ce que Discord prend comme micro.
 pub const VB_CABLE_CAPTURE: &str = "CABLE Output";
+
 
 type Reply = Sender<Result<(), String>>;
 type PlayReply = Sender<Result<PlayOutcome, String>>;
@@ -210,8 +211,7 @@ impl AudioHandle {
         let (reply, rx) = mpsc::channel();
         self.send(Command::RecordSlot(reply))?;
         let slot = wait(rx)?;
-        *slot.lock().map_err(|e| e.to_string())? =
-            RecordSlot::Wanted(seconds * denoise::RATE as usize);
+        *slot.lock().map_err(|e| e.to_string())? = RecordSlot::Wanted(seconds * denoise::RATE as usize);
         let deadline = Instant::now() + Duration::from_secs(seconds as u64 + 5);
         while Instant::now() < deadline {
             thread::sleep(Duration::from_millis(50));
@@ -223,10 +223,7 @@ impl AudioHandle {
             }
         }
         *slot.lock().map_err(|e| e.to_string())? = RecordSlot::Idle;
-        Err(
-            "le micro n'a rien envoyé : vérifie qu'il est branché et choisi dans les réglages"
-                .into(),
-        )
+        Err("le micro n'a rien envoyé : vérifie qu'il est branché et choisi dans les réglages".into())
     }
 
     pub fn stop_preview(&self) {
@@ -295,18 +292,12 @@ pub struct DeviceFormat {
 
 pub fn output_format(name: Option<&str>) -> Option<DeviceFormat> {
     let c = find_output(name)?.default_output_config().ok()?;
-    Some(DeviceFormat {
-        rate: c.sample_rate().0,
-        channels: c.channels(),
-    })
+    Some(DeviceFormat { rate: c.sample_rate().0, channels: c.channels() })
 }
 
 pub fn input_format(name: Option<&str>) -> Option<DeviceFormat> {
     let c = find_input(name)?.default_input_config().ok()?;
-    Some(DeviceFormat {
-        rate: c.sample_rate().0,
-        channels: c.channels(),
-    })
+    Some(DeviceFormat { rate: c.sample_rate().0, channels: c.channels() })
 }
 
 /// Côté enregistrement du câble (« CABLE Output »).
@@ -316,10 +307,7 @@ pub fn cable_capture_format() -> Option<DeviceFormat> {
         .ok()?
         .find(|d| d.name().is_ok_and(|n| n.contains(VB_CABLE_CAPTURE)))?;
     let c = device.default_input_config().ok()?;
-    Some(DeviceFormat {
-        rate: c.sample_rate().0,
-        channels: c.channels(),
-    })
+    Some(DeviceFormat { rate: c.sample_rate().0, channels: c.channels() })
 }
 
 fn find_output(name: Option<&str>) -> Option<cpal::Device> {
@@ -337,9 +325,7 @@ fn find_output(name: Option<&str>) -> Option<cpal::Device> {
 /// niveau gardé sans nom de micro (« par défaut », anciennes versions) ne
 /// vaut plus : on ne sait pas de quel micro il vient.
 fn learned_fits(learned: &crate::config::MicLearned, name: Option<&str>) -> bool {
-    name.is_some()
-        && learned.device.as_deref() == name
-        && learned.speech_db >= denoise::LEARNED_MIN_DB
+    name.is_some() && learned.device.as_deref() == name && learned.speech_db >= denoise::LEARNED_MIN_DB
 }
 
 fn find_input(name: Option<&str>) -> Option<cpal::Device> {
@@ -363,19 +349,12 @@ impl Output {
     /// `keep_last` : garder les 30 dernières secondes (sortie vers Discord).
     fn open(device: &cpal::Device, keep_last: bool) -> Result<Self, String> {
         let config = device.default_output_config().map_err(|e| e.to_string())?;
-        let tap = if keep_last {
-            crate::replay::cable_ring(config.sample_rate().0)
-        } else {
-            None
-        };
+        let tap = if keep_last { crate::replay::cable_ring(config.sample_rate().0) } else { None };
         let (bus, source) = Bus::with_tap(config.channels(), config.sample_rate().0, tap);
         let (stream, handle) =
             OutputStream::try_from_device_config(device, config).map_err(|e| e.to_string())?;
         handle.play_raw(source).map_err(|e| e.to_string())?;
-        Ok(Self {
-            _stream: stream,
-            bus,
-        })
+        Ok(Self { _stream: stream, bus })
     }
 
     /// Les sons sont convertis à la fréquence de la sortie avant le bus.
@@ -403,10 +382,7 @@ struct Playing {
 
 impl Playing {
     fn is_finished(&self) -> bool {
-        self.voices.iter().all(Voice::is_done)
-            || self
-                .stopping
-                .is_some_and(|t| t.elapsed() > self.fade + Duration::from_millis(50))
+        self.voices.iter().all(Voice::is_done) || self.stopping.is_some_and(|t| t.elapsed() > self.fade + Duration::from_millis(50))
     }
 }
 
@@ -592,10 +568,9 @@ impl Engine {
         }
         flag.store(true, Ordering::Relaxed);
         let source = MicSource::new(tap.clone(), 1, denoise::RATE);
-        let voice = monitor.bus.add(
-            Box::new(Resample::new(source, monitor.rate())),
-            self.mic_level(),
-        );
+        let voice = monitor
+            .bus
+            .add(Box::new(Resample::new(source, monitor.rate())), self.mic_level());
         self.hear_voice = Some(voice);
         Ok(())
     }
@@ -623,10 +598,9 @@ impl Engine {
         let stream = open_capture(&device, &config, format, buffer.clone(), max_len, filter)?;
         stream.play().map_err(|e| e.to_string())?;
         let source = MicSource::new(buffer, channels, rate);
-        let voice = monitor.bus.add(
-            Box::new(Resample::new(source, monitor.rate())),
-            self.settings.monitor_volume,
-        );
+        let voice = monitor
+            .bus
+            .add(Box::new(Resample::new(source, monitor.rate())), self.settings.monitor_volume);
         self.cable_stream = Some(stream);
         self.cable_voice = Some(voice);
         Ok(())
@@ -672,13 +646,8 @@ impl Engine {
         // `MicSource`), ce plafond ne sert qu'en cas de gros à-coup.
         let max_len = denoise::RATE as usize / 5;
         let buffer = Arc::new(Mutex::new(VecDeque::<f32>::with_capacity(max_len * 2)));
-        let mut processor = MicProcessor::new(
-            channels,
-            sample_rate,
-            filters,
-            self.settings.voice_effect,
-            self.meter.clone(),
-        );
+        let mut processor =
+            MicProcessor::new(channels, sample_rate, filters, self.settings.voice_effect, self.meter.clone());
 
         // Le nettoyage (IA comprise) tourne dans son propre fil : le fil du
         // micro ne fait que copier, il ne prend jamais de retard (un retard
@@ -751,6 +720,7 @@ impl Engine {
         Ok(())
     }
 
+
     fn handle(&mut self, cmd: Command) {
         match cmd {
             Command::Configure(settings, reply) => {
@@ -784,11 +754,7 @@ impl Engine {
                 });
             }
             Command::MuteMonitor(id, muted) => {
-                let volume = if muted {
-                    0.0
-                } else {
-                    self.settings.monitor_volume
-                };
+                let volume = if muted { 0.0 } else { self.settings.monitor_volume };
                 for p in self.playing.iter().filter(|p| p.id == id) {
                     if let Some(v) = p.monitor_voice.and_then(|i| p.voices.get(i)) {
                         v.set_volume(volume);
@@ -867,11 +833,7 @@ impl Engine {
 
     fn start(&mut self, req: PlayRequest, monitor_only: bool) -> Result<(), String> {
         // Effets : calculés une fois, partagés par le casque et le câble.
-        let rendered = if req.fx.is_neutral() {
-            None
-        } else {
-            Some(self.rendered(&req)?)
-        };
+        let rendered = if req.fx.is_neutral() { None } else { Some(self.rendered(&req)?) };
         let mut targets = Vec::new();
         // Pendant l'écoute du câble, le son arrive déjà au casque par là.
         if self.cable_voice.is_none() || monitor_only {
@@ -890,10 +852,7 @@ impl Engine {
             let Some(output) = output else { continue };
             let source = match &rendered {
                 Some(r) => Box::new(Resample::new(
-                    Leveler::new(
-                        RenderedSource::new(r.clone(), req.looping),
-                        Levels::of(&req),
-                    ),
+                    Leveler::new(RenderedSource::new(r.clone(), req.looping), Levels::of(&req)),
                     output.rate(),
                 )),
                 None => open_source(&req, output.rate())?,
@@ -904,12 +863,8 @@ impl Engine {
             };
             // Discord envoie le micro en mono : on replie le son nous-mêmes,
             // sans laisser les passages en opposition de phase s'annuler.
-            let source: Box<dyn Source<Item = f32> + Send> = if to_discord && source.channels() == 2
-            {
-                Box::new(MonoSafe::new(source))
-            } else {
-                source
-            };
+            let source: Box<dyn Source<Item = f32> + Send> =
+                if to_discord && source.channels() == 2 { Box::new(MonoSafe::new(source)) } else { source };
             if !to_discord {
                 monitor_voice = Some(voices.len());
             }
@@ -952,16 +907,9 @@ impl Engine {
         decoder.seek_ms(req.start_ms);
         let r = sound_fx::render(decoder, req.start_ms, req.end_ms, &req.fx, req.looping);
         // Au plus ~64 Mo d'échantillons gardés.
-        let mut total: usize = self
-            .fx_cache
-            .iter()
-            .map(|(_, r)| r.data.len())
-            .sum::<usize>()
-            + r.data.len();
+        let mut total: usize = self.fx_cache.iter().map(|(_, r)| r.data.len()).sum::<usize>() + r.data.len();
         while total > FX_CACHE_SAMPLES || self.fx_cache.len() >= FX_CACHE {
-            let Some((_, old)) = self.fx_cache.pop_front() else {
-                break;
-            };
+            let Some((_, old)) = self.fx_cache.pop_front() else { break };
             total -= old.data.len();
         }
         self.fx_cache.push_back((key, r.clone()));
@@ -1008,19 +956,11 @@ fn open_source(req: &PlayRequest, rate: u32) -> Result<Box<dyn Source<Item = f32
     let mut decoder = decoder;
     decoder.seek_ms(req.start_ms);
     // Fondu de 5 ms à la fin du passage : une découpe ne claque plus.
-    let frames = req
-        .duration_ms
-        .map(|ms| ms * decoder.sample_rate() as u64 / 1000);
-    let source = Leveler::new(
-        EndFade::new(decoder.take_duration(length), frames, req.end_fade_ms),
-        Levels::of(req),
-    );
+    let frames = req.duration_ms.map(|ms| ms * decoder.sample_rate() as u64 / 1000);
+    let source = Leveler::new(EndFade::new(decoder.take_duration(length), frames, req.end_fade_ms), Levels::of(req));
     if req.looping {
         // Gardé en mémoire pour pouvoir le rejouer sans relire le fichier.
-        Ok(Box::new(Resample::new(
-            source.buffered().repeat_infinite(),
-            rate,
-        )))
+        Ok(Box::new(Resample::new(source.buffered().repeat_infinite(), rate)))
     } else {
         Ok(Box::new(Resample::new(source, rate)))
     }
@@ -1076,11 +1016,7 @@ struct Levels {
 
 impl Levels {
     fn of(req: &PlayRequest) -> Self {
-        Self {
-            gain: req.gain,
-            volume: req.volume.max(0.0),
-            target_lufs: req.target_lufs.clamp(-40.0, -14.0),
-        }
+        Self { gain: req.gain, volume: req.volume.max(0.0), target_lufs: req.target_lufs.clamp(-40.0, -14.0) }
     }
 
     fn threshold(&self) -> f32 {
@@ -1102,12 +1038,7 @@ impl<S: Source<Item = f32>> Leveler<S> {
         let per_second = rate * channels as f32;
         let coef = |seconds: f32| (-1.0 / (per_second * seconds)).exp();
         let lookahead = (rate * 0.002).round() as usize;
-        let limiter = LookaheadLimiter::new(
-            channels,
-            lookahead,
-            levels.ceiling(),
-            (-1.0 / (rate * 0.08)).exp(),
-        );
+        let limiter = LookaheadLimiter::new(channels, lookahead, levels.ceiling(), (-1.0 / (rate * 0.08)).exp());
         Self {
             inner,
             channels,
@@ -1130,21 +1061,13 @@ impl<S: Source<Item = f32>> Leveler<S> {
     fn compress(&mut self, x: f32) -> f32 {
         let x = x * self.gain;
         let level = x.abs();
-        self.env = if level > self.env {
-            level
-        } else {
-            level + (self.env - level) * self.env_release
-        };
+        self.env = if level > self.env { level } else { level + (self.env - level) * self.env_release };
         let wanted = if self.env > self.threshold {
             (self.env / self.threshold).powf(1.0 / COMP_RATIO - 1.0)
         } else {
             1.0
         };
-        let coef = if wanted < self.reduce {
-            self.attack
-        } else {
-            self.release
-        };
+        let coef = if wanted < self.reduce { self.attack } else { self.release };
         self.reduce = wanted + (self.reduce - wanted) * coef;
         x * self.reduce * self.volume
     }
@@ -1361,14 +1284,7 @@ impl<S: Source<Item = f32>> MonoSafe<S> {
     fn new(inner: S) -> Self {
         // Énergies lissées sur ~50 ms, bascule sur ~30 ms.
         let rate = inner.sample_rate().max(1) as f32;
-        Self {
-            inner,
-            pending: None,
-            sum_energy: 0.0,
-            diff_energy: 0.0,
-            weight: 0.0,
-            smooth: (-1.0 / (rate * 0.05)).exp(),
-        }
+        Self { inner, pending: None, sum_energy: 0.0, diff_energy: 0.0, weight: 0.0, smooth: (-1.0 / (rate * 0.05)).exp() }
     }
 
     /// Mélange d'une trame, et mise à jour des mesures.
@@ -1378,11 +1294,7 @@ impl<S: Source<Item = f32>> MonoSafe<S> {
         self.sum_energy = a * self.sum_energy + (1.0 - a) * sum * sum;
         self.diff_energy = a * self.diff_energy + (1.0 - a) * diff * diff;
         // Opposition de phase marquée : la différence est 4× plus forte (6 dB).
-        let target = if self.diff_energy > 4.0 * self.sum_energy + 1e-9 {
-            1.0
-        } else {
-            0.0
-        };
+        let target = if self.diff_energy > 4.0 * self.sum_energy + 1e-9 { 1.0 } else { 0.0 };
         self.weight += (target - self.weight) * (1.0 - a.powf(1.6));
         sum * (1.0 - self.weight) + diff * self.weight
     }
@@ -1434,12 +1346,7 @@ impl<S: Source<Item = f32>> EndFade<S> {
         let ms = crate::sound_fx::DECLICK_MS.max(fade_ms as f32);
         // Jamais plus de la moitié du passage.
         let fade = ((ms * inner.sample_rate() as f32 / 1000.0) as u64 * ch).min(total / 2);
-        Self {
-            inner,
-            pos: 0,
-            fade_from: total.saturating_sub(fade),
-            total,
-        }
+        Self { inner, pos: 0, fade_from: total.saturating_sub(fade), total }
     }
 }
 
@@ -1729,12 +1636,10 @@ mod tests {
     #[test]
     fn mono_fold_survives_phase_inversion() {
         let rate = 48_000;
-        let tone: Vec<f32> = (0..rate)
-            .flat_map(|i| {
-                let v = (i as f32 * 0.05).sin() * 0.5;
-                [v, -v] // canaux en opposition de phase
-            })
-            .collect();
+        let tone: Vec<f32> = (0..rate).flat_map(|i| {
+            let v = (i as f32 * 0.05).sin() * 0.5;
+            [v, -v] // canaux en opposition de phase
+        }).collect();
         let src = rodio::buffer::SamplesBuffer::new(2, rate as u32, tone);
         let out: Vec<f32> = MonoSafe::new(src).collect();
         let tail = &out[out.len() / 2..];
@@ -1748,26 +1653,14 @@ mod tests {
 
     #[test]
     fn learned_voice_level_only_fits_the_microphone_it_was_measured_on() {
-        let learned = |device: Option<&str>, speech_db| crate::config::MicLearned {
-            device: device.map(str::to_string),
-            speech_db,
-        };
-        assert!(learned_fits(
-            &learned(Some("Micro USB"), -30.0),
-            Some("Micro USB")
-        ));
+        let learned = |device: Option<&str>, speech_db| crate::config::MicLearned { device: device.map(str::to_string), speech_db };
+        assert!(learned_fits(&learned(Some("Micro USB"), -30.0), Some("Micro USB")));
         // Micro par défaut changé dans Windows : l'ancien niveau ne sert pas.
-        assert!(!learned_fits(
-            &learned(Some("Micro USB"), -30.0),
-            Some("Casque Bluetooth")
-        ));
+        assert!(!learned_fits(&learned(Some("Micro USB"), -30.0), Some("Casque Bluetooth")));
         // Gardé sans nom (réglage « par défaut ») : on ne sait pas d'où il vient.
         assert!(!learned_fits(&learned(None, -30.0), Some("Micro USB")));
         assert!(!learned_fits(&learned(None, -30.0), None));
-        assert!(!learned_fits(
-            &learned(Some("Micro USB"), -60.0),
-            Some("Micro USB")
-        ));
+        assert!(!learned_fits(&learned(Some("Micro USB"), -60.0), Some("Micro USB")));
     }
     use rodio::buffer::SamplesBuffer;
 
@@ -1776,18 +1669,12 @@ mod tests {
         // Stéréo 44,1 kHz avec des crêtes au-dessus de 0 dBFS (comme un MP3
         // poussé fort) : rien n'est écrêté, tout passe sous le plafond, et le
         // son garde exactement sa durée (boucles sans blanc).
-        let data: Vec<f32> = (0..44_100)
-            .flat_map(|i| {
-                let v = (i as f32 * 0.03).sin() * 1.3;
-                [v, -v]
-            })
-            .collect();
+        let data: Vec<f32> = (0..44_100).flat_map(|i| {
+            let v = (i as f32 * 0.03).sin() * 1.3;
+            [v, -v]
+        }).collect();
         let len = data.len();
-        let levels = Levels {
-            gain: 1.0,
-            volume: 1.0,
-            target_lufs: -28.0,
-        };
+        let levels = Levels { gain: 1.0, volume: 1.0, target_lufs: -28.0 };
         let ceiling = levels.ceiling();
         assert!((ceiling - 0.56).abs() < 0.01);
         let out: Vec<f32> = Leveler::new(SamplesBuffer::new(2, 44_100, data), levels).collect();
@@ -1803,11 +1690,7 @@ mod tests {
         // vraiment +6 dB (avant : à peine +2 dB).
         let tone = |volume: f32| {
             let data: Vec<f32> = (0..44_100).map(|i| (i as f32 * 0.05).sin() * 0.2).collect();
-            let levels = Levels {
-                gain: 1.0,
-                volume,
-                target_lufs: -28.0,
-            };
+            let levels = Levels { gain: 1.0, volume, target_lufs: -28.0 };
             let out: Vec<f32> = Leveler::new(SamplesBuffer::new(1, 44_100, data), levels).collect();
             (out[22_050..].iter().map(|v| v * v).sum::<f32>() / 22_050.0).sqrt()
         };

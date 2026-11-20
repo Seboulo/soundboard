@@ -28,10 +28,7 @@ pub fn direct_url(link: &str) -> Result<String, String> {
             .filter(|(k, _)| k != "dl" && k != "raw")
             .map(|(k, v)| (k.into_owned(), v.into_owned()))
             .collect();
-        url.query_pairs_mut()
-            .clear()
-            .extend_pairs(pairs)
-            .append_pair("dl", "1");
+        url.query_pairs_mut().clear().extend_pairs(pairs).append_pair("dl", "1");
         return Ok(url.to_string());
     }
     if host == "drive.google.com" {
@@ -46,21 +43,12 @@ pub fn direct_url(link: &str) -> Result<String, String> {
                 }
                 None
             })
-            .or_else(|| {
-                url.query_pairs()
-                    .find(|(k, _)| k == "id")
-                    .map(|(_, v)| v.into_owned())
-            })
+            .or_else(|| url.query_pairs().find(|(k, _)| k == "id").map(|(_, v)| v.into_owned()))
             .ok_or("lien Google Drive incomplet : copie le lien du fichier")?;
-        return Ok(format!(
-            "https://drive.usercontent.google.com/download?id={id}&export=download&confirm=t"
-        ));
+        return Ok(format!("https://drive.usercontent.google.com/download?id={id}&export=download&confirm=t"));
     }
     if host == "1drv.ms" || host.ends_with("onedrive.live.com") {
-        return Ok(format!(
-            "https://api.onedrive.com/v1.0/shares/u!{}/root/content",
-            base64_url(link.as_bytes())
-        ));
+        return Ok(format!("https://api.onedrive.com/v1.0/shares/u!{}/root/content", base64_url(link.as_bytes())));
     }
     Ok(url.to_string())
 }
@@ -69,11 +57,7 @@ fn base64_url(data: &[u8]) -> String {
     const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::new();
     for chunk in data.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
         let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
         for i in 0..=chunk.len() {
             out.push(T[(n >> (18 - 6 * i) & 63) as usize] as char);
@@ -128,20 +112,14 @@ pub fn key_of(data: &[u8]) -> String {
 pub fn cloud_folders() -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
     for var in ["OneDriveConsumer", "OneDrive", "OneDriveCommercial"] {
-        if let Some(p) = std::env::var_os(var)
-            .map(PathBuf::from)
-            .filter(|p| p.is_dir())
-        {
+        if let Some(p) = std::env::var_os(var).map(PathBuf::from).filter(|p| p.is_dir()) {
             if !out.iter().any(|(_, q)| q == &p) {
                 out.push(("OneDrive".to_string(), p));
             }
         }
     }
     if let Some(home) = std::env::var_os("USERPROFILE").map(PathBuf::from) {
-        for (name, p) in [
-            ("Dropbox", home.join("Dropbox")),
-            ("Google Drive", home.join("Google Drive")),
-        ] {
+        for (name, p) in [("Dropbox", home.join("Dropbox")), ("Google Drive", home.join("Google Drive"))] {
             if p.is_dir() {
                 out.push((name.to_string(), p));
             }
@@ -173,28 +151,15 @@ mod tests {
 
     #[test]
     fn google_drive_links_download_the_file() {
-        let want =
-            "https://drive.usercontent.google.com/download?id=1AbC_d&export=download&confirm=t";
-        assert_eq!(
-            direct_url("https://drive.google.com/file/d/1AbC_d/view?usp=sharing").unwrap(),
-            want
-        );
-        assert_eq!(
-            direct_url("https://drive.google.com/open?id=1AbC_d").unwrap(),
-            want
-        );
+        let want = "https://drive.usercontent.google.com/download?id=1AbC_d&export=download&confirm=t";
+        assert_eq!(direct_url("https://drive.google.com/file/d/1AbC_d/view?usp=sharing").unwrap(), want);
+        assert_eq!(direct_url("https://drive.google.com/open?id=1AbC_d").unwrap(), want);
     }
 
     #[test]
     fn onedrive_links_use_the_shares_api() {
         let got = direct_url("https://1drv.ms/u/s!AkBc").unwrap();
-        assert_eq!(
-            got,
-            format!(
-                "https://api.onedrive.com/v1.0/shares/u!{}/root/content",
-                base64_url(b"https://1drv.ms/u/s!AkBc")
-            )
-        );
+        assert_eq!(got, format!("https://api.onedrive.com/v1.0/shares/u!{}/root/content", base64_url(b"https://1drv.ms/u/s!AkBc")));
         assert_eq!(base64_url(b"Man"), "TWFu");
         assert_eq!(base64_url(b"Ma"), "TWE");
     }
@@ -203,9 +168,6 @@ mod tests {
     fn other_links_are_rejected_or_kept() {
         assert!(direct_url("pas un lien").is_err());
         assert!(direct_url("ftp://x/y.zip").is_err());
-        assert_eq!(
-            direct_url("https://exemple.fr/pack.zip").unwrap(),
-            "https://exemple.fr/pack.zip"
-        );
+        assert_eq!(direct_url("https://exemple.fr/pack.zip").unwrap(), "https://exemple.fr/pack.zip");
     }
 }

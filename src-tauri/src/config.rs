@@ -113,19 +113,12 @@ impl Sound {
         if self.start_ms == 0 && self.end_ms.is_none() && self.fx.is_neutral() {
             return None;
         }
-        Some(SegmentKey {
-            start_ms: self.start_ms,
-            end_ms: self.end_ms,
-            fx: self.fx,
-        })
+        Some(SegmentKey { start_ms: self.start_ms, end_ms: self.end_ms, fx: self.fx })
     }
 
     /// Le passage découpé n'a pas encore de mesure à jour.
     pub fn needs_segment(&self) -> bool {
-        self.segment_key().is_some_and(|k| {
-            self.segment
-                .is_none_or(|s| s.key != k || !s.analysis.mono_fold)
-        })
+        self.segment_key().is_some_and(|k| self.segment.is_none_or(|s| s.key != k || !s.analysis.mono_fold))
     }
 
     /// Mesure à utiliser pour le volume : celle du passage joué si elle est
@@ -141,10 +134,7 @@ impl Sound {
     pub fn play_duration_ms(&self) -> Option<u64> {
         let total = self.analysis?.duration_ms;
         let end = self.end_ms.unwrap_or(total).min(total);
-        Some(
-            self.fx
-                .output_ms(end.saturating_sub(self.start_ms), self.looping),
-        )
+        Some(self.fx.output_ms(end.saturating_sub(self.start_ms), self.looping))
     }
 
     /// Gain qui amène le son à un volume ressenti commun sans saturer.
@@ -168,11 +158,7 @@ impl Sound {
                         .min(max_momentary - a.max_momentary);
                     10f32.powf(db / 20.0)
                 } else {
-                    let level = if a.loudness > 0.0001 {
-                        a.loudness
-                    } else {
-                        a.rms
-                    };
+                    let level = if a.loudness > 0.0001 { a.loudness } else { a.rms };
                     if level <= 0.0001 {
                         return 1.0;
                     }

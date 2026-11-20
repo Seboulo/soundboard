@@ -39,15 +39,7 @@ pub struct SoundFx {
 
 impl Default for SoundFx {
     fn default() -> Self {
-        Self {
-            speed: 1.0,
-            pitch: 0.0,
-            reverse: false,
-            tone: Tone::Normal,
-            echo: 0.0,
-            fade_in_ms: 0,
-            fade_out_ms: 0,
-        }
+        Self { speed: 1.0, pitch: 0.0, reverse: false, tone: Tone::Normal, echo: 0.0, fade_in_ms: 0, fade_out_ms: 0 }
     }
 }
 
@@ -114,9 +106,7 @@ pub fn render(
 ) -> Rendered {
     let channels = source.channels().max(1);
     let rate = source.sample_rate().max(1);
-    let max_ms = end_ms.map_or(MAX_SECONDS * 1000, |e| {
-        e.saturating_sub(start_ms).min(MAX_SECONDS * 1000)
-    });
+    let max_ms = end_ms.map_or(MAX_SECONDS * 1000, |e| e.saturating_sub(start_ms).min(MAX_SECONDS * 1000));
     let max = (max_ms * rate as u64 / 1000) as usize * channels as usize;
     let mut data: Vec<f32> = Vec::with_capacity(max.min(rate as usize * channels as usize * 30));
     data.extend(source.by_ref().take(max));
@@ -132,19 +122,13 @@ pub fn render(
     if (ratio - 1.0).abs() > 1e-3 {
         data = stretch(&data, ch, rate, ratio as f64);
     }
-    let out_rate = ((rate as f64) * fx.speed as f64 * ratio as f64)
-        .round()
-        .clamp(4000.0, 384_000.0) as u32;
+    let out_rate = ((rate as f64) * fx.speed as f64 * ratio as f64).round().clamp(4000.0, 384_000.0) as u32;
     apply_tone(&mut data, ch, out_rate as f32, fx.tone);
     if fx.echo > 0.0 {
         data = echo(data, ch, out_rate as f32, fx, looping);
     }
     fades(&mut data, ch, out_rate as f32, fx);
-    Rendered {
-        data: data.into(),
-        channels,
-        rate: out_rate,
-    }
+    Rendered { data: data.into(), channels, rate: out_rate }
 }
 
 fn reverse_frames(data: &mut [f32], ch: usize) {
@@ -170,9 +154,7 @@ fn stretch(x: &[f32], ch: usize, rate: u32, factor: f64) -> Vec<f32> {
     let hop_in = hop_out as f64 / factor;
     let tol = (rate as f64 * 0.012) as isize;
     let out_frames = (frames as f64 * factor) as usize;
-    let window: Vec<f32> = (0..n)
-        .map(|i| 0.5 - 0.5 * (2.0 * PI * i as f32 / n as f32).cos())
-        .collect();
+    let window: Vec<f32> = (0..n).map(|i| 0.5 - 0.5 * (2.0 * PI * i as f32 / n as f32).cos()).collect();
     let mono: Vec<f32> = x.chunks_exact(ch).map(|f| f.iter().sum::<f32>()).collect();
     let mut out = vec![0.0f32; (out_frames + n) * ch];
     let mut norm = vec![0.0f32; out_frames + n];
@@ -240,14 +222,8 @@ impl Biquad {
         let (s, c) = w.sin_cos();
         let alpha = s / (2.0 * q);
         let (b, a) = match kind {
-            "lp" => (
-                [(1.0 - c) / 2.0, 1.0 - c, (1.0 - c) / 2.0],
-                [1.0 + alpha, -2.0 * c, 1.0 - alpha],
-            ),
-            "hp" => (
-                [(1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0],
-                [1.0 + alpha, -2.0 * c, 1.0 - alpha],
-            ),
+            "lp" => ([(1.0 - c) / 2.0, 1.0 - c, (1.0 - c) / 2.0], [1.0 + alpha, -2.0 * c, 1.0 - alpha]),
+            "hp" => ([(1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0], [1.0 + alpha, -2.0 * c, 1.0 - alpha]),
             _ => {
                 // Plateau grave.
                 let a_ = 10f32.powf(gain_db / 40.0);
@@ -258,19 +234,11 @@ impl Biquad {
                         2.0 * a_ * ((a_ - 1.0) - (a_ + 1.0) * c),
                         a_ * ((a_ + 1.0) - (a_ - 1.0) * c - sa),
                     ],
-                    [
-                        (a_ + 1.0) + (a_ - 1.0) * c + sa,
-                        -2.0 * ((a_ - 1.0) + (a_ + 1.0) * c),
-                        (a_ + 1.0) + (a_ - 1.0) * c - sa,
-                    ],
+                    [(a_ + 1.0) + (a_ - 1.0) * c + sa, -2.0 * ((a_ - 1.0) + (a_ + 1.0) * c), (a_ + 1.0) + (a_ - 1.0) * c - sa],
                 )
             }
         };
-        Self {
-            b: [b[0] / a[0], b[1] / a[0], b[2] / a[0]],
-            a: [a[1] / a[0], a[2] / a[0]],
-            z: [0.0; 2],
-        }
+        Self { b: [b[0] / a[0], b[1] / a[0], b[2] / a[0]], a: [a[1] / a[0], a[2] / a[0]], z: [0.0; 2] }
     }
 
     fn process(&mut self, x: f32) -> f32 {
@@ -284,14 +252,8 @@ impl Biquad {
 fn apply_tone(data: &mut [f32], ch: usize, rate: f32, tone: Tone) {
     let chain: Vec<Biquad> = match tone {
         Tone::Normal => return,
-        Tone::Radio => vec![
-            Biquad::new("hp", 450.0, 0.8, 0.0, rate),
-            Biquad::new("lp", 2800.0, 0.9, 0.0, rate),
-        ],
-        Tone::Muffled => vec![
-            Biquad::new("lp", 450.0, 0.7, 0.0, rate),
-            Biquad::new("lp", 450.0, 0.7, 0.0, rate),
-        ],
+        Tone::Radio => vec![Biquad::new("hp", 450.0, 0.8, 0.0, rate), Biquad::new("lp", 2800.0, 0.9, 0.0, rate)],
+        Tone::Muffled => vec![Biquad::new("lp", 450.0, 0.7, 0.0, rate), Biquad::new("lp", 450.0, 0.7, 0.0, rate)],
         Tone::Bass => vec![Biquad::new("shelf", 140.0, 0.7, 10.0, rate)],
     };
     let mut filters: Vec<Vec<Biquad>> = vec![chain; ch];
@@ -343,12 +305,8 @@ fn fades(data: &mut [f32], ch: usize, rate: f32, fx: &SoundFx) {
     // Au moins 5 ms à chaque bord : une coupe au milieu d'une onde ne
     // claque plus (« clic » de découpe), sans que le fondu s'entende.
     let declick = (DECLICK_MS * rate / 1000.0) as usize;
-    let fin = ((fx.fade_in_ms as f32 * rate / 1000.0) as usize)
-        .max(declick)
-        .min(frames / 2);
-    let fout = ((fx.fade_out_ms as f32 * rate / 1000.0) as usize)
-        .max(declick)
-        .min(frames / 2);
+    let fin = ((fx.fade_in_ms as f32 * rate / 1000.0) as usize).max(declick).min(frames / 2);
+    let fout = ((fx.fade_out_ms as f32 * rate / 1000.0) as usize).max(declick).min(frames / 2);
     for i in 0..fin {
         let g = (i as f32 / fin as f32).powi(2);
         data[i * ch..(i + 1) * ch].iter_mut().for_each(|s| *s *= g);
@@ -369,11 +327,7 @@ pub struct RenderedSource {
 
 impl RenderedSource {
     pub fn new(sound: Rendered, looping: bool) -> Self {
-        Self {
-            sound,
-            pos: 0,
-            looping,
-        }
+        Self { sound, pos: 0, looping }
     }
 }
 
@@ -414,9 +368,7 @@ mod tests {
     use rodio::buffer::SamplesBuffer;
 
     fn sine(freq: f32, rate: u32, secs: f32) -> Vec<f32> {
-        (0..(rate as f32 * secs) as usize)
-            .map(|i| (2.0 * PI * freq * i as f32 / rate as f32).sin() * 0.5)
-            .collect()
+        (0..(rate as f32 * secs) as usize).map(|i| (2.0 * PI * freq * i as f32 / rate as f32).sin() * 0.5).collect()
     }
 
     /// Fréquence dominante par passages à zéro.
@@ -428,13 +380,7 @@ mod tests {
     #[test]
     fn neutral_by_default_and_clamped() {
         assert!(SoundFx::default().is_neutral());
-        let fx = SoundFx {
-            speed: 9.0,
-            pitch: f32::NAN,
-            echo: -1.0,
-            ..Default::default()
-        }
-        .sanitized();
+        let fx = SoundFx { speed: 9.0, pitch: f32::NAN, echo: -1.0, ..Default::default() }.sanitized();
         assert_eq!((fx.speed, fx.pitch, fx.echo), (2.0, 0.0, 0.0));
     }
 
@@ -442,18 +388,12 @@ mod tests {
     fn pitch_keeps_duration_and_shifts_frequency() {
         let rate = 48_000;
         let src = SamplesBuffer::new(1, rate, sine(440.0, rate, 2.0));
-        let fx = SoundFx {
-            pitch: 12.0,
-            ..Default::default()
-        };
+        let fx = SoundFx { pitch: 12.0, ..Default::default() };
         let r = render(src, 0, None, &fx, false);
         let secs = r.data.len() as f32 / r.rate as f32;
         assert!((secs - 2.0).abs() < 0.05, "durée {secs}");
         // Lu à r.rate, la fréquence entendue double.
-        let f = freq(
-            &r.data[r.data.len() / 4..r.data.len() * 3 / 4],
-            r.rate as f32,
-        );
+        let f = freq(&r.data[r.data.len() / 4..r.data.len() * 3 / 4], r.rate as f32);
         assert!((f - 880.0).abs() < 25.0, "fréquence {f}");
     }
 
@@ -461,11 +401,7 @@ mod tests {
     fn speed_shortens_and_reverse_flips() {
         let rate = 44_100;
         let ramp: Vec<f32> = (0..rate).map(|i| i as f32 / rate as f32).collect();
-        let fx = SoundFx {
-            speed: 2.0,
-            reverse: true,
-            ..Default::default()
-        };
+        let fx = SoundFx { speed: 2.0, reverse: true, ..Default::default() };
         let r = render(SamplesBuffer::new(1, rate, ramp), 0, None, &fx, false);
         assert_eq!(r.rate, rate * 2);
         // Après le fondu anti-clic de 5 ms, le son commence par la fin de la rampe.
@@ -478,19 +414,8 @@ mod tests {
     #[test]
     fn echo_adds_tail_and_fades_reach_zero() {
         let rate = 48_000;
-        let fx = SoundFx {
-            echo: 0.5,
-            fade_in_ms: 100,
-            tone: Tone::Radio,
-            ..Default::default()
-        };
-        let r = render(
-            SamplesBuffer::new(2, rate, sine(300.0, rate, 1.0)),
-            0,
-            None,
-            &fx,
-            false,
-        );
+        let fx = SoundFx { echo: 0.5, fade_in_ms: 100, tone: Tone::Radio, ..Default::default() };
+        let r = render(SamplesBuffer::new(2, rate, sine(300.0, rate, 1.0)), 0, None, &fx, false);
         assert!(r.data.len() > rate as usize * 2);
         assert!(r.data[0].abs() < 1e-6);
         assert!(r.data.iter().all(|s| s.is_finite()));

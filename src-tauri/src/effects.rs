@@ -19,11 +19,7 @@ impl Effect {
     pub fn new(kind: VoiceEffect) -> Self {
         Self {
             kind,
-            buf: if kind == VoiceEffect::None {
-                vec![]
-            } else {
-                vec![0.0; BUF]
-            },
+            buf: if kind == VoiceEffect::None { vec![] } else { vec![0.0; BUF] },
             write: 0,
             phase: 0.0,
         }
@@ -89,9 +85,7 @@ mod tests {
     }
 
     fn sine(freq: f32, n: usize) -> Vec<f32> {
-        (0..n)
-            .map(|i| (2.0 * PI * freq * i as f32 / RATE).sin() * 0.5)
-            .collect()
+        (0..n).map(|i| (2.0 * PI * freq * i as f32 / RATE).sin() * 0.5).collect()
     }
 
     #[test]
@@ -108,17 +102,9 @@ mod tests {
     #[test]
     fn effects_stay_bounded() {
         let input = sine(300.0, 48_000);
-        for kind in [
-            VoiceEffect::Robot,
-            VoiceEffect::Echo,
-            VoiceEffect::High,
-            VoiceEffect::Low,
-        ] {
+        for kind in [VoiceEffect::Robot, VoiceEffect::Echo, VoiceEffect::High, VoiceEffect::Low] {
             let mut fx = Effect::new(kind);
-            let peak = input
-                .iter()
-                .map(|&x| fx.process(x).abs())
-                .fold(0.0, f32::max);
+            let peak = input.iter().map(|&x| fx.process(x).abs()).fold(0.0, f32::max);
             assert!(peak < 1.2, "{kind:?}: {peak}");
         }
     }

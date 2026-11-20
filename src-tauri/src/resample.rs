@@ -70,11 +70,7 @@ impl Kernel {
                         return 0.0;
                     }
                     let arg = 2.0 * cutoff * d * std::f64::consts::PI;
-                    let sinc = if arg.abs() < 1e-12 {
-                        1.0
-                    } else {
-                        arg.sin() / arg
-                    };
+                    let sinc = if arg.abs() < 1e-12 { 1.0 } else { arg.sin() / arg };
                     2.0 * cutoff * sinc * bessel_i0(BETA * (1.0 - x * x).sqrt()) / norm
                 })
                 .collect();
@@ -101,13 +97,7 @@ pub struct SincWindow {
 impl SincWindow {
     pub fn new(kernel: Arc<Kernel>, channels: usize) -> Self {
         let channels = channels.max(1);
-        Self {
-            kernel,
-            channels,
-            data: vec![0.0; TAPS * channels],
-            start: 0,
-            weights: [0.0; TAPS],
-        }
+        Self { kernel, channels, data: vec![0.0; TAPS * channels], start: 0, weights: [0.0; TAPS] }
     }
 
     /// Ajoute une trame (une valeur par canal) et fait glisser la fenêtre.
@@ -131,22 +121,14 @@ impl SincWindow {
         let p = (f as usize).min(PHASES - 1);
         let a = (f - p as f64) as f32;
         let t = &self.kernel.table;
-        let (r0, r1) = (
-            &t[p * TAPS..(p + 1) * TAPS],
-            &t[(p + 1) * TAPS..(p + 2) * TAPS],
-        );
+        let (r0, r1) = (&t[p * TAPS..(p + 1) * TAPS], &t[(p + 1) * TAPS..(p + 2) * TAPS]);
         for ((w, &x), &y) in self.weights.iter_mut().zip(r0).zip(r1) {
             *w = x + (y - x) * a;
         }
         let ch = self.channels;
         let window = &self.data[self.start * ch..(self.start + TAPS) * ch];
         for (c, o) in out.iter_mut().enumerate().take(ch) {
-            *o = self
-                .weights
-                .iter()
-                .zip(window[c..].iter().step_by(ch))
-                .map(|(w, x)| w * x)
-                .sum();
+            *o = self.weights.iter().zip(window[c..].iter().step_by(ch)).map(|(w, x)| w * x).sum();
         }
     }
 }
@@ -205,9 +187,7 @@ mod tests {
     }
 
     fn tone(freq: f64, rate: u32, secs: f64) -> Vec<f32> {
-        (0..(rate as f64 * secs) as usize)
-            .map(|i| ((TAU * freq * i as f64 / rate as f64).sin() * 0.5) as f32)
-            .collect()
+        (0..(rate as f64 * secs) as usize).map(|i| ((TAU * freq * i as f64 / rate as f64).sin() * 0.5) as f32).collect()
     }
 
     #[test]
