@@ -404,6 +404,7 @@ async fn sync_one(app: &AppHandle, url: &str) -> Result<(usize, usize, Vec<Strin
         // Les raccourcis d'un pote ne prennent pas tes touches.
         s.hotkey = None;
     }
+    let complete = errors.is_empty();
     let keys: HashSet<String> = keys.into_iter().collect();
     let count = added.len();
     let removed;
@@ -411,7 +412,11 @@ async fn sync_one(app: &AppHandle, url: &str) -> Result<(usize, usize, Vec<Strin
         let mut config = state.config.lock().unwrap();
         let mut gone = Vec::new();
         config.sounds.retain(|s| {
-            let drop = s.pack_link.as_deref() == Some(url) && s.pack_key.as_ref().is_some_and(|k| !keys.contains(k));
+            // Seulement si le pack a été lu en entier : un son illisible ou un
+            // pack coupé (trop gros) ne doit pas effacer tes sons qui en viennent.
+            let drop = complete
+                && s.pack_link.as_deref() == Some(url)
+                && s.pack_key.as_ref().is_some_and(|k| !keys.contains(k));
             if drop {
                 gone.push(s.path.clone());
             }

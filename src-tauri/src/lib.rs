@@ -90,6 +90,11 @@ struct AppState {
     extras: extras::Extras,
     /// Extraits reçus des potes (voir `clip`).
     clips: clip::Clips,
+    /// Numéro de la config, +1 à chaque enregistrement : l'interface ignore
+    /// une photo plus ancienne que celle qu'elle affiche déjà.
+    rev: AtomicU64,
+    /// Compteurs de lecture changés mais pas encore écrits sur le disque.
+    plays_dirty: AtomicBool,
 }
 
 #[derive(Clone, Serialize)]
@@ -105,17 +110,36 @@ struct Snapshot {
     surprise_on: bool,
     /// La voix de tes potes est captée dans Discord (rejouer, baisse auto).
     discord_heard: bool,
+    rev: u64,
 }
 
 impl AppState {
+    /// À appeler en tenant le verrou de la config.
     fn save(&self, config: &Config) -> Result<(), String> {
+        self.rev.fetch_add(1, Ordering::AcqRel);
+        // Tout est écrit d'un coup, compteurs de lecture compris.
+        self.plays_dirty.store(false, Ordering::Release);
         config.save(&self.config_path)
     }
 
+    /// Écrit les compteurs de lecture en attente (toutes les quelques
+    /// secondes, et en quittant l'appli).
+    fn flush_plays(&self) {
+        let config = self.config.lock().unwrap();
+        if self.plays_dirty.load(Ordering::Acquire) {
+            let _ = self.save(&config);
+        }
+    }
+
     fn snapshot(&self) -> Snapshot {
+        let (config, rev) = {
+            let c = self.config.lock().unwrap();
+            (c.clone(), self.rev.load(Ordering::Acquire))
+        };
         let mut snap = Snapshot {
             missing: Vec::new(),
-            config: self.config.lock().unwrap().clone(),
+            rev,
+            config,
             devices: self.devices.lock().unwrap().clone(),
             warnings: self.warnings.lock().unwrap().clone(),
             vb_cable_url: VB_CABLE_URL,
@@ -144,6 +168,7 @@ const WARN_HOTKEY: &str = "Raccourci : ";
 const WARN_STARTUP: &str = "Démarrage : ";
 const WARN_PHONE: &str = "Téléphone : ";
 const WARN_CONFIG: &str = "Réglages : ";
+const WARN_SOUNDS: &str = "Sons : ";
 /// Démarre, redémarre ou arrête la page du téléphone selon les réglages.
 fn apply_phone(app: &AppHandle) {
     let state = app.state::<AppState>();
@@ -285,7 +310,9 @@ fn note_play(state: &AppState, sound: &Sound) {
         s.plays += 1;
         s.played_ms += sound.play_duration_ms().unwrap_or(0);
         s.last_played = now_secs();
-        let _ = state.save(&config);
+        // Pas d'écriture du fichier ici : elle retarderait le son. Le
+        // compteur part sur le disque quelques secondes plus tard.
+        state.plays_dirty.store(true, Ordering::Release);
     }
 }
 
@@ -488,8 +515,10 @@ fn audio_route(settings: &Settings, d: &DeviceList) -> [Option<String>; 3] {
 fn watch_devices(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(3));
-        let devices = audio::list_devices();
         let state = app.state::<AppState>();
+        // Au passage : les compteurs de lecture en attente partent sur le disque.
+        state.flush_plays();
+        let devices = audio::list_devices();
         let before = state.devices.lock().unwrap().clone();
         if devices == before {
             continue;
@@ -915,6 +944,150 @@ fn update_sound(app: AppHandle, state: State<AppState>, sound: Sound) -> Result<
     register_hotkeys(&app);
     measure_segments(app.clone());
     Ok(state.snapshot())
+}
+
+/// Fichiers son rangés par l'app mais absents de la soundboard : un
+/// enregistrement de la config raté (fichier bloqué par un antivirus…) ou
+/// l'appli fermée au mauvais moment faisait disparaître le son de la liste.
+fn orphan_files(sounds_dir: &Path, config: &Config) -> Vec<PathBuf> {
+    let used: std::collections::HashSet<std::ffi::OsString> =
+        config.sounds.iter().filter_map(|s| s.path.file_name().map(|n| n.to_ascii_lowercase())).collect();
+    let Ok(dir) = fs::read_dir(sounds_dir) else { return Vec::new() };
+    let mut files: Vec<PathBuf> = dir
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .filter(|p| p.extension().is_some_and(|e| e != "tmp"))
+        .filter(|p| p.file_name().is_some_and(|n| !used.contains(&n.to_ascii_lowercase())))
+        .collect();
+    // Les plus anciens d'abord : l'ordre dans lequel tu les avais ajoutés.
+    files.sort_by_key(|p| fs::metadata(p).and_then(|m| m.modified()).ok());
+    files
+}
+
+/// Prévient quand des sons sont dans le dossier de l'app mais plus dans la liste.
+fn check_orphans(state: &AppState) {
+    let n = {
+        let config = state.config.lock().unwrap();
+        orphan_files(&state.sounds_dir, &config).len()
+    };
+    let msg = match n {
+        0 => vec![],
+        1 => vec!["1 son est dans le dossier de l'appli mais n'apparaît plus dans ta soundboard.".into()],
+        n => vec![format!("{n} sons sont dans le dossier de l'appli mais n'apparaissent plus dans ta soundboard.")],
+    };
+    state.set_warnings(WARN_SOUNDS, msg);
+}
+
+/// Réglages d'un son tels qu'ils étaient dans une ancienne config
+/// (sauvegarde de secours ou fichier abîmé mis de côté), par nom de fichier.
+fn old_sound_entries(config_path: &Path) -> HashMap<std::ffi::OsString, Sound> {
+    let mut found = HashMap::new();
+    for p in [config_path.with_extension("json.bak"), config_path.with_extension("corrupt.json")] {
+        let Some(old) = fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<Config>(&t).ok()) else { continue };
+        for s in old.sounds {
+            if let Some(name) = s.path.file_name().map(|n| n.to_ascii_lowercase()) {
+                found.entry(name).or_insert(s);
+            }
+        }
+    }
+    found
+}
+
+/// Remet dans la soundboard les sons retrouvés dans le dossier de l'app
+/// (`keep`), ou supprime ces fichiers pour de bon.
+#[tauri::command]
+async fn recover_sounds(app: AppHandle, keep: bool) -> Result<(usize, Snapshot), String> {
+    let state = app.state::<AppState>();
+    let files = {
+        let config = state.config.lock().unwrap();
+        orphan_files(&state.sounds_dir, &config)
+    };
+    if !keep {
+        for f in &files {
+            let _ = fs::remove_file(f);
+        }
+        check_orphans(&state);
+        return Ok((0, state.snapshot()));
+    }
+    let old = old_sound_entries(&state.config_path);
+    let first_index = state.config.lock().unwrap().sounds.len();
+    let found: Vec<Sound> = tauri::async_runtime::spawn_blocking(move || {
+        let mut n = 0;
+        files
+            .into_iter()
+            .filter_map(|path| {
+                let analysis = analysis::analyze(&path).ok()?;
+                let key = path.file_name().map(|n| n.to_ascii_lowercase());
+                let sound = match key.and_then(|k| old.get(&k)) {
+                    // Retrouvé avec son nom, son onglet, sa couleur…
+                    Some(s) => Sound { path: path.clone(), analysis: Some(analysis), segment: None, ..s.clone() },
+                    None => {
+                        n += 1;
+                        let mut s: Sound = serde_json::from_value(serde_json::json!({
+                            "id": uuid::Uuid::new_v4().to_string(),
+                            "name": format!("Son retrouvé {n}"),
+                            "path": path,
+                            "hotkey": null,
+                            "volume": 1.0,
+                            "color": COLORS[(first_index + n) % COLORS.len()],
+                        }))
+                        .ok()?;
+                        s.analysis = Some(analysis);
+                        s.category = Some("Retrouvés".into());
+                        s.added_at = now_secs();
+                        s
+                    }
+                };
+                Some(sound)
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let count;
+    {
+        let mut config = state.config.lock().unwrap();
+        let mut ids: std::collections::HashSet<String> = config.sounds.iter().map(|s| s.id.clone()).collect();
+        let mut hotkeys: Vec<String> = config.sounds.iter().filter_map(|s| s.hotkey.clone()).collect();
+        let before = config.sounds.len();
+        for mut s in found {
+            // Ajouté entre-temps par une autre action : rien à faire.
+            if config.sounds.iter().any(|x| x.path == s.path) {
+                continue;
+            }
+            if !ids.insert(s.id.clone()) {
+                s.id = uuid::Uuid::new_v4().to_string();
+                ids.insert(s.id.clone());
+            }
+            if let Some(hk) = &s.hotkey {
+                if hotkeys.contains(hk) {
+                    s.hotkey = None;
+                } else {
+                    hotkeys.push(hk.clone());
+                }
+            }
+            // Une image disparue n'est pas réclamée.
+            for img in [&mut s.image, &mut s.image_still] {
+                if img.as_ref().is_some_and(|p| !p.exists()) {
+                    *img = None;
+                }
+            }
+            config.sounds.push(s);
+        }
+        count = config.sounds.len() - before;
+        if count > 0 && !config.categories.iter().any(|c| c == "Retrouvés")
+            && config.sounds.iter().any(|s| s.category.as_deref() == Some("Retrouvés"))
+        {
+            config.categories.push("Retrouvés".into());
+        }
+        state.save(&config)?;
+    }
+    journal::write(&format!("{count} son(s) retrouvé(s) remis dans la soundboard"));
+    check_orphans(&state);
+    register_hotkeys(&app);
+    measure_segments(app.clone());
+    Ok((count, state.snapshot()))
 }
 
 #[tauri::command]
@@ -2420,6 +2593,8 @@ pub fn run() {
                 surprise_gen: AtomicU64::new(0),
                 extras: Default::default(),
                 clips: Default::default(),
+                rev: AtomicU64::new(0),
+                plays_dirty: AtomicBool::new(false),
             };
             empty_trash(&state);
             if let Some(note) = config_note {
@@ -2436,6 +2611,8 @@ pub fn run() {
                 let settings = state.config.lock().unwrap().settings.clone();
                 apply_autostart(&handle, settings.launch_at_startup);
                 apply_audio(&state, settings);
+                // Avant la mise à jour des packs, qui range de nouveaux fichiers.
+                check_orphans(&state);
                 let _ = handle.emit("snapshot", state.snapshot());
                 watch_devices(handle.clone());
                 // Les mesures de volume en retard passent après l'audio, une
@@ -2487,6 +2664,7 @@ pub fn run() {
             pick_sounds,
             update_sound,
             remove_sound,
+            recover_sounds,
             restore_sound,
             export_backup,
             import_backup,
@@ -2573,13 +2751,51 @@ pub fn run() {
             clip::clip_fit,
             clip::clip_close,
         ])
-        .run(tauri::generate_context!())
-        .expect("erreur au lancement de l'application");
+        .build(tauri::generate_context!())
+        .expect("erreur au lancement de l'application")
+        .run(|app, event| {
+            // Les derniers compteurs de lecture ne sont pas perdus en quittant.
+            if let tauri::RunEvent::Exit = event {
+                if let Some(state) = app.try_state::<AppState>() {
+                    state.flush_plays();
+                }
+            }
+        });
 }
 
 #[cfg(test)]
 mod tests {
-    use super::surprise_delay;
+    use super::{old_sound_entries, orphan_files, surprise_delay};
+    use crate::config::Config;
+    use std::fs;
+
+    #[test]
+    fn orphan_sound_files_are_found_with_their_old_settings() {
+        let dir = std::env::temp_dir().join(format!("sb-orphans-{}", std::process::id()));
+        let sounds = dir.join("sounds");
+        fs::create_dir_all(&sounds).unwrap();
+        fs::write(sounds.join("a.mp3"), b"a").unwrap();
+        fs::write(sounds.join("b.wav"), b"b").unwrap();
+        fs::write(sounds.join("c.json.tmp"), b"c").unwrap();
+        let mut config: Config = serde_json::from_value(serde_json::json!({
+            "sounds": [{ "id": "1", "name": "A", "path": sounds.join("A.MP3"), "hotkey": null, "volume": 1.0, "color": "#fff" }]
+        }))
+        .unwrap();
+        // a.mp3 est dans la liste (casse différente sous Windows), b.wav non.
+        let orphans = orphan_files(&sounds, &config);
+        assert_eq!(orphans, vec![sounds.join("b.wav")]);
+        // L'ancienne config se souvient du nom et de l'onglet de b.wav.
+        config.sounds[0].path = sounds.join("b.wav");
+        config.sounds[0].name = "Mon son".into();
+        config.sounds[0].category = Some("Jeux".into());
+        let path = dir.join("config.json");
+        fs::write(path.with_extension("json.bak"), serde_json::to_string(&config).unwrap()).unwrap();
+        let old = old_sound_entries(&path);
+        let b = old.get(std::ffi::OsStr::new("b.wav")).unwrap();
+        assert_eq!(b.name, "Mon son");
+        assert_eq!(b.category.as_deref(), Some("Jeux"));
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn surprise_delay_stays_between_min_and_max() {

@@ -205,6 +205,11 @@ function enterSaves(dialog) {
 
 
 function render(snapshot) {
+  // Une photo plus ancienne que celle affichée (réponses arrivées dans le
+  // désordre) ne doit pas faire disparaître un son ajouté entre-temps.
+  if (state && snapshot.rev < state.rev) {
+    snapshot = { ...snapshot, config: state.config, missing: state.missing, rev: state.rev };
+  }
   state = snapshot;
   renderStatus();
   renderMic();
@@ -379,6 +384,7 @@ function warningAction(w) {
   if (w.startsWith("Téléphone : ")) return settings("remote");
   if (w.startsWith("Démarrage : ")) return settings("general");
   if (w.startsWith("Réglages : ")) return null;
+  if (w.startsWith("Sons : ")) return { label: "Les retrouver", run: recoverSounds };
   return { label: "Diagnostic", run: openDiagnostics };
 }
 
@@ -1817,6 +1823,22 @@ $('[data-action="delete"]', dlgSound).addEventListener("click", () => {
   deleteSound(editing);
 });
 
+/** Sons présents dans le dossier de l'app mais plus dans la liste. */
+async function recoverSounds() {
+  const v = await ask("Remettre ces sons dans ta soundboard ?", "Ils reprennent leur nom et leur onglet quand l'appli s'en souvient, sinon ils arrivent dans l'onglet « Retrouvés ».", [
+    { label: "Plus tard", value: "later" },
+    { label: "Supprimer ces fichiers", value: "drop", kind: "danger" },
+    { label: "Les remettre", value: "keep" },
+  ]);
+  if (v !== "keep" && v !== "drop") return;
+  const res = await call("recover_sounds", { keep: v === "keep" });
+  if (!res) return;
+  const [n, snap] = res;
+  render(snap);
+  if (v === "keep") toast(n > 1 ? `${n} sons remis dans ta soundboard` : n ? "1 son remis dans ta soundboard" : "Aucun son lisible à remettre");
+  else toast("Fichiers supprimés");
+}
+
 async function deleteSound(sound) {
   const res = await call("remove_sound", { id: sound.id });
   if (res) toast(`« ${sound.name} » supprimé`, false, { label: "Annuler", run: () => call("restore_sound", { id: sound.id }) });
@@ -2416,7 +2438,11 @@ $("#grid").addEventListener("keydown", (e) => {
     return openSoundDialog(sound);
   } else if (e.key === "Delete" && sound) {
     e.preventDefault();
-    return deleteSound(sound);
+    // Une touche Suppr pressée par mégarde ne doit pas faire disparaître un son.
+    return ask(`Supprimer « ${sound.name} » ?`, "Tu pourras encore l'annuler juste après.", [
+      { label: "Garder", value: "keep" },
+      { label: "Supprimer", value: "delete", kind: "danger" },
+    ]).then((v) => v === "delete" && deleteSound(sound));
   }
   if (next) {
     e.preventDefault();
@@ -2857,6 +2883,15 @@ $("#btn-stop").addEventListener("click", () => call("stop_all"));
 $("#btn-settings").addEventListener("click", openSettings);
 $("#cable-status").addEventListener("click", () => (state.devices.vb_cable ? openDiagnostics() : openWizard()));
 $("#btn-stats").addEventListener("click", openStats);
+// Fenêtre cachée (barre des tâches, près de l'horloge) : une lettre tapée par
+// mégarde dans la recherche ne doit pas masquer des sons à la réouverture.
+document.addEventListener("visibilitychange", () => {
+  const search = $("#search");
+  if (document.hidden && search.value && document.activeElement !== search) {
+    search.value = "";
+    renderGrid();
+  }
+});
 $("#search").addEventListener("input", () => {
   // Chercher un son ramène aux sons.
   if (sendOpen) { closeSendView(); renderTabs(); }

@@ -470,7 +470,24 @@ impl Config {
         // Écriture atomique pour ne pas corrompre la config en cas de crash.
         let tmp = path.with_extension("json.tmp");
         fs::write(&tmp, json).map_err(|e| e.to_string())?;
-        fs::rename(&tmp, path).map_err(|e| e.to_string())
+        // Sous Windows, un antivirus ou l'indexation peut tenir le fichier
+        // ouvert un court instant : le remplacement échoue alors (« accès
+        // refusé »). Sans nouvel essai, le son ajouté n'était pas enregistré
+        // et disparaissait au lancement suivant.
+        let mut last = None;
+        for wait_ms in [0, 20, 50, 100, 200, 400] {
+            std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+            match fs::rename(&tmp, path) {
+                Ok(()) => return Ok(()),
+                Err(e) => last = Some(e),
+            }
+        }
+        // Dernier recours : écrire par-dessus (moins sûr, mais rien n'est perdu).
+        if fs::copy(&tmp, path).is_ok() {
+            let _ = fs::remove_file(&tmp);
+            return Ok(());
+        }
+        Err(last.map_or_else(|| "enregistrement impossible".into(), |e| e.to_string()))
     }
 }
 
