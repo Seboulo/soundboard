@@ -15,6 +15,7 @@ mod sound_fx;
 mod online;
 mod phone;
 mod youtube;
+mod spotify;
 mod extras;
 mod replay;
 mod room;
@@ -246,7 +247,11 @@ fn phone_request(app: &AppHandle, req: phone::Request) -> Result<serde_json::Val
             let res = tauri::async_runtime::block_on(giphy::search(q.trim(), &key, 18))?;
             Ok(serde_json::json!({ "gifs": res }))
         }
-        phone::Request::Videos(q, start) => {
+        phone::Request::Videos(mut q, start) => {
+            // Lien Spotify : on cherche le morceau par son titre et son artiste.
+            if spotify::is_spotify(&q) {
+                q = tauri::async_runtime::block_on(spotify::track_query(&q))?;
+            }
             let res = tauri::async_runtime::block_on(clip::clip_search_videos(app.clone(), q, Some(start)))?;
             Ok(serde_json::json!({ "videos": res }))
         }
@@ -2006,6 +2011,12 @@ struct AddedSound {
     snapshot: Snapshot,
 }
 
+/// Mots à chercher sur YouTube pour un morceau Spotify (titre + artiste).
+#[tauri::command]
+async fn spotify_query(url: String) -> Result<String, String> {
+    spotify::track_query(&url).await
+}
+
 /// Ajoute l'audio d'une vidéo YouTube (yt-dlp est installé au premier usage).
 #[tauri::command]
 async fn add_from_youtube(app: AppHandle, url: String) -> Result<AddedSound, String> {
@@ -2796,6 +2807,7 @@ pub fn run() {
             rename_tab,
             add_from_url,
             add_from_youtube,
+            spotify_query,
             play_random,
             set_surprise,
             set_meter,

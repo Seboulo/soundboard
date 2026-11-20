@@ -3125,9 +3125,13 @@ sizeInput.addEventListener("input", () => {
 const LINK_RE = /^https?:\/\/\S+$/i;
 
 const YOUTUBE_RE = /^https?:\/\/((www|m|music)\.)?(youtube\.com|youtu\.be)\//i;
+// Le son de Spotify est protégé : on lit le titre et l'artiste du morceau,
+// et on le cherche sur YouTube.
+const SPOTIFY_RE = /^https?:\/\/(open\.spotify\.com|([a-z0-9-]+\.)?spotify\.link|spotify\.app\.link)\//i;
 
 async function addFromLink(url) {
   if (YOUTUBE_RE.test(url)) return addFromYoutube(url);
+  if (SPOTIFY_RE.test(url)) return addFromSpotify(url);
   toast("Téléchargement du son…");
   const res = await call("add_from_url", { url });
   if (res) toast("Son ajouté depuis le lien");
@@ -3147,6 +3151,22 @@ async function addFromYoutube(url) {
     openSoundDialog(sound);
   }
   return true;
+}
+async function addFromSpotify(url) {
+  toast("Lecture du morceau Spotify…");
+  try {
+    const q = await invoke("spotify_query", { url });
+    toast(`Recherche de « ${q} » sur YouTube…`);
+    const [hit] = await invoke("clip_search_videos", { query: q, start: 1 });
+    if (!hit) {
+      toast(`« ${q} » introuvable sur YouTube`, true);
+      return false;
+    }
+    return addFromYoutube(hit.url);
+  } catch (err) {
+    toast(String(err), true);
+    return false;
+  }
 }
 listen("youtube-status", ({ payload }) => toast(payload));
 
@@ -4234,8 +4254,10 @@ function linkStart(url) {
   }
 }
 const isLink = (v) => /^https?:\/\/\S+$/i.test(v.trim());
+// Un lien Spotify se cherche (titre + artiste) au lieu d'être récupéré.
+const fetchLabel = () => (isLink(formClip.q.value) && !SPOTIFY_RE.test(formClip.q.value.trim()) ? "Récupérer" : "Chercher");
 formClip.q.addEventListener("input", () => {
-  searchBtn.textContent = isLink(formClip.q.value) ? "Récupérer" : "Chercher";
+  searchBtn.textContent = fetchLabel();
 });
 // Une seule récupération à la fois (yt-dlp).
 let clipFetching = false;
@@ -4248,6 +4270,7 @@ listen("clip-progress", ({ payload }) => {
 // `startS` : début du passage voulu ; `cut` : vidéo longue, seul ce passage
 // est récupéré (le fichier commence alors à 0).
 async function fetchClipLink(url, tile, startS = linkStart(url), cut = false) {
+  if (!tile && SPOTIFY_RE.test(url)) return searchSpotify(url);
   if (clipFetching) return toast("Une vidéo est déjà en cours de récupération, patiente un instant", true);
   clipFetching = true;
   clipFetchTile = tile || null;
@@ -4265,7 +4288,7 @@ async function fetchClipLink(url, tile, startS = linkStart(url), cut = false) {
   } finally {
     clipFetching = false;
     searchBtn.disabled = false;
-    searchBtn.textContent = isLink(formClip.q.value) ? "Récupérer" : "Chercher";
+    searchBtn.textContent = fetchLabel();
     tile?.classList.remove("loading", "on");
     if (tile) delete tile.dataset.progress;
     clipFetchTile = null;
@@ -4458,6 +4481,21 @@ async function searchVideos(q, more = false, moreBtn = null, seq = searchSeq) {
   const scroll = clipVideos.scrollTop;
   renderVideos();
   clipVideos.scrollTop = scroll;
+}
+// Lien Spotify : la recherche se fait avec le titre et l'artiste du morceau.
+async function searchSpotify(url) {
+  searchBtn.disabled = true;
+  searchBtn.textContent = "Lecture du lien…";
+  try {
+    formClip.q.value = await invoke("spotify_query", { url });
+  } catch (err) {
+    toast(String(err), true);
+    return;
+  } finally {
+    searchBtn.disabled = false;
+    searchBtn.textContent = fetchLabel();
+  }
+  runSendSearch();
 }
 async function runSendSearch() {
   const v = formClip.q.value.trim();
