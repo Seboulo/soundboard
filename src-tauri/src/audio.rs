@@ -260,7 +260,25 @@ pub struct DeviceList {
     pub vb_cable: Option<String>,
 }
 
+/// Liste des casques et micros, relue toutes les 3 s par `watch_devices`.
+///
+/// Sous Windows, on lit seulement les noms (propriétés du périphérique) :
+/// `cpal::Host::output_devices()` ouvre au contraire un client audio sur
+/// chaque périphérique et teste une soixantaine de formats, ce qui passe par
+/// audiodg.exe. Fait toutes les 3 s pendant des jours, ça faisait gonfler
+/// audiodg de millions de handles et ramer tout Windows.
+#[cfg(windows)]
 pub fn list_devices() -> DeviceList {
+    win_devices::list().unwrap_or_else(|_| cpal_devices())
+}
+
+#[cfg(not(windows))]
+pub fn list_devices() -> DeviceList {
+    cpal_devices()
+}
+
+/// Liste par cpal : sûre, mais lourde sous Windows (voir `list_devices`).
+fn cpal_devices() -> DeviceList {
     let host = cpal::default_host();
     let names = |it: Option<Vec<cpal::Device>>| -> Vec<String> {
         it.unwrap_or_default()
@@ -270,16 +288,59 @@ pub fn list_devices() -> DeviceList {
     };
     let outputs = names(host.output_devices().ok().map(|d| d.collect()));
     let inputs = names(host.input_devices().ok().map(|d| d.collect()));
+    device_list(
+        outputs,
+        inputs,
+        host.default_output_device().and_then(|d| d.name().ok()),
+        host.default_input_device().and_then(|d| d.name().ok()),
+    )
+}
+
+fn device_list(
+    outputs: Vec<String>,
+    inputs: Vec<String>,
+    default_output: Option<String>,
+    default_input: Option<String>,
+) -> DeviceList {
     let vb_cable = outputs
         .iter()
         .find(|n| n.contains(VB_CABLE_OUTPUT))
         .cloned();
-    DeviceList {
-        default_output: host.default_output_device().and_then(|d| d.name().ok()),
-        default_input: host.default_input_device().and_then(|d| d.name().ok()),
-        outputs,
-        inputs,
-        vb_cable,
+    DeviceList { outputs, inputs, default_output, default_input, vb_cable }
+}
+
+#[cfg(windows)]
+mod win_devices {
+    use super::{device_list, DeviceList};
+    use wasapi::{Direction, DeviceEnumerator};
+
+    thread_local! {
+        // COM une fois par fil, en STA comme cpal (sur un fil déjà
+        // initialisé autrement, l'appel échoue sans conséquence).
+        static COM: () = {
+            let _ = wasapi::initialize_sta();
+        };
+    }
+
+    pub fn list() -> Result<DeviceList, wasapi::WasapiError> {
+        COM.with(|_| {});
+        let enumerator = DeviceEnumerator::new()?;
+        let names = |dir: Direction| -> Result<Vec<String>, wasapi::WasapiError> {
+            let collection = enumerator.get_device_collection(&dir)?;
+            Ok((&collection)
+                .into_iter()
+                .filter_map(|d| d.ok()?.get_friendlyname().ok())
+                .collect())
+        };
+        let default = |dir: Direction| {
+            enumerator.get_default_device(&dir).ok()?.get_friendlyname().ok()
+        };
+        Ok(device_list(
+            names(Direction::Render)?,
+            names(Direction::Capture)?,
+            default(Direction::Render),
+            default(Direction::Capture),
+        ))
     }
 }
 
@@ -302,10 +363,7 @@ pub fn input_format(name: Option<&str>) -> Option<DeviceFormat> {
 
 /// Côté enregistrement du câble (« CABLE Output »).
 pub fn cable_capture_format() -> Option<DeviceFormat> {
-    let device = cpal::default_host()
-        .input_devices()
-        .ok()?
-        .find(|d| d.name().is_ok_and(|n| n.contains(VB_CABLE_CAPTURE)))?;
+    let device = find_input_where(|n| n.contains(VB_CABLE_CAPTURE))?;
     let c = device.default_input_config().ok()?;
     Some(DeviceFormat { rate: c.sample_rate().0, channels: c.channels() })
 }
@@ -314,10 +372,13 @@ fn find_output(name: Option<&str>) -> Option<cpal::Device> {
     let host = cpal::default_host();
     match name {
         None => host.default_output_device(),
+        // `devices()` plutôt que `output_devices()` : ce dernier sonde tous
+        // les périphériques. Ici on ne teste que ceux qui portent ce nom.
         Some(name) => host
-            .output_devices()
+            .devices()
             .ok()?
-            .find(|d| d.name().map(|n| n == name).unwrap_or(false)),
+            .filter(|d| d.name().is_ok_and(|n| n == name))
+            .find(|d| d.default_output_config().is_ok()),
     }
 }
 
@@ -332,11 +393,18 @@ fn find_input(name: Option<&str>) -> Option<cpal::Device> {
     let host = cpal::default_host();
     match name {
         None => host.default_input_device(),
-        Some(name) => host
-            .input_devices()
-            .ok()?
-            .find(|d| d.name().map(|n| n == name).unwrap_or(false)),
+        Some(name) => find_input_where(|n| n == name),
     }
+}
+
+/// Premier micro dont le nom convient, sans sonder les autres (voir
+/// `find_output`).
+fn find_input_where(wanted: impl Fn(&str) -> bool) -> Option<cpal::Device> {
+    cpal::default_host()
+        .devices()
+        .ok()?
+        .filter(|d| d.name().is_ok_and(|n| wanted(&n)))
+        .find(|d| d.default_input_config().is_ok())
 }
 
 struct Output {
@@ -582,10 +650,7 @@ impl Engine {
             return Ok(());
         }
         let monitor = self.monitor.as_ref().ok_or("casque introuvable")?;
-        let device = cpal::default_host()
-            .input_devices()
-            .map_err(|e| e.to_string())?
-            .find(|d| d.name().is_ok_and(|n| n.contains(VB_CABLE_CAPTURE)))
+        let device = find_input_where(|n| n.contains(VB_CABLE_CAPTURE))
             .ok_or("« CABLE Output » introuvable : VB-Cable est-il installé ?")?;
         let supported = device.default_input_config().map_err(|e| e.to_string())?;
         let channels = supported.channels();
