@@ -1167,6 +1167,13 @@ function padElement(sound, index) {
   const keyHint = sound.hotkey ? `, raccourci ${hotkeyLabel(sound.hotkey)}` : "";
   pad.setAttribute("aria-label", `${sound.name}${missing ? ", fichier manquant" : ""}${keyHint}`);
   pad.title = missing ? "Le fichier de ce son a disparu : clique pour en choisir un autre" : "";
+  // Nom coupé (« … ») : on le montre en entier au survol.
+  if (!missing) {
+    pad.addEventListener("mouseenter", () => {
+      const cut = name.scrollHeight > name.clientHeight + 1 || name.scrollWidth > name.clientWidth + 1;
+      pad.title = cut ? sound.name : "";
+    });
+  }
 
   pad.addEventListener("click", (e) => {
     if (reorder.justDropped) return;
@@ -2926,11 +2933,17 @@ $("#search").addEventListener("keydown", (e) => {
     }
   }
 });
-// Ctrl+F : la recherche. Ctrl+Tab / Ctrl+Maj+Tab : onglet suivant / précédent.
+// Ctrl+O : ajouter des sons. Ctrl+, : réglages. Ctrl+F : la recherche. Ctrl+Tab / Ctrl+Maj+Tab : onglet suivant / précédent.
 // Échap, quand il n'y a rien d'autre à fermer : arrête les sons comme « Stop ».
 document.addEventListener("keydown", (e) => {
   if (e.defaultPrevented || e.altKey || e.metaKey || document.querySelector("dialog[open]")) return;
-  if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "f") {
+  if (e.ctrlKey && !e.shiftKey && e.key === ",") {
+    e.preventDefault();
+    openSettings();
+  } else if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "o") {
+    e.preventDefault();
+    call("pick_sounds");
+  } else if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "f") {
     e.preventDefault();
     const q = sendOpen ? formClip.q : $("#search");
     q.focus();

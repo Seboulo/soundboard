@@ -34,7 +34,7 @@ use std::str::FromStr;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_autostart::ManagerExt as AutostartExt;
@@ -629,7 +629,17 @@ fn set_muted(app: &AppHandle, muted: bool) {
     state.mic_muted.store(muted, Ordering::Relaxed);
     state.audio.set_mic_muted(muted);
     let _ = app.emit("mic-muted", muted);
+    // Le menu de l'icône près de l'horloge suit, d'où que vienne le changement.
+    if let Some(item) = app.try_state::<TrayMic>() {
+        let _ = item.0.set_checked(muted);
+    }
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_tooltip(Some(if muted { "Soundboard · micro coupé" } else { "Soundboard" }));
+    }
 }
+
+/// Case « Micro coupé » du menu de l'icône, cochée selon l'état du micro.
+struct TrayMic(CheckMenuItem<tauri::Wry>);
 
 /// Tire un son au hasard (dans une catégorie si on en donne une).
 fn pick_random(state: &AppState, category: Option<&str>) -> Option<Sound> {
@@ -2516,8 +2526,11 @@ fn open_vb_cable_page(app: AppHandle) -> Result<(), String> {
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Ouvrir la soundboard", true, None::<&str>)?;
     let stop = MenuItem::with_id(app, "stop", "Tout arrêter", true, None::<&str>)?;
+    let muted = app.state::<AppState>().mic_muted.load(Ordering::Relaxed);
+    let mic = CheckMenuItem::with_id(app, "mic", "Micro coupé", true, muted, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quitter", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &stop, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &stop, &mic, &quit])?;
+    app.manage(TrayMic(mic));
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("Soundboard")
         .menu(&menu)
@@ -2528,6 +2541,10 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 app.state::<AppState>().audio.stop_all();
                 clip::close(app);
                 extras::stop_sent(app);
+            }
+            "mic" => {
+                let muted = !app.state::<AppState>().mic_muted.load(Ordering::Relaxed);
+                set_muted(app, muted);
             }
             "quit" => {
                 if let Some(w) = app.get_webview_window("main") {
