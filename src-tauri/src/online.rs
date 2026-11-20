@@ -18,6 +18,8 @@ const FREESOUND_CDN: &str = "https://cdn.freesound.org/previews/";
 const RELEASES_API: &str = "https://api.github.com/repos/Seboulo/soundboard/releases/latest";
 pub const RELEASES_PAGE: &str = "https://github.com/Seboulo/soundboard/releases";
 const MAX_DOWNLOAD: usize = 20 * 1024 * 1024;
+/// Durée laissée pour télécharger un son (jusqu'à 20 Mo).
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct OnlineSound {
@@ -185,6 +187,8 @@ pub async fn download_link(url: &str) -> Result<(Vec<u8>, String, String), Strin
         .unwrap_or_default();
     let mut res = client()?
         .get(parsed.clone())
+        // 20 s suffisent pour une page, pas pour un fichier de 20 Mo.
+        .timeout(DOWNLOAD_TIMEOUT)
         .send()
         .await
         .and_then(|r| r.error_for_status())
@@ -298,6 +302,7 @@ pub async fn download(url: &str) -> Result<Vec<u8>, String> {
     }
     let mut res = client()?
         .get(url)
+        .timeout(DOWNLOAD_TIMEOUT)
         .send()
         .await
         .and_then(|r| r.error_for_status())

@@ -445,7 +445,8 @@ fn analyze_missing(app: &AppHandle) {
     for (id, path) in todo {
         let result = analysis::analyze(&path);
         let mut config = state.config.lock().unwrap();
-        let Some(s) = config.sounds.iter_mut().find(|s| s.id == id) else { continue };
+        // Fichier remplacé pendant la mesure : celle-ci ne vaut plus.
+        let Some(s) = config.sounds.iter_mut().find(|s| s.id == id && s.path == path) else { continue };
         match result {
             Ok(a) => s.analysis = Some(a),
             // Fichier présent mais illisible : on garde l'ancienne mesure
@@ -1500,6 +1501,9 @@ fn update_settings(app: AppHandle, state: State<AppState>, mut settings: Setting
         settings.published = config.settings.published.clone();
         settings.room_id = config.settings.room_id.clone();
         settings.mic_learned = config.settings.mic_learned.clone();
+        // Bloqués par « Bloquer » (aussi depuis la fenêtre de l'extrait) :
+        // la copie de l'interface peut être en retard et les débloquait.
+        settings.room_blocked = config.settings.room_blocked.clone();
         settings.duck_level = settings.duck_level.clamp(0.1, 0.8);
         room_changed = (&config.settings.room_code, &config.settings.room_name)
             != (&settings.room_code, &settings.room_name);
@@ -2072,7 +2076,7 @@ fn read_pack(
 
     let mut used: Vec<String> = config.sounds.iter().filter_map(|s| s.hotkey.clone()).collect();
     used.extend(
-        [&config.settings.stop_hotkey, &config.settings.mute_hotkey, &config.settings.random_hotkey]
+        [&config.settings.stop_hotkey, &config.settings.mute_hotkey, &config.settings.random_hotkey, &config.settings.replay_hotkey]
             .into_iter()
             .flatten()
             .cloned(),
@@ -2119,7 +2123,7 @@ fn read_pack(
         let name: String = p.name.chars().take(80).collect();
         match store_sound(&data, &ext, name, sounds_dir, config.sounds.len() + i) {
             Ok(mut sound) => {
-                sound.hotkey = p.hotkey.filter(|h| !h.is_empty() && !used.contains(h));
+                sound.hotkey = p.hotkey.filter(|h| !h.is_empty() && !used.contains(h) && !blocks_typing(h));
                 if let Some(h) = &sound.hotkey {
                     used.push(h.clone());
                 }
@@ -2142,6 +2146,23 @@ fn read_pack(
         }
     }
     Ok((added, errors, keys))
+}
+
+/// Raccourci sans Ctrl, Alt ni Win sur une touche d'écriture : il bloquerait
+/// cette touche dans toutes les applis (même règle que l'interface).
+fn blocks_typing(hotkey: &str) -> bool {
+    let parts: Vec<&str> = hotkey.split('+').collect();
+    if parts.iter().any(|p| matches!(*p, "Ctrl" | "Control" | "Alt" | "Super" | "Meta" | "Cmd")) {
+        return false;
+    }
+    let key = parts.last().copied().unwrap_or("");
+    key.starts_with("Key")
+        || key.starts_with("Digit")
+        || matches!(
+            key,
+            "Space" | "Enter" | "Backspace" | "Backquote" | "Minus" | "Equal" | "BracketLeft" | "BracketRight"
+                | "Backslash" | "Semicolon" | "Quote" | "Comma" | "Period" | "Slash" | "IntlBackslash"
+        )
 }
 
 /// Enregistre les sons (d'un onglet ou tous) dans un .zip à partager.
@@ -2268,14 +2289,24 @@ async fn import_backup(app: AppHandle, path: Option<String>) -> Result<Option<Sn
     let settings = restored.settings.clone();
     {
         let mut config = state.config.lock().unwrap();
+        // L'identité de ce PC dans le salon reste la sienne (une sauvegarde
+        // venue d'un autre PC donnerait sinon deux membres au même nom
+        // interne, qui se volent les sons).
+        let room_id = std::mem::take(&mut config.settings.room_id);
         *config = restored;
+        if !room_id.is_empty() {
+            config.settings.room_id = room_id;
+        }
         state.save(&config)?;
     }
     state.waveforms.lock().unwrap().clear();
     journal::write("Sauvegarde restaurée");
+    replay::configure(settings.replay_enabled, settings.duck_enabled, settings.duck_level);
     apply_audio(&state, settings);
     register_hotkeys(&app);
     apply_phone(&app);
+    // Le salon de la sauvegarde (code, nom) est rejoint tout de suite.
+    extras::start_room(&app);
     measure_segments(app.clone());
     Ok(Some(state.snapshot()))
 }
@@ -2592,6 +2623,15 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pack_hotkeys_cannot_steal_typing_keys() {
+        assert!(super::blocks_typing("KeyA"));
+        assert!(super::blocks_typing("Shift+Digit1"));
+        assert!(!super::blocks_typing("Ctrl+KeyA"));
+        assert!(!super::blocks_typing("F5"));
+        assert!(!super::blocks_typing("Numpad1"));
+    }
+
     use super::surprise_delay;
 
     #[test]
