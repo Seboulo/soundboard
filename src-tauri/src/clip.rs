@@ -1379,13 +1379,12 @@ pub async fn clip_audio(app: AppHandle, path: String, start_ms: u64, end_ms: Opt
     if path.parent() != Some(dir.join("recus").as_path()) && path.parent() != Some(dir.join("envoi").as_path()) {
         return Err("fichier non autorisé".into());
     }
-    // Extrait reçu d'un pote : son son part aussi dans Discord, comme un son
-    // du salon, pour que tout le monde l'entende. L'aperçu reste au casque.
-    let discord = state.clips.pending.lock().unwrap().as_ref().is_some_and(|c| !c.preview && c.direct);
+    // Le son d'un extrait reçu reste dans le casque : il ne part jamais dans
+    // Discord par le micro (le salon croyait qu'on le diffusait).
     if !still_shown(&state, &path) {
         return Err("extrait déjà fermé".into());
     }
-    play_audio(app.clone(), path, start_ms, end_ms, volume, discord, true, at_ms).await
+    play_audio(app.clone(), path, start_ms, end_ms, volume, false, true, at_ms).await
 }
 
 /// Le son `path` est-il celui de l'extrait affiché en ce moment ? Un son
