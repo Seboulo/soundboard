@@ -2123,6 +2123,8 @@ async fn install_update(app: AppHandle) -> Result<(), String> {
         .ok_or("cette version ne peut pas s'installer toute seule, télécharge-la depuis la page")?;
     let state = app.state::<AppState>();
     state.audio.stop_all();
+    // L'installeur ferme l'appli sans passer par la sortie normale.
+    state.flush_plays();
     update
         .download_and_install(|_, _| {}, || {})
         .await

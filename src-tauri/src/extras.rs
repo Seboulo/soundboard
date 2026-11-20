@@ -426,7 +426,22 @@ async fn sync_one(app: &AppHandle, url: &str) -> Result<(usize, usize, Vec<Strin
         for p in gone {
             let _ = fs::remove_file(p);
         }
-        config.sounds.extend(added);
+        // Deux vérifications du même pack en même temps (abonnement + mise à
+        // jour automatique) ne doivent pas ajouter deux fois les mêmes sons.
+        let mut have: HashSet<String> = config
+            .sounds
+            .iter()
+            .filter(|s| s.pack_link.as_deref() == Some(url))
+            .filter_map(|s| s.pack_key.clone())
+            .collect();
+        for s in added {
+            match &s.pack_key {
+                Some(k) if !have.insert(k.clone()) => {
+                    let _ = fs::remove_file(&s.path);
+                }
+                _ => config.sounds.push(s),
+            }
+        }
         if let Some(sub) = config.settings.subscriptions.iter_mut().find(|s| s.url == url) {
             sub.name = tab;
         }
