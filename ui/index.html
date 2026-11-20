@@ -73,9 +73,9 @@
     </div>
     <button id="btn-random" type="button" title="Jouer un son au hasard de cet onglet"><svg class="ico"><use href="#i-shuffle"/></svg><span class="lbl">Au hasard</span></button>
     <button id="surprise-toggle" type="button" title="Mode Surprise : des sons qui partent tout seuls, au hasard"><svg class="ico dice" aria-hidden="true"><use href="#i-dice"/></svg><span class="lbl">Surprise</span></button>
-    <button id="btn-stop" type="button" class="danger" title="Tout arrêter"><svg class="ico"><use href="#i-stop"/></svg><span class="lbl">Stop</span></button>
+    <button id="btn-stop" type="button" class="danger" title="Tout arrêter (Échap)"><svg class="ico"><use href="#i-stop"/></svg><span class="lbl">Stop</span></button>
     <div class="spacer"></div>
-    <label class="search-box"><svg class="ico"><use href="#i-search"/></svg><input id="search" type="search" placeholder="Rechercher…" title="Rechercher un son (tu peux taper n'importe où dans la fenêtre)" autocomplete="off"></label>
+    <label class="search-box"><svg class="ico"><use href="#i-search"/></svg><input id="search" type="search" placeholder="Rechercher…" title="Rechercher un son (Ctrl+F, ou tape n'importe où dans la fenêtre)" autocomplete="off"></label>
     <button id="btn-online" type="button" title="Chercher des sons sur internet"><svg class="ico"><use href="#i-globe"/></svg><span class="lbl">En ligne</span></button>
     <button id="btn-add" type="button" class="primary" title="Ajouter des fichiers audio"><svg class="ico"><use href="#i-plus"/></svg><span class="lbl">Ajouter</span></button>
     <span class="tb-sep" aria-hidden="true"></span>
@@ -137,6 +137,7 @@
     <div id="grid" class="grid"></div>
     <div id="search-empty" class="empty" hidden>
       <p>Aucun son ne correspond à ta recherche.</p>
+      <button type="button" data-action="search-all" hidden><svg class="ico"><use href="#i-search"/></svg><span></span></button>
       <button type="button" data-action="search-online"><svg class="ico"><use href="#i-globe"/></svg><span></span></button>
     </div>
     <div id="top-empty" class="empty" hidden>
