@@ -286,7 +286,13 @@ pub fn unsubscribe_pack(app: AppHandle, url: String, remove_sounds: bool) -> Res
                 std::mem::take(&mut config.sounds).into_iter().partition(|s| s.pack_link.as_deref() == Some(&url));
             config.sounds = kept;
             for s in gone {
-                let _ = fs::remove_file(&s.path);
+                // Arrêté (il continuait de jouer), et ses images partent
+                // avec lui au lieu de rester sur le disque.
+                state.audio.stop(&s.id);
+                if s.path.starts_with(&state.sounds_dir) {
+                    let _ = fs::remove_file(&s.path);
+                }
+                remove_image_files(&state, &s);
             }
         } else {
             // Les sons restent, comme des sons à toi.

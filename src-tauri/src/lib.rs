@@ -2076,7 +2076,7 @@ fn read_pack(
 
     let mut used: Vec<String> = config.sounds.iter().filter_map(|s| s.hotkey.clone()).collect();
     used.extend(
-        [&config.settings.stop_hotkey, &config.settings.mute_hotkey, &config.settings.random_hotkey]
+        [&config.settings.stop_hotkey, &config.settings.mute_hotkey, &config.settings.random_hotkey, &config.settings.replay_hotkey]
             .into_iter()
             .flatten()
             .cloned(),
@@ -2123,7 +2123,7 @@ fn read_pack(
         let name: String = p.name.chars().take(80).collect();
         match store_sound(&data, &ext, name, sounds_dir, config.sounds.len() + i) {
             Ok(mut sound) => {
-                sound.hotkey = p.hotkey.filter(|h| !h.is_empty() && !used.contains(h));
+                sound.hotkey = p.hotkey.filter(|h| !h.is_empty() && !used.contains(h) && !blocks_typing(h));
                 if let Some(h) = &sound.hotkey {
                     used.push(h.clone());
                 }
@@ -2146,6 +2146,23 @@ fn read_pack(
         }
     }
     Ok((added, errors, keys))
+}
+
+/// Raccourci sans Ctrl, Alt ni Win sur une touche d'écriture : il bloquerait
+/// cette touche dans toutes les applis (même règle que l'interface).
+fn blocks_typing(hotkey: &str) -> bool {
+    let parts: Vec<&str> = hotkey.split('+').collect();
+    if parts.iter().any(|p| matches!(*p, "Ctrl" | "Control" | "Alt" | "Super" | "Meta" | "Cmd")) {
+        return false;
+    }
+    let key = parts.last().copied().unwrap_or("");
+    key.starts_with("Key")
+        || key.starts_with("Digit")
+        || matches!(
+            key,
+            "Space" | "Enter" | "Backspace" | "Backquote" | "Minus" | "Equal" | "BracketLeft" | "BracketRight"
+                | "Backslash" | "Semicolon" | "Quote" | "Comma" | "Period" | "Slash" | "IntlBackslash"
+        )
 }
 
 /// Enregistre les sons (d'un onglet ou tous) dans un .zip à partager.
@@ -2606,6 +2623,15 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pack_hotkeys_cannot_steal_typing_keys() {
+        assert!(super::blocks_typing("KeyA"));
+        assert!(super::blocks_typing("Shift+Digit1"));
+        assert!(!super::blocks_typing("Ctrl+KeyA"));
+        assert!(!super::blocks_typing("F5"));
+        assert!(!super::blocks_typing("Numpad1"));
+    }
+
     use super::surprise_delay;
 
     #[test]
