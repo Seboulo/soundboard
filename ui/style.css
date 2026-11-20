@@ -1455,8 +1455,13 @@ body:has(.grid.list) .tabbar .size { display: none; }
 #room-pill.away { background: color-mix(in srgb, var(--accent) 12%, var(--panel)); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--accent); }
 #room-pill.offline { color: var(--muted); }
 .room-menu-title { padding: 6px 10px 4px; font-size: 12px; color: var(--muted); }
+.ctx-menu .room-menu-title { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu button:disabled { opacity: .5; cursor: default; background: transparent; }
+.gift-row { display: flex; gap: 2px; }
+.gift-row button:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.menu .gift-row .gift-no { flex: none; width: 36px; justify-content: center; color: var(--muted); }
 #room-menu button.on { color: var(--accent); font-weight: 600; }
-#room-menu .empty-note { padding: 4px 10px 8px; font-size: 12.5px; color: var(--muted); white-space: normal; max-width: 260px; }
+#room-menu .empty-note, .ctx-menu .empty-note { padding: 4px 10px 8px; font-size: 12.5px; color: var(--muted); white-space: normal; max-width: 260px; }
 
 .room-code-row { display: flex; gap: 8px; margin-top: 4px; }
 .room-code-row input { flex: 1; min-width: 0; font-family: ui-monospace, Consolas, monospace; letter-spacing: .04em; }
@@ -1800,6 +1805,8 @@ body { background: var(--bg); }
 .side-foot .pill, .side-foot #room-pill { width: 100%; max-width: 100%; justify-content: flex-start; text-align: left; overflow: hidden; text-overflow: ellipsis; }
 .side-foot .room-wrap { display: flex; }
 .side-foot .room-wrap[hidden] { display: none; }
+/* Le menu du salon reste dans la barre latérale (elle le couperait). */
+.side-foot .room-wrap .menu { min-width: 0; width: 100%; }
 .side-foot #room-menu { top: auto; bottom: calc(100% + 6px); left: 0; right: auto; }
 
 /* Barre d'outils unique */

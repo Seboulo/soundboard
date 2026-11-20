@@ -27,6 +27,32 @@ pub struct Extras {
     /// Mesure du niveau des sons reçus des potes, par empreinte (un son
     /// rejoué n'est pas remesuré : il part tout de suite).
     received_levels: Mutex<HashMap<String, config::Analysis>>,
+    /// Sons partagés par des potes, en attente de « Ajouter » (par empreinte).
+    gifts: Mutex<HashMap<String, Gift>>,
+}
+
+/// Son qu'un pote nous a partagé : de quoi l'ajouter si on accepte.
+#[derive(Clone)]
+struct Gift {
+    url: String,
+    ext: String,
+    title: String,
+    emoji: Option<String>,
+    color: String,
+    start_ms: u64,
+    end_ms: Option<u64>,
+    volume: f32,
+    fx: crate::sound_fx::SoundFx,
+}
+
+/// Ce que l'interface affiche d'un son partagé.
+#[derive(Clone, Serialize)]
+pub struct GiftInfo {
+    id: String,
+    from: String,
+    title: String,
+    /// Le son est déjà dans la soundboard.
+    have: bool,
 }
 
 fn data_dir(state: &AppState) -> PathBuf {
@@ -708,6 +734,89 @@ pub fn send_to_friend(app: &AppHandle, sound: Sound) -> Result<PlayOutcome, Stri
     Ok(PlayOutcome::Started)
 }
 
+/// Partage un son avec un pote du salon : il reçoit le fichier et choisit
+/// de l'ajouter à sa soundboard.
+#[tauri::command]
+pub async fn share_sound(app: AppHandle, id: String, to: String) -> Result<bool, String> {
+    let state = app.state::<AppState>();
+    let sound = state.config.lock().unwrap().sounds.iter().find(|s| s.id == id).cloned().ok_or("son introuvable")?;
+    let member = state.extras.room.status().members.into_iter().find(|m| m.id == to).ok_or("ce pote n'est plus dans le salon")?;
+    if !member.gift {
+        return Err(format!("{} doit d'abord mettre à jour son appli pour recevoir des sons", member.name));
+    }
+    let size = fs::metadata(&sound.path).map_err(|_| "le fichier de ce son a disparu")?.len();
+    if size > room::MAX_ATTACHMENT {
+        return Err(format!("« {} » est trop lourd pour être partagé (15 Mo au plus) : passe par « Enregistrer en fichier »", sound.name));
+    }
+    let hash = {
+        let (app2, s2) = (app.clone(), sound.clone());
+        tauri::async_runtime::spawn_blocking(move || sound_key(&app2.state::<AppState>(), &s2))
+            .await
+            .map_err(|e| e.to_string())??
+    };
+    let ext = sound.path.extension().and_then(|e| e.to_str()).unwrap_or("mp3").to_lowercase();
+    let msg = Msg::Gift {
+        from: state.extras.room.my_id(),
+        name: state.extras.room.my_name(),
+        to,
+        hash: hash.clone(),
+        title: sound.name.chars().take(80).collect(),
+        ext: ext.clone(),
+        emoji: sound.emoji.clone(),
+        color: sound.color.clone(),
+        start_ms: sound.start_ms,
+        end_ms: sound.end_ms,
+        volume: sound.volume,
+        fx: sound.fx,
+        size,
+    };
+    let path = sound.path.clone();
+    state
+        .extras
+        .room
+        .send_file(&msg, &hash, &format!("{hash}.{ext}"), || fs::read(&path).map_err(|e| e.to_string()))
+        .await?;
+    journal::write(&format!("Salon : « {} » partagé avec {}", sound.name, member.name));
+    Ok(true)
+}
+
+/// « Ajouter » (ou « Non merci » si `keep` est faux) un son partagé par un pote.
+#[tauri::command]
+pub async fn accept_gift(app: AppHandle, id: String, keep: bool) -> Result<Option<AddedSound>, String> {
+    let state = app.state::<AppState>();
+    let gift = state.extras.gifts.lock().unwrap().remove(&id).ok_or("ce son n'est plus disponible")?;
+    if !keep {
+        return Ok(None);
+    }
+    let data = room::fetch(&gift.url).await.map_err(|e| format!("son introuvable sur le relais ({e}) : demande à ton pote de le repartager"))?;
+    if share::key_of(&data) != id {
+        return Err("le fichier reçu est abîmé : demande à ton pote de le repartager".into());
+    }
+    let index = state.config.lock().unwrap().sounds.len();
+    let sounds_dir = state.sounds_dir.clone();
+    let (ext, title) = (gift.ext.clone(), gift.title.clone());
+    let mut sound = tauri::async_runtime::spawn_blocking(move || store_sound(&data, &ext, title, &sounds_dir, index))
+        .await
+        .map_err(|e| e.to_string())??;
+    let total = sound.analysis.map_or(u64::MAX, |a| a.duration_ms);
+    sound.start_ms = gift.start_ms.min(total);
+    sound.end_ms = gift.end_ms.filter(|&e| e < total && e > sound.start_ms);
+    sound.volume = gift.volume.clamp(0.0, 2.0);
+    sound.fx = gift.fx.sanitized();
+    sound.emoji = clean_emoji(gift.emoji);
+    if gift.color.starts_with('#') && gift.color.len() <= 9 {
+        sound.color = gift.color;
+    }
+    let sid = sound.id.clone();
+    journal::write(&format!("Salon : « {} » ajouté à la soundboard", sound.name));
+    {
+        let mut config = state.config.lock().unwrap();
+        config.sounds.push(sound);
+        state.save(&config)?;
+    }
+    Ok(Some(AddedSound { id: sid, snapshot: state.snapshot() }))
+}
+
 fn on_room_message(app: &AppHandle, inc: Incoming) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -828,6 +937,39 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
             state.audio.toggle_detached(play_request(&state, &sound));
             state.extras.playing_from.lock().unwrap().insert(from.clone(), sound.id.clone());
             let _ = app.emit("room-played", (name, title));
+            Ok(())
+        }
+        Msg::Gift { from, name, hash, title, ext, emoji, color, start_ms, end_ms, volume, fx, size, .. } => {
+            journal::write(&format!("Salon : {name} partage « {title} »"));
+            if is_blocked(&state, &from) {
+                journal::write(&format!("Salon : ignoré ({name} est bloqué)"));
+                return Ok(());
+            }
+            let Some(url) = inc.attachment else {
+                return Err("son partagé sans fichier".into());
+            };
+            let ext = ext.to_lowercase();
+            if !AUDIO_EXTENSIONS.contains(&ext.as_str()) {
+                return Err(format!("son partagé dans un format inconnu ({ext})"));
+            }
+            let hash: String = hash.chars().filter(|c| c.is_ascii_hexdigit()).take(64).collect();
+            let have = {
+                let (app2, h2) = (app.clone(), hash.clone());
+                tauri::async_runtime::spawn_blocking(move || find_local(&app2.state::<AppState>(), &h2, size))
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .is_some()
+            };
+            let title: String = title.trim().chars().take(80).collect();
+            let title = if title.is_empty() { "Son partagé".to_string() } else { title };
+            {
+                let mut gifts = state.extras.gifts.lock().unwrap();
+                if gifts.len() >= 20 {
+                    gifts.clear();
+                }
+                gifts.insert(hash.clone(), Gift { url, ext, title: title.clone(), emoji, color, start_ms, end_ms, volume, fx });
+            }
+            let _ = app.emit("room-gift", GiftInfo { id: hash, from: name, title, have });
             Ok(())
         }
         Msg::Stop { from, .. } => {

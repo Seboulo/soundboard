@@ -33,11 +33,11 @@ function toast(message, isError = false, action = null) {
   el.classList.toggle("error", isError);
   el.hidden = false;
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => (el.hidden = true), action ? 8000 : isError ? 6000 : 2500);
+  toast.timer = setTimeout(() => (el.hidden = true), action ? (action.timeout ?? 8000) : isError ? 6000 : 2500);
 }
 
 // Un son ajouté pendant qu'un onglet est ouvert y est rangé directement.
-const ADD_CMDS = new Set(["pick_sounds", "add_sounds", "add_online", "add_from_url", "add_from_youtube"]);
+const ADD_CMDS = new Set(["pick_sounds", "add_sounds", "add_online", "add_from_url", "add_from_youtube", "accept_gift"]);
 
 async function call(cmd, args) {
   try {
@@ -718,6 +718,7 @@ function openPadMenu(sound, anchor) {
     ctxItem("pencil", "Modifier…", () => openSoundDialog(sound)),
     ctxItem(isPlaying ? "stop" : "volume", isPlaying ? "Arrêter" : "Jouer", () => playSound(sound.id)),
     ctxItem("star", sound.favorite ? "Retirer des favoris" : "Mettre en favori", () => call("toggle_favorite", { id: sound.id })),
+    ctxItem("send", "Partager à un pote…", () => openShareMenu(sound, anchor)),
     ctxItem("keyboard", sound.hotkey ? "Changer le raccourci" : "Choisir un raccourci", () => {
       const chip = document.querySelector(`#grid .pad[data-id="${CSS.escape(sound.id)}"] .add-key`);
       if (chip) captureHotkey(sound, chip);
@@ -732,6 +733,44 @@ function openPadMenu(sound, anchor) {
   items.push(document.createElement("hr"), ctxItem("trash", "Supprimer", () => deleteSound(sound), true));
   const r = anchor.getBoundingClientRect();
   showCtxMenu(items, r.left, r.bottom + 4);
+}
+/** « Partager à un pote… » : les potes du salon (en un clic), ou un fichier. */
+function openShareMenu(sound, anchor) {
+  const note = (text) => {
+    const d = document.createElement("div");
+    d.className = "empty-note";
+    d.textContent = text;
+    return d;
+  };
+  const title = document.createElement("div");
+  title.className = "room-menu-title";
+  title.textContent = `Partager « ${sound.name} » avec…`;
+  const items = [title];
+  for (const m of room.members) {
+    if (m.gift) {
+      items.push(ctxItem("people", m.name, () => shareWith(sound, m)));
+    } else {
+      const b = ctxItem("people", `${m.name} (doit mettre à jour l'appli)`, () => {});
+      b.disabled = true;
+      items.push(b);
+    }
+  }
+  if (!state.config.settings.room_code) items.push(note("Pour l'envoyer en un clic, mettez le même code de salon dans Réglages → Potes."));
+  else if (!room.members.length) items.push(note(room.connected ? "Aucun pote en ligne dans le salon pour l'instant." : "Connexion au salon…"));
+  items.push(
+    document.createElement("hr"),
+    ctxItem("download", "Enregistrer en fichier…", async () => {
+      if (await call("export_pack", { category: null, id: sound.id }))
+        toast(`« ${sound.name} » enregistré : ton pote n'a qu'à glisser le fichier sur sa soundboard`);
+    }),
+  );
+  const r = anchor.getBoundingClientRect();
+  showCtxMenu(items, r.left, r.bottom + 4);
+}
+async function shareWith(sound, m) {
+  toast(`Envoi de « ${sound.name} » à ${m.name}…`);
+  if (await call("share_sound", { id: sound.id, to: m.id }))
+    toast(`« ${sound.name} » partagé : ${m.name} n'a plus qu'à cliquer sur « Ajouter »`);
 }
 document.addEventListener("contextmenu", (e) => {
   if (e.target.closest(".pad, dialog, input, textarea, .menu") || !e.target.closest("main, .tabbar")) return;
@@ -3694,6 +3733,8 @@ $('[data-action="sync"]', dlgSettings).addEventListener("click", async () => {
 // ---------- 2.0 : salon entre potes ----------
 
 let room = { on: false, connected: false, members: [], target: null };
+/** Sons partagés par des potes, en attente de « Ajouter ». */
+let gifts = [];
 const roomPill = $("#room-pill");
 const roomMenu = $("#room-menu");
 
@@ -3703,7 +3744,9 @@ function renderRoom() {
   wrap.hidden = !state.config.settings.room_code;
   const target = room.members.find((m) => m.id === room.target);
   roomPill.className = "pill" + (target ? " away" : "") + (room.connected ? "" : " offline");
-  roomPill.textContent = target ? `👥 Joue chez ${target.name}` : room.connected ? `👥 Salon · ${room.members.length}` : "👥 Salon…";
+  roomPill.textContent =
+    (target ? `👥 Joue chez ${target.name}` : room.connected ? `👥 Salon · ${room.members.length}` : "👥 Salon…") +
+    (gifts.length ? ` · 🎁 ${gifts.length}` : "");
   roomPill.title = target
     ? `Tes sons partent chez ${target.name} (dans Discord par son micro). Clique pour revenir chez toi.`
     : room.connected
@@ -3753,6 +3796,38 @@ function setRoomMenu(open) {
       : "Connexion au salon…";
     items.push(note);
   }
+  if (gifts.length) {
+    const t = document.createElement("div");
+    t.className = "room-menu-title";
+    t.textContent = "Sons partagés avec toi";
+    items.push(document.createElement("hr"), t);
+    for (const g of gifts) {
+      const row = document.createElement("div");
+      row.className = "gift-row";
+      const add = document.createElement("button");
+      add.type = "button";
+      add.setAttribute("role", "menuitem");
+      add.textContent = `🎁 « ${g.title} » de ${g.from}`;
+      add.title = "Ajouter ce son à ta soundboard";
+      add.addEventListener("click", () => {
+        setRoomMenu(false);
+        answerGift(g, true);
+      });
+      const no = document.createElement("button");
+      no.type = "button";
+      no.className = "gift-no";
+      no.textContent = "✕";
+      no.title = "Non merci";
+      no.setAttribute("aria-label", `Refuser « ${g.title} »`);
+      no.addEventListener("click", () => {
+        answerGift(g, false);
+        if (gifts.length) setRoomMenu(true);
+        else setRoomMenu(false);
+      });
+      row.append(add, no);
+      items.push(row);
+    }
+  }
   const clipBtn = document.createElement("button");
   clipBtn.type = "button";
   clipBtn.setAttribute("role", "menuitem");
@@ -3782,6 +3857,28 @@ listen("room", ({ payload }) => {
   if (!roomMenu.hidden) setRoomMenu(true);
   if (dlgSettings.open) renderBlockList();
   if (sendOpen) fillSendTargets();
+});
+// Sons partagés par des potes : « Ajouter » dans la bulle, ou plus tard
+// depuis le menu 👥.
+async function answerGift(g, keep) {
+  gifts = gifts.filter((x) => x.id !== g.id);
+  renderRoom();
+  const res = await call("accept_gift", { id: g.id, keep });
+  if (res?.snapshot) {
+    render(res.snapshot);
+    toast(`« ${g.title} » ajouté à ta soundboard`);
+  }
+}
+listen("room-gift", ({ payload: g }) => {
+  gifts = [...gifts.filter((x) => x.id !== g.id), g];
+  renderRoom();
+  if (!roomMenu.hidden) setRoomMenu(true);
+  if (dndOn) return;
+  toast(`${g.from} te partage « ${g.title} »${g.have ? " (tu l'as déjà)" : ""}`, false, {
+    label: "Ajouter",
+    run: () => answerGift(g, true),
+    timeout: 20000,
+  });
 });
 listen("room-played", ({ payload: [who, title] }) => toast(`${who} a joué « ${title} » chez toi`));
 listen("room-sent", ({ payload }) => {
