@@ -1,6 +1,19 @@
 Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
 Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
+Nouveautés de la 3.2.0 :
+- Partager un son à un pote du salon : il l'ajoute à sa soundboard en un clic (« ⋯ » → partager). Un son s'exporte aussi seul en .zip.
+- Liens Spotify : colle le lien d'un morceau, l'appli retrouve le titre et l'artiste et va le chercher sur YouTube.
+- Nouvel onglet « Avec raccourci » : tous les sons qui ont un raccourci clavier, au même endroit.
+- Raccourcis qui marchent aussi en jeu (League of Legends et les jeux qui les bloquaient).
+- Sons qui disparaissaient : les réglages sont enregistrés même quand l'antivirus bloque un instant le fichier, et les sons perdus se retrouvent (« Les retrouver »). Suppr sur un pad demande confirmation.
+- Windows qui ramait au bout de quelques jours : l'appli ne fait plus gonfler audiodg.exe en vérifiant les casques et micros.
+- La fenêtre se rouvre à la même place et à la même taille. Ctrl+F pour chercher, Ctrl+Tab pour changer d'onglet, Échap arrête les sons, Ctrl+O ajoute des sons, Ctrl+virgule ouvre les réglages.
+- Micro coupé ou rallumé depuis le menu de l'icône près de l'horloge. Nom entier d'un son au survol de sa tuile.
+- Une recherche sans résultat dans un onglet propose de voir les sons trouvés dans « Tous ».
+- Le son d'une vidéo qu'un pote t'envoie reste dans ton casque : il ne passe plus dans Discord.
+- Corrigé : bloquer un pote depuis la fenêtre de l'extrait était annulé en enregistrant les réglages ; un pote d'un salon quitté pouvait encore lancer des sons ; les gros packs partagés par lien et les sons MyInstants/Freesound étaient coupés sur une connexion lente ; un pack ne peut plus mettre un raccourci sur une simple lettre ; restaurer une sauvegarde relance le salon tout de suite.
+
 Nouveautés de la 3.1.0 — extraits vidéo :
 - Un extrait qui arrive pendant un autre attend son tour (3 au plus) au lieu de le couper. Si tu lances ton propre « Aperçu » pendant l'extrait d'un pote, celui-ci repasse juste après.
 - L'extrait s'affiche sur l'écran où se trouve ton jeu.
