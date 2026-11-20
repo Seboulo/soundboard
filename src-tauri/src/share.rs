@@ -71,7 +71,11 @@ pub async fn download(link: &str) -> Result<(Vec<u8>, String), String> {
     let url = direct_url(link)?;
     let client = reqwest::Client::builder()
         .user_agent(concat!("Soundboard/", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(120))
+        // Pas de durée totale : un pack de 300 Mo prend plusieurs minutes sur
+        // une connexion ordinaire. On abandonne seulement si plus rien
+        // n'arrive.
+        .connect_timeout(Duration::from_secs(20))
+        .read_timeout(Duration::from_secs(60))
         .build()
         .map_err(|e| e.to_string())?;
     let mut res = client

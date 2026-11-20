@@ -312,7 +312,13 @@ pub fn unsubscribe_pack(app: AppHandle, url: String, remove_sounds: bool) -> Res
                 std::mem::take(&mut config.sounds).into_iter().partition(|s| s.pack_link.as_deref() == Some(&url));
             config.sounds = kept;
             for s in gone {
-                let _ = fs::remove_file(&s.path);
+                // Arrêté (il continuait de jouer), et ses images partent
+                // avec lui au lieu de rester sur le disque.
+                state.audio.stop(&s.id);
+                if s.path.starts_with(&state.sounds_dir) {
+                    let _ = fs::remove_file(&s.path);
+                }
+                remove_image_files(&state, &s);
             }
         } else {
             // Les sons restent, comme des sons à toi.
@@ -902,7 +908,7 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
             // 30 s » : sinon le son passait pour « en cours » 30 s et le
             // suivant identique l'arrêtait au lieu de le rejouer.
             let total = sound.analysis.map_or(u64::MAX, |a| a.duration_ms);
-            sound.end_ms = Some(end_ms.unwrap_or(total).min(total).min(start_ms + 30_000));
+            sound.end_ms = Some(end_ms.unwrap_or(total).min(total).min(start_ms.saturating_add(30_000)));
             sound.volume = volume.clamp(0.0, 2.0);
             sound.fx = fx.sanitized();
             // Un pote qui renvoie le même son le rejoue depuis le début (on
@@ -1005,7 +1011,11 @@ pub fn set_friend_blocked(app: AppHandle, id: String, name: String, blocked: boo
         clip::close(&app);
     }
     let _ = app.emit("room", state.extras.room.status());
-    Ok(state.snapshot())
+    // La fenêtre principale se met à jour même si on a bloqué depuis
+    // la fenêtre de l'extrait.
+    let snap = state.snapshot();
+    let _ = app.emit("snapshot", &snap);
+    Ok(snap)
 }
 
 /// Garde au plus 60 sons reçus.
