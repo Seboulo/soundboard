@@ -66,8 +66,24 @@ fn base64_url(data: &[u8]) -> String {
     out
 }
 
-/// Télécharge le pack. Renvoie le fichier et son empreinte.
-pub async fn download(link: &str) -> Result<(Vec<u8>, String), String> {
+/// Ce que le serveur a dit du fichier la dernière fois (en-têtes `ETag` et
+/// `Last-Modified`) : de quoi lui demander « seulement s'il a changé ».
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Validators {
+    pub etag: String,
+    pub modified: String,
+}
+
+pub enum Download {
+    /// Le serveur répond « pas changé » (304) : rien n'est téléchargé.
+    Unchanged,
+    Fresh { data: Vec<u8>, hash: String, validators: Validators },
+}
+
+/// Télécharge le pack, sauf si le serveur sait qu'il n'a pas changé depuis
+/// `known`. Avant, un pack suivi (jusqu'à 300 Mo) était retéléchargé en
+/// entier à chaque démarrage et toutes les 2 h, même identique.
+pub async fn download(link: &str, known: &Validators) -> Result<Download, String> {
     let url = direct_url(link)?;
     let client = reqwest::Client::builder()
         .user_agent(concat!("Soundboard/", env!("CARGO_PKG_VERSION")))
@@ -78,17 +94,26 @@ pub async fn download(link: &str) -> Result<(Vec<u8>, String), String> {
         .read_timeout(Duration::from_secs(60))
         .build()
         .map_err(|e| e.to_string())?;
-    let mut res = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("lien injoignable ({e})"))?;
+    let mut req = client.get(&url);
+    for (name, value) in [(reqwest::header::IF_NONE_MATCH, &known.etag), (reqwest::header::IF_MODIFIED_SINCE, &known.modified)] {
+        if let Some(v) = (!value.is_empty()).then(|| reqwest::header::HeaderValue::from_str(value).ok()).flatten() {
+            req = req.header(name, v);
+        }
+    }
+    let mut res = req.send().await.map_err(|e| format!("lien injoignable ({e})"))?;
+    if res.status() == reqwest::StatusCode::NOT_MODIFIED {
+        return Ok(Download::Unchanged);
+    }
     if !res.status().is_success() {
         return Err(format!(
             "le lien ne donne pas le fichier (erreur {}) : vérifie qu'il est partagé avec « Tout le monde ayant le lien »",
             res.status().as_u16()
         ));
     }
+    let header = |name| {
+        res.headers().get(name).and_then(|v: &reqwest::header::HeaderValue| v.to_str().ok()).unwrap_or("").to_string()
+    };
+    let validators = Validators { etag: header(reqwest::header::ETAG), modified: header(reqwest::header::LAST_MODIFIED) };
     let mut data = Vec::new();
     while let Some(chunk) = res.chunk().await.map_err(|e| e.to_string())? {
         data.extend_from_slice(&chunk);
@@ -100,7 +125,7 @@ pub async fn download(link: &str) -> Result<(Vec<u8>, String), String> {
         return Err("ce lien n'est pas un pack de sons (.zip) : partage le fichier lui-même, avec « Tout le monde ayant le lien »".into());
     }
     let hash = hex(&Sha256::digest(&data)[..16]);
-    Ok((data, hash))
+    Ok(Download::Fresh { data, hash, validators })
 }
 
 pub fn hex(bytes: &[u8]) -> String {
@@ -166,6 +191,42 @@ mod tests {
         assert_eq!(got, format!("https://api.onedrive.com/v1.0/shares/u!{}/root/content", base64_url(b"https://1drv.ms/u/s!AkBc")));
         assert_eq!(base64_url(b"Man"), "TWFu");
         assert_eq!(base64_url(b"Ma"), "TWE");
+    }
+
+    /// Un faux serveur : le pack avec un `ETag` la première fois, puis
+    /// « pas changé » quand on lui redonne cet `ETag`.
+    #[test]
+    fn unchanged_packs_are_not_downloaded_again() {
+        use std::io::{Read, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/pack.zip", server.local_addr().unwrap());
+        let seen = std::thread::spawn(move || {
+            let mut asked = Vec::new();
+            for _ in 0..2 {
+                let (mut conn, _) = server.accept().unwrap();
+                let mut buf = [0u8; 4096];
+                let n = conn.read(&mut buf).unwrap();
+                let req = String::from_utf8_lossy(&buf[..n]).to_lowercase();
+                let reply = if req.contains("if-none-match: \"v1\"") {
+                    "HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
+                } else {
+                    "HTTP/1.1 200 OK\r\nETag: \"v1\"\r\nLast-Modified: Sat, 21 Nov 2026 09:00:00 GMT\r\nContent-Length: 6\r\nConnection: close\r\n\r\nPKpack".to_string()
+                };
+                conn.write_all(reply.as_bytes()).unwrap();
+                asked.push(req);
+            }
+            asked
+        });
+        let first = tauri::async_runtime::block_on(download(&url, &Validators::default())).unwrap();
+        let Download::Fresh { data, validators, .. } = first else { panic!("pack attendu") };
+        assert_eq!(data, b"PKpack");
+        assert_eq!(validators.etag, "\"v1\"");
+        assert_eq!(validators.modified, "Sat, 21 Nov 2026 09:00:00 GMT");
+        let second = tauri::async_runtime::block_on(download(&url, &validators)).unwrap();
+        assert!(matches!(second, Download::Unchanged), "le pack a été retéléchargé");
+        let asked = seen.join().unwrap();
+        assert!(!asked[0].contains("if-none-match"), "{}", asked[0]);
+        assert!(asked[1].contains("if-modified-since: sat, 21 nov 2026 09:00:00 gmt"), "{}", asked[1]);
     }
 
     #[test]

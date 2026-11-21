@@ -38,6 +38,7 @@ const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/cs
         window.__TAURI__ = { core: { invoke: async (c) => {
           if (c==='get_state' && slow) await delay(800);
           if (c==='room_status') return room; if (c==='clip_recents') return [];
+          if (c==='pending_gifts') return [{id:'g1',from:'Pote',title:'Son partagé',have:false}];
           if (c==='clip_history') return {sent:[{path:'/e/envoi/a.mp4',kind:'video',title:'v',at:1}],received:[{path:'/e/recus/b.png',kind:'image',title:'',from:'Pote',at:2}]};
           if (c==='search_images'||c==='clip_search_videos') return [];
           return snap; }, convertFileSrc: (x)=>x }, event: { listen: async () => () => {} }, app: { getVersion: async () => '2.4.1' }, window: { getCurrentWindow: () => ({}) }, webviewWindow: {} };

@@ -360,13 +360,23 @@ impl Room {
         let on_event = Arc::new(on_event);
         let on_change = Arc::new(on_change);
         tauri::async_runtime::spawn(async move {
+            let (mut delay, mut last_error) = (Duration::ZERO, String::new());
             while me.gen.load(Ordering::SeqCst) == gen {
+                let started = Instant::now();
                 if let Err(e) = me.listen(gen, on_event.clone(), on_change.clone()).await {
-                    crate::journal::write(&format!("Salon : {e}"));
+                    // Hors ligne, la même erreur revenait toutes les 5 s et
+                    // poussait le reste hors du journal.
+                    if e != last_error {
+                        crate::journal::write(&format!("Salon : {e}"));
+                        last_error = e;
+                    }
+                } else {
+                    last_error.clear();
                 }
                 me.inner.lock_ok().connected = false;
                 on_change();
-                tokio_sleep(Duration::from_secs(5)).await;
+                delay = retry_delay(delay, started.elapsed());
+                tokio_sleep(delay).await;
             }
         });
     }
@@ -425,7 +435,14 @@ impl Room {
                     self.receive(incoming, &*on_event, &*on_change).await;
                 }
             }
-            let stale = self.inner.lock_ok().last_hello.is_none_or(|t| t.elapsed() > HELLO_EVERY);
+            // Seul dans le salon, se rappeler à personne ne sert à rien : un
+            // pote qui arrive se présente, et on lui répond. Ça faisait
+            // 96 messages par jour au relais pour une appli restée allumée.
+            let stale = {
+                let inner = self.inner.lock_ok();
+                inner.last_hello.is_none_or(|t| t.elapsed() > HELLO_EVERY)
+                    && inner.members.values().any(|m| m.1.elapsed() < MEMBER_TTL)
+            };
             if stale {
                 self.hello(false).await;
             }
@@ -656,6 +673,20 @@ pub async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     Ok(data)
 }
 
+/// Attente avant de se reconnecter au relais. Une connexion tenue plus
+/// d'une minute coupée : on revient vite. Des échecs d'affilée (pas
+/// d'internet, relais en panne) : 5 s, 10 s, 20 s… jusqu'à 2 min, au lieu
+/// d'une demande toutes les 5 s pendant des heures.
+fn retry_delay(previous: Duration, connected_for: Duration) -> Duration {
+    const FIRST: Duration = Duration::from_secs(5);
+    const MAX: Duration = Duration::from_secs(120);
+    if connected_for > Duration::from_secs(60) {
+        FIRST
+    } else {
+        (previous * 2).clamp(FIRST, MAX)
+    }
+}
+
 async fn tokio_sleep(d: Duration) {
     let _ = tauri::async_runtime::spawn_blocking(move || std::thread::sleep(d)).await;
 }
@@ -669,6 +700,20 @@ mod tests {
         assert_eq!(topic_of("abcd-efgh-2345"), topic_of(" ABCDEFGH2345 "));
         assert_ne!(topic_of("ABCD-EFGH-2345"), topic_of("ABCD-EFGH-2346"));
         assert!(!topic_of("x").contains("X"));
+    }
+
+    #[test]
+    fn reconnecting_slows_down_when_the_relay_keeps_failing() {
+        let s = Duration::from_secs;
+        let mut d = Duration::ZERO;
+        let mut waits = Vec::new();
+        for _ in 0..7 {
+            d = retry_delay(d, s(1));
+            waits.push(d.as_secs());
+        }
+        assert_eq!(waits, [5, 10, 20, 40, 80, 120, 120]);
+        // Connexion tenue un moment puis coupée : on revient vite.
+        assert_eq!(retry_delay(s(120), s(600)), s(5));
     }
 
     #[test]

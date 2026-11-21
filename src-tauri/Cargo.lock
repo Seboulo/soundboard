@@ -4788,6 +4788,7 @@ dependencies = [
  "wasapi",
  "webview2-com",
  "windows 0.62.2",
+ "windows-registry",
  "zip 2.6.1",
 ]
 

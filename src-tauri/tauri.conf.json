@@ -10,6 +10,8 @@
     "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
+        "create": false,
         "title": "Soundboard",
         "width": 960,
         "height": 680,

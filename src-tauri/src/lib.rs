@@ -371,7 +371,12 @@ fn webview_low_memory(window: &tauri::WebviewWindow, low: bool) {
     };
     use windows::core::Interface;
     let _ = window.with_webview(move |wv| unsafe {
-        let Ok(core) = wv.controller().CoreWebView2() else { return };
+        let controller = wv.controller();
+        // Cacher la fenêtre ne prévient pas WebView2 : la page continuait de
+        // se dessiner (animations, barre de lecture) derrière une fenêtre
+        // invisible. Page « cachée » = plus de dessin, minuteries ralenties.
+        let _ = controller.SetIsVisible(!low);
+        let Ok(core) = controller.CoreWebView2() else { return };
         let Ok(core) = core.cast::<ICoreWebView2_19>() else { return };
         let level = if low {
             COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
@@ -404,13 +409,54 @@ fn quiet_error_boxes() {
 fn quiet_error_boxes() {}
 
 fn show_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        webview_low_memory(&window, false);
-        let _ = window.show();
-        let _ = window.unminimize();
-        winpos::after_show(&window);
-        let _ = window.set_focus();
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+        reveal(&window);
+        return;
     }
+    // Lancé avec Windows, la fenêtre n'a pas encore été créée : on la crée
+    // maintenant. Sur un fil à part : WebView2 se bloque si on la crée
+    // depuis un clic sur l'icône ou un menu (fil principal).
+    static CREATING: AtomicBool = AtomicBool::new(false);
+    if CREATING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        match create_main_window(&app) {
+            Ok(window) => reveal(&window),
+            Err(e) => journal::write(&format!("Fenêtre : {e}")),
+        }
+        CREATING.store(false, Ordering::Release);
+    });
+}
+
+fn reveal(window: &tauri::WebviewWindow) {
+    webview_low_memory(window, false);
+    let _ = window.show();
+    let _ = window.unminimize();
+    winpos::after_show(window);
+    let _ = window.set_focus();
+}
+
+const MAIN_WINDOW: &str = "main";
+
+/// La fenêtre principale (décrite dans tauri.conf.json, qui ne la crée pas
+/// d'office). Lancée avec Windows, l'app reste près de l'horloge sans
+/// charger la page : WebView2 (plusieurs processus, 100 Mo et plus) ne
+/// démarre qu'à la première ouverture. Les sons, raccourcis, le micro et le
+/// salon tournent sans elle.
+fn create_main_window(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == MAIN_WINDOW)
+        .cloned()
+        .ok_or_else(|| tauri::Error::WindowNotFound)?;
+    let window = tauri::WebviewWindowBuilder::from_config(app, &config)?.build()?;
+    winpos::restore(&window);
+    Ok(window)
 }
 
 fn apply_autostart(app: &AppHandle, enabled: bool) {
@@ -424,7 +470,64 @@ fn apply_autostart(app: &AppHandle, enabled: bool) {
     };
     let warnings = res.err().map(|e| vec![e.to_string()]).unwrap_or_default();
     app.state::<AppState>().set_warnings(WARN_STARTUP, warnings);
+    if let Some(item) = app.try_state::<TrayAutostart>() {
+        let _ = item.0.set_checked(enabled);
+    }
 }
+
+/// Au lancement. Coupée par toi dans le Gestionnaire des tâches (onglet
+/// « Applications de démarrage ») : l'app suit ce choix. Avant, elle se
+/// réactivait en douce au lancement suivant.
+fn sync_autostart(app: &AppHandle, enabled: bool) {
+    if enabled && startup_turned_off_in_windows(app) {
+        let state = app.state::<AppState>();
+        let mut config = state.config.lock_ok();
+        config.settings.launch_at_startup = false;
+        let _ = state.save(&config);
+        drop(config);
+        if let Some(item) = app.try_state::<TrayAutostart>() {
+            let _ = item.0.set_checked(false);
+        }
+        return;
+    }
+    apply_autostart(app, enabled);
+}
+
+#[cfg(windows)]
+fn startup_turned_off_in_windows(app: &AppHandle) -> bool {
+    const KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+    windows_registry::CURRENT_USER
+        .open(KEY)
+        .and_then(|k| k.get_value(&app.package_info().name))
+        .is_ok_and(|v| approval_says_off(&v))
+}
+#[cfg(not(windows))]
+fn startup_turned_off_in_windows(_app: &AppHandle) -> bool {
+    false
+}
+
+/// Valeur de Windows pour une app de démarrage : 12 octets, les 8 derniers
+/// sont la date à laquelle tu l'as désactivée (zéro si elle est active).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn approval_says_off(value: &[u8]) -> bool {
+    value.len() >= 8 && value[value.len() - 8..].iter().any(|&b| b != 0)
+}
+
+/// Lancer avec Windows, depuis le menu de l'icône près de l'horloge.
+fn toggle_autostart(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let enabled = {
+        let mut config = state.config.lock_ok();
+        config.settings.launch_at_startup = !config.settings.launch_at_startup;
+        let _ = state.save(&config);
+        config.settings.launch_at_startup
+    };
+    apply_autostart(app, enabled);
+    let _ = app.emit("snapshot", state.snapshot());
+}
+
+/// Case « Lancer avec Windows » du menu de l'icône.
+struct TrayAutostart(CheckMenuItem<tauri::Wry>);
 
 /// Mesure en arrière-plan le volume des passages découpés ou avec effets,
 /// pour que l'égalisation porte sur ce qui est vraiment joué.
@@ -2634,9 +2737,12 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let stop = MenuItem::with_id(app, "stop", "Tout arrêter", true, None::<&str>)?;
     let muted = app.state::<AppState>().mic_muted.load(Ordering::Relaxed);
     let mic = CheckMenuItem::with_id(app, "mic", "Micro coupé", true, muted, None::<&str>)?;
+    let launch = app.state::<AppState>().config.lock_ok().settings.launch_at_startup;
+    let autostart = CheckMenuItem::with_id(app, "autostart", "Lancer avec Windows", true, launch, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quitter", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &stop, &mic, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &stop, &mic, &autostart, &quit])?;
     app.manage(TrayMic(mic));
+    app.manage(TrayAutostart(autostart));
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("Soundboard")
         .menu(&menu)
@@ -2652,8 +2758,9 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 let muted = !app.state::<AppState>().mic_muted.load(Ordering::Relaxed);
                 set_muted(app, muted);
             }
+            "autostart" => toggle_autostart(app),
             "quit" => {
-                if let Some(w) = app.get_webview_window("main") {
+                if let Some(w) = app.get_webview_window(MAIN_WINDOW) {
                     winpos::save(&w);
                 }
                 app.exit(0)
@@ -2780,7 +2887,6 @@ pub fn run() {
                 let state = handle.state::<AppState>();
                 // Réglages du moment : ils ont pu changer entre-temps.
                 let settings = state.config.lock_ok().settings.clone();
-                apply_autostart(&handle, settings.launch_at_startup);
                 apply_audio(&state, settings);
                 // Avant la mise à jour des packs, qui range de nouveaux fichiers.
                 check_orphans(&state);
@@ -2792,17 +2898,17 @@ pub fn run() {
                 analyze_missing(&handle);
                 measure_segments(handle.clone());
             });
+            // Avant l'icône, dont le menu montre ce réglage (lecture du
+            // registre : instantané).
+            let launch = app.state::<AppState>().config.lock_ok().settings.launch_at_startup;
+            sync_autostart(app.handle(), launch);
             build_tray(app.handle())?;
             apply_phone(app.handle());
 
-            if let Some(w) = app.get_webview_window("main") {
-                winpos::restore(&w);
-            }
-            // Lancé avec Windows : on reste discret près de l'horloge.
+            // Lancé avec Windows : on reste discret près de l'horloge, sans
+            // même charger la fenêtre (voir `create_main_window`).
             if !std::env::args().any(|a| a == MINIMIZED_ARG) {
-                show_window(app.handle());
-            } else if let Some(w) = app.get_webview_window("main") {
-                webview_low_memory(&w, true);
+                reveal(&create_main_window(app.handle())?);
             }
             Ok(())
         })
@@ -2901,6 +3007,7 @@ pub fn run() {
             extras::subscribe_pack,
             extras::unsubscribe_pack,
             extras::sync_packs,
+            extras::pending_gifts,
             extras::cloud_folders,
             extras::publish_tab,
             extras::unpublish_tab,
@@ -2933,13 +3040,18 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("erreur au lancement de l'application")
-        .run(|app, event| {
+        .run(|app, event| match event {
+            // Dernière fenêtre fermée (un extrait, la fenêtre principale pas
+            // encore ouverte) : l'app reste près de l'horloge. « Quitter » et
+            // la fermeture sans icône passent par `exit`, avec un code.
+            tauri::RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
             // Les derniers compteurs de lecture ne sont pas perdus en quittant.
-            if let tauri::RunEvent::Exit = event {
+            tauri::RunEvent::Exit => {
                 if let Some(state) = app.try_state::<AppState>() {
                     state.flush_plays();
                 }
             }
+            _ => {}
         });
 }
 
@@ -3000,6 +3112,15 @@ mod tests {
         assert!(!super::blocks_typing("Ctrl+KeyA"));
         assert!(!super::blocks_typing("F5"));
         assert!(!super::blocks_typing("Numpad1"));
+    }
+
+    #[test]
+    fn windows_startup_switch_is_read_like_the_task_manager() {
+        let on = [2u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let off = [3u8, 0, 0, 0, 0x5a, 0x1c, 0x7e, 0x3b, 0x41, 0x5d, 0xdb, 0x01];
+        assert!(!super::approval_says_off(&on));
+        assert!(super::approval_says_off(&off));
+        assert!(!super::approval_says_off(&[3u8]), "valeur abîmée : on ne touche à rien");
     }
 
     #[test]

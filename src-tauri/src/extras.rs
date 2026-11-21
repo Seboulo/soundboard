@@ -34,6 +34,10 @@ pub struct Extras {
 /// Son qu'un pote nous a partagé : de quoi l'ajouter si on accepte.
 #[derive(Clone)]
 struct Gift {
+    from: String,
+    have: bool,
+    /// Arrivée (secondes depuis 1970), pour garder l'ordre.
+    at: u64,
     url: String,
     ext: String,
     title: String,
@@ -78,15 +82,31 @@ pub fn start(app: &AppHandle) {
     let handle = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(20));
-        let mut last_sync = None::<Instant>;
+        // Essais de cette session : un lien qui échoue avant d'avoir noté sa
+        // vérification n'est pas retenté chaque minute.
+        let mut tried: HashMap<String, Instant> = HashMap::new();
         loop {
             // Un plantage une fois n'arrête pas la mise à jour des packs pour de bon.
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| refresh_published(&handle)));
-            if last_sync.is_none_or(|t| t.elapsed() > Duration::from_secs(2 * 3600)) {
-                last_sync = Some(Instant::now());
+            let due: Vec<String> = {
+                let state = handle.state::<AppState>();
+                let config = state.config.lock_ok();
+                config
+                    .settings
+                    .subscriptions
+                    .iter()
+                    .filter(|s| pack_check_due(s.last_check, now_secs()))
+                    .filter(|s| tried.get(&s.url).is_none_or(|t| t.elapsed() >= PACK_CHECK_EVERY))
+                    .map(|s| s.url.clone())
+                    .collect()
+            };
+            if !due.is_empty() {
+                for url in &due {
+                    tried.insert(url.clone(), Instant::now());
+                }
                 let h = handle.clone();
                 tauri::async_runtime::spawn(async move {
-                    let _ = sync_packs(h).await;
+                    let _ = sync_urls(h, due).await;
                 });
             }
             std::thread::sleep(Duration::from_secs(60));
@@ -333,14 +353,27 @@ pub fn unsubscribe_pack(app: AppHandle, url: String, remove_sounds: bool) -> Res
     Ok(state.snapshot())
 }
 
+/// Les packs suivis sont relus toutes les 2 h, même d'un lancement à
+/// l'autre : redémarrer le PC ne relance plus tous les téléchargements.
+const PACK_CHECK_EVERY: Duration = Duration::from_secs(2 * 3600);
+
+fn pack_check_due(last_check: u64, now: u64) -> bool {
+    // Horloge du PC reculée : on ne reste pas bloqué jusqu'à cette date.
+    last_check > now || now - last_check >= PACK_CHECK_EVERY.as_secs()
+}
+
 /// Relit tous les packs suivis.
 #[tauri::command]
 pub async fn sync_packs(app: AppHandle) -> Result<SyncResult, String> {
+    let urls: Vec<String> = app.state::<AppState>().config.lock_ok().settings.subscriptions.iter().map(|s| s.url.clone()).collect();
+    sync_urls(app, urls).await
+}
+
+async fn sync_urls(app: AppHandle, urls: Vec<String>) -> Result<SyncResult, String> {
     let state = app.state::<AppState>();
     if state.extras.sync_busy.swap(true, Ordering::SeqCst) {
         return Err("vérification déjà en cours".into());
     }
-    let urls: Vec<String> = state.config.lock_ok().settings.subscriptions.iter().map(|s| s.url.clone()).collect();
     let (mut added, mut removed, mut errors) = (0, 0, Vec::new());
     for url in urls {
         match sync_one(&app, &url).await {
@@ -365,20 +398,37 @@ pub async fn sync_packs(app: AppHandle) -> Result<SyncResult, String> {
 /// pote retirés aussi.
 async fn sync_one(app: &AppHandle, url: &str) -> Result<(usize, usize, Vec<String>), String> {
     let state = app.state::<AppState>();
-    let res = share::download(url).await;
-    let note = |error: Option<String>, hash: Option<String>| {
+    let known = {
+        let config = state.config.lock_ok();
+        let sub = config.settings.subscriptions.iter().find(|s| s.url == url).ok_or("abonnement retiré")?;
+        // Sans pack lu en entier, on redemande tout.
+        if sub.last_hash.is_empty() {
+            share::Validators::default()
+        } else {
+            share::Validators { etag: sub.etag.clone(), modified: sub.modified.clone() }
+        }
+    };
+    let res = share::download(url, &known).await;
+    // `done` : le pack a été lu, avec cette empreinte et ces en-têtes.
+    let note = |error: Option<String>, done: Option<(String, share::Validators)>| {
         let mut config = state.config.lock_ok();
         if let Some(sub) = config.settings.subscriptions.iter_mut().find(|s| s.url == url) {
             sub.last_check = now_secs();
             sub.error = error;
-            if let Some(h) = hash {
+            if let Some((h, v)) = done {
                 sub.last_hash = h;
+                sub.etag = v.etag;
+                sub.modified = v.modified;
             }
         }
         let _ = state.save(&config);
     };
-    let (data, hash) = match res {
-        Ok(x) => x,
+    let (data, hash, validators) = match res {
+        Ok(share::Download::Fresh { data, hash, validators }) => (data, hash, validators),
+        Ok(share::Download::Unchanged) => {
+            note(None, None);
+            return Ok((0, 0, Vec::new()));
+        }
         Err(e) => {
             note(Some(e.clone()), None);
             return Err(e);
@@ -390,7 +440,7 @@ async fn sync_one(app: &AppHandle, url: &str) -> Result<(usize, usize, Vec<Strin
         (sub.last_hash == hash, sub.name.clone())
     };
     if unchanged {
-        note(None, None);
+        note(None, Some((hash, validators)));
         return Ok((0, 0, Vec::new()));
     }
     let tmp = data_dir(&state).join("pack-lien.zip");
@@ -480,7 +530,7 @@ async fn sync_one(app: &AppHandle, url: &str) -> Result<(usize, usize, Vec<Strin
         }
         state.save(&config)?;
     }
-    note(None, Some(hash));
+    note(None, Some((hash, validators)));
     register_hotkeys(app);
     Ok((count, removed, errors))
 }
@@ -782,6 +832,18 @@ pub async fn share_sound(app: AppHandle, id: String, to: String) -> Result<bool,
 }
 
 /// « Ajouter » (ou « Non merci » si `keep` est faux) un son partagé par un pote.
+/// Sons partagés encore sans réponse. La fenêtre, ouverte après coup (app
+/// lancée avec Windows), les retrouve : elle n'était pas là pour l'annonce.
+#[tauri::command]
+pub fn pending_gifts(state: State<AppState>) -> Vec<GiftInfo> {
+    let gifts = state.extras.gifts.lock_ok();
+    let mut list: Vec<(&String, &Gift)> = gifts.iter().collect();
+    list.sort_by_key(|(_, g)| g.at);
+    list.into_iter()
+        .map(|(id, g)| GiftInfo { id: id.clone(), from: g.from.clone(), title: g.title.clone(), have: g.have })
+        .collect()
+}
+
 #[tauri::command]
 pub async fn accept_gift(app: AppHandle, id: String, keep: bool) -> Result<Option<AddedSound>, String> {
     let state = app.state::<AppState>();
@@ -968,7 +1030,8 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
                 if gifts.len() >= 20 {
                     gifts.clear();
                 }
-                gifts.insert(hash.clone(), Gift { url, ext, title: title.clone(), emoji, color, start_ms, end_ms, volume, fx });
+                let gift = Gift { from: name.clone(), have, at: now_secs(), url, ext, title: title.clone(), emoji, color, start_ms, end_ms, volume, fx };
+                gifts.insert(hash.clone(), gift);
             }
             let _ = app.emit("room-gift", GiftInfo { id: hash, from: name, title, have });
             Ok(())
@@ -1057,7 +1120,16 @@ fn trim_cache(dir: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::trim_silence;
+    use super::{pack_check_due, trim_silence};
+
+    #[test]
+    fn followed_packs_are_checked_every_two_hours_across_restarts() {
+        let now = 1_800_000_000;
+        assert!(pack_check_due(0, now), "jamais vérifié");
+        assert!(!pack_check_due(now - 600, now), "vérifié il y a 10 min (avant un redémarrage)");
+        assert!(pack_check_due(now - 2 * 3600, now));
+        assert!(pack_check_due(now + 3600, now), "horloge reculée");
+    }
 
     #[test]
     fn silence_is_trimmed_with_a_margin() {

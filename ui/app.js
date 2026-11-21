@@ -5003,6 +5003,13 @@ invoke("room_status").then((r) => {
   room = r;
   if (state) renderRoom();
 }).catch(() => {});
+// Sons partagés arrivés avant l'ouverture de la fenêtre (app lancée avec Windows).
+invoke("pending_gifts").then((list) => {
+  if (!Array.isArray(list) || !list.length) return;
+  const known = new Set(gifts.map((g) => g.id));
+  gifts = [...gifts, ...list.filter((g) => !known.has(g.id))];
+  if (state) renderRoom();
+}).catch(() => {});
 
 function fillFriendsSettings(s) {
   const f = formSettings;

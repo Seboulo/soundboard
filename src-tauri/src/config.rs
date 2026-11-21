@@ -344,6 +344,10 @@ pub struct Subscription {
     /// Dernière vérification (secondes depuis 1970).
     pub last_check: u64,
     pub error: Option<String>,
+    /// En-têtes `ETag` et `Last-Modified` du dernier pack lu (voir
+    /// `share::Validators`).
+    pub etag: String,
+    pub modified: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
