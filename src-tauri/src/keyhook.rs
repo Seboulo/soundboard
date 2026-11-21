@@ -12,6 +12,7 @@
 //! en premier (Windows l'appelle avant de reconnaître le raccourci) : il note
 //! l'heure, et `seen_by_hook` fait ignorer le doublon de l'autre voie.
 
+use crate::LockExt;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -165,13 +166,13 @@ static BINDINGS: Mutex<Vec<Binding>> = Mutex::new(Vec::new());
 
 /// Remplace les combinaisons surveillées par le crochet.
 pub fn set_bindings(list: Vec<Binding>) {
-    *BINDINGS.lock().unwrap() = list;
+    *BINDINGS.lock_ok() = list;
 }
 
 fn matching(vk: u32, mods: u8) -> Option<u32> {
     BINDINGS
-        .lock()
-        .unwrap()
+        
+        .lock_ok()
         .iter()
         .find(|b| b.vk == vk && b.mods == mods)
         .map(|b| b.id)
@@ -186,6 +187,7 @@ pub fn start(_on_press: impl Fn(u32) + Send + 'static) {}
 
 #[cfg(windows)]
 mod win {
+    use crate::LockExt;
     use std::collections::HashSet;
     use std::sync::mpsc::{channel, Sender};
     use std::sync::{Mutex, OnceLock};
@@ -260,7 +262,7 @@ mod win {
         if code >= 0 && lparam != 0 {
             // SAFETY: pour WH_KEYBOARD_LL, lparam pointe vers un KBDLLHOOKSTRUCT.
             let vk = (*(lparam as *const KbdLlHook)).vk;
-            let mut held = HELD.lock().unwrap();
+            let mut held = HELD.lock_ok();
             let held = held.get_or_insert_with(HashSet::new);
             match wparam {
                 WM_KEYDOWN | WM_SYSKEYDOWN => {
@@ -268,7 +270,7 @@ mod win {
                         if let Some(id) = matching(vk, mods_now()) {
                             note_hook_press(id);
                             if let Some(tx) = SENDER.get() {
-                                let _ = tx.lock().unwrap().send(id);
+                                let _ = tx.lock_ok().send(id);
                             }
                         }
                     }
@@ -291,7 +293,9 @@ mod win {
         // Le son se lance hors du crochet : Windows retire un crochet trop lent.
         std::thread::spawn(move || {
             for id in rx {
-                on_press(id);
+                // Un plantage pendant un son ne doit pas couper les raccourcis
+                // en jeu pour le reste de la session.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_press(id)));
             }
         });
         std::thread::spawn(|| {

@@ -8,6 +8,7 @@
 //! On demande la piste audio M4A (AAC) que YouTube propose presque toujours :
 //! elle se lit sans ffmpeg.
 
+use crate::LockExt;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -147,7 +148,7 @@ fn ffmpeg_installed(tools_dir: &Path) -> Option<PathBuf> {
 /// Lance `ffmpeg -version` une fois par session pour savoir s'il démarre
 /// vraiment (une DLL abîmée ou bloquée ne se voit qu'au lancement).
 fn ffmpeg_starts(dir: &Path) -> bool {
-    if let Some(ok) = *FFMPEG_WORKS.lock().unwrap() {
+    if let Some(ok) = *FFMPEG_WORKS.lock_ok() {
         return ok;
     }
     let exe = dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
@@ -159,7 +160,7 @@ fn ffmpeg_starts(dir: &Path) -> bool {
     if !ok {
         crate::journal::write("ffmpeg ne démarre pas (DLL abîmée ou bloquée par Windows)");
     }
-    *FFMPEG_WORKS.lock().unwrap() = Some(ok);
+    *FFMPEG_WORKS.lock_ok() = Some(ok);
     ok
 }
 
@@ -322,7 +323,7 @@ pub async fn ensure_ffmpeg(tools_dir: &Path, on_status: impl Fn(&str)) -> Result
         Err(e) => format!("ffmpeg non installé ({e})"),
     });
     res?;
-    *FFMPEG_WORKS.lock().unwrap() = None;
+    *FFMPEG_WORKS.lock_ok() = None;
     let installed = ffmpeg_installed(tools_dir).ok_or("ffmpeg introuvable après l'installation")?;
     ffmpeg_ready(tools_dir).ok_or_else(|| {
         // Même neuf, il ne démarre pas : Windows le bloque. On le note dans

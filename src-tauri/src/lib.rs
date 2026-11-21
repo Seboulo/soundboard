@@ -128,7 +128,7 @@ impl AppState {
     /// Écrit les compteurs de lecture en attente (toutes les quelques
     /// secondes, et en quittant l'appli).
     fn flush_plays(&self) {
-        let config = self.config.lock().unwrap();
+        let config = self.config.lock_ok();
         if self.plays_dirty.load(Ordering::Acquire) {
             let _ = self.save(&config);
         }
@@ -136,15 +136,15 @@ impl AppState {
 
     fn snapshot(&self) -> Snapshot {
         let (config, rev) = {
-            let c = self.config.lock().unwrap();
+            let c = self.config.lock_ok();
             (c.clone(), self.rev.load(Ordering::Acquire))
         };
         let mut snap = Snapshot {
             missing: Vec::new(),
             rev,
             config,
-            devices: self.devices.lock().unwrap().clone(),
-            warnings: self.warnings.lock().unwrap().clone(),
+            devices: self.devices.lock_ok().clone(),
+            warnings: self.warnings.lock_ok().clone(),
             vb_cable_url: VB_CABLE_URL,
             mic_muted: self.mic_muted.load(Ordering::Relaxed),
             version: env!("CARGO_PKG_VERSION"),
@@ -156,7 +156,7 @@ impl AppState {
     }
 
     fn set_warnings(&self, kind: &str, items: Vec<String>) {
-        let mut w = self.warnings.lock().unwrap();
+        let mut w = self.warnings.lock_ok();
         let fresh: Vec<String> = items.into_iter().map(|m| format!("{kind}{m}")).collect();
         for m in fresh.iter().filter(|m| !w.contains(m)) {
             journal::write(m);
@@ -176,8 +176,8 @@ const WARN_SOUNDS: &str = "Sons : ";
 fn apply_phone(app: &AppHandle) {
     let state = app.state::<AppState>();
     // Arrête l'ancien serveur avant d'en relancer un sur le même port.
-    *state.phone.lock().unwrap() = None;
-    let settings = state.config.lock().unwrap().settings.clone();
+    *state.phone.lock_ok() = None;
+    let settings = state.config.lock_ok().settings.clone();
     if !settings.phone_enabled {
         state.set_warnings(WARN_PHONE, vec![]);
         return;
@@ -193,7 +193,7 @@ fn apply_phone(app: &AppHandle) {
         port += 1;
         if let Ok(server) = phone::PhoneServer::start(port, settings.phone_token.clone(), handler.clone()) {
             journal::write(&format!("Téléphone : port {first} pris, page servie sur le port {port}"));
-            let mut config = state.config.lock().unwrap();
+            let mut config = state.config.lock_ok();
             config.settings.phone_port = port;
             let _ = state.save(&config);
             res = Ok(server);
@@ -201,7 +201,7 @@ fn apply_phone(app: &AppHandle) {
     }
     match res {
         Ok(server) => {
-            *state.phone.lock().unwrap() = Some(server);
+            *state.phone.lock_ok() = Some(server);
             state.set_warnings(WARN_PHONE, vec![]);
         }
         Err(e) => state.set_warnings(WARN_PHONE, vec![e]),
@@ -212,7 +212,7 @@ fn phone_request(app: &AppHandle, req: phone::Request) -> Result<serde_json::Val
     let state = app.state::<AppState>();
     match req {
         phone::Request::State => {
-            let config = state.config.lock().unwrap();
+            let config = state.config.lock_ok();
             let sounds: Vec<_> = config
                 .sounds
                 .iter()
@@ -223,7 +223,7 @@ fn phone_request(app: &AppHandle, req: phone::Request) -> Result<serde_json::Val
                     })
                 })
                 .collect();
-            let playing = state.playing_ids.lock().unwrap().clone();
+            let playing = state.playing_ids.lock_ok().clone();
             let in_room = !config.settings.room_code.trim().is_empty();
             let giphy = config.settings.giphy_key.as_deref().is_some_and(|k| !k.trim().is_empty());
             drop(config);
@@ -288,11 +288,26 @@ fn phone_request(app: &AppHandle, req: phone::Request) -> Result<serde_json::Val
 }
 const MINIMIZED_ARG: &str = "--minimized";
 
+/// Verrou qui survit à un plantage. Si un fil plante en tenant un verrou,
+/// Rust le marque « empoisonné » et tous les `lock().unwrap()` suivants
+/// plantaient à leur tour : une seule erreur pouvait bloquer les sons, les
+/// raccourcis et les réglages jusqu'au redémarrage. On reprend la donnée
+/// telle qu'elle est et l'appli continue.
+pub(crate) trait LockExt<T: ?Sized> {
+    fn lock_ok(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T: ?Sized> LockExt<T> for Mutex<T> {
+    fn lock_ok(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 fn find_sound(state: &AppState, id: &str) -> Result<Sound, String> {
     state
         .config
-        .lock()
-        .unwrap()
+        
+        .lock_ok()
         .sounds
         .iter()
         .find(|s| s.id == id)
@@ -309,10 +324,10 @@ fn now_secs() -> u64 {
 
 /// Compte une lecture pour les statistiques (pas quand le clic arrête le son).
 fn note_play(state: &AppState, sound: &Sound) {
-    if state.playing_ids.lock().unwrap().contains(&sound.id) {
+    if state.playing_ids.lock_ok().contains(&sound.id) {
         return;
     }
-    let mut config = state.config.lock().unwrap();
+    let mut config = state.config.lock_ok();
     if let Some(s) = config.sounds.iter_mut().find(|s| s.id == sound.id) {
         s.plays += 1;
         s.played_ms += sound.play_duration_ms().unwrap_or(0);
@@ -325,7 +340,7 @@ fn note_play(state: &AppState, sound: &Sound) {
 
 fn play_request(state: &AppState, sound: &Sound) -> PlayRequest {
     let (normalize, target) = {
-        let config = state.config.lock().unwrap();
+        let config = state.config.lock_ok();
         (config.settings.normalize, config.settings.loudness_target)
     };
     let gain = if normalize { sound.normalize_gain(target) } else { 1.0 };
@@ -427,8 +442,8 @@ fn measure_segments(app: AppHandle) {
             PENDING.store(false, Ordering::Release);
             let todo: Vec<(String, PathBuf, config::SegmentKey)> = state
                 .config
-                .lock()
-                .unwrap()
+                
+                .lock_ok()
                 .sounds
                 .iter()
                 .filter(|s| s.needs_segment())
@@ -436,7 +451,7 @@ fn measure_segments(app: AppHandle) {
                 .collect();
             for (id, path, key) in todo {
                 let Ok(analysis) = analysis::analyze_segment(&path, &key) else { continue };
-                let mut config = state.config.lock().unwrap();
+                let mut config = state.config.lock_ok();
                 // La découpe a pu changer pendant la mesure.
                 if let Some(s) = config.sounds.iter_mut().find(|s| s.id == id && s.segment_key() == Some(key)) {
                     s.segment = Some(config::SegmentLevel { key, analysis });
@@ -465,8 +480,8 @@ fn analyze_missing(app: &AppHandle) {
     let state = app.state::<AppState>();
     let todo: Vec<(String, PathBuf)> = state
         .config
-        .lock()
-        .unwrap()
+        
+        .lock_ok()
         .sounds
         .iter()
         .filter(|s| s.analysis.is_none_or(|a| a.loudness <= 0.0 || a.lufs >= 0.0 || !a.mono_fold))
@@ -477,7 +492,7 @@ fn analyze_missing(app: &AppHandle) {
     }
     for (id, path) in todo {
         let result = analysis::analyze(&path);
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         // Fichier remplacé pendant la mesure : celle-ci ne vaut plus.
         let Some(s) = config.sounds.iter_mut().find(|s| s.id == id && s.path == path) else { continue };
         match result {
@@ -522,29 +537,34 @@ fn audio_route(settings: &Settings, d: &DeviceList) -> [Option<String>; 3] {
 /// Surveille les casques et micros : quand l'un est débranché, rebranché ou
 /// que Windows change le périphérique par défaut, l'audio se reconnecte seul.
 fn watch_devices(app: AppHandle) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_secs(3));
+    let check = move || {
         let state = app.state::<AppState>();
         // Au passage : les compteurs de lecture en attente partent sur le disque.
         state.flush_plays();
         let devices = audio::list_devices();
-        let before = state.devices.lock().unwrap().clone();
+        let before = state.devices.lock_ok().clone();
         if devices == before {
-            continue;
+            return;
         }
-        let settings = state.config.lock().unwrap().settings.clone();
+        let settings = state.config.lock_ok().settings.clone();
         let changed = audio_route(&settings, &devices) != audio_route(&settings, &before);
-        *state.devices.lock().unwrap() = devices;
+        *state.devices.lock_ok() = devices;
         if changed {
             apply_audio(&state, settings);
         }
         let _ = app.emit("snapshot", state.snapshot());
+    };
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        // Un plantage une fois (pilote audio capricieux…) n'arrête pas la
+        // surveillance pour de bon : le casque rebranché revenait plus.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&check));
     });
 }
 
 fn register_hotkeys(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let config = state.config.lock().unwrap().clone();
+    let config = state.config.lock_ok().clone();
     let gs = app.global_shortcut();
     let _ = gs.unregister_all();
 
@@ -591,7 +611,7 @@ fn register_hotkeys(app: &AppHandle) {
             Err(e) => errors.push(format!("« {hotkey} » ({label}) indisponible : {e}")),
         }
     }
-    *state.hotkeys.lock().unwrap() = map;
+    *state.hotkeys.lock_ok() = map;
     keyhook::set_bindings(bindings);
     state.set_warnings(WARN_HOTKEY, errors);
 }
@@ -599,13 +619,13 @@ fn register_hotkeys(app: &AppHandle) {
 /// Appelé par les deux voies (raccourci Windows et crochet clavier en jeu).
 fn on_hotkey(app: &AppHandle, id: u32) {
     let state = app.state::<AppState>();
-    let action = state.hotkeys.lock().unwrap().get(&id).cloned();
+    let action = state.hotkeys.lock_ok().get(&id).cloned();
     match action {
         Some(HotkeyAction::Play(id)) => {
             let sound = state
                 .config
-                .lock()
-                .unwrap()
+                
+                .lock_ok()
                 .sounds
                 .iter()
                 .find(|s| s.id == id)
@@ -657,8 +677,8 @@ fn pick_random(state: &AppState, category: Option<&str>) -> Option<Sound> {
 }
 
 fn pick_random_where(state: &AppState, keep: impl Fn(&Sound) -> bool) -> Option<Sound> {
-    let config = state.config.lock().unwrap();
-    let mut last = state.last_random.lock().unwrap();
+    let config = state.config.lock_ok();
+    let mut last = state.last_random.lock_ok();
     let pool: Vec<&Sound> = config.sounds.iter().filter(|s| keep(s)).collect();
     let candidates: Vec<&Sound> = if pool.len() > 1 {
         pool.iter().copied().filter(|s| Some(&s.id) != last.as_ref()).collect()
@@ -697,7 +717,7 @@ fn start_surprise(app: &AppHandle) {
     std::thread::spawn(move || loop {
         let state = app.state::<AppState>();
         let delay = {
-            let s = &state.config.lock().unwrap().settings;
+            let s = &state.config.lock_ok().settings;
             surprise_delay(s.surprise_min_minutes, s.surprise_max_minutes)
         };
         let deadline = std::time::Instant::now() + delay;
@@ -707,8 +727,8 @@ fn start_surprise(app: &AppHandle) {
                 return;
             }
         }
-        let list = state.config.lock().unwrap().settings.surprise_sounds.clone();
-        let playing = state.playing_ids.lock().unwrap().clone();
+        let list = state.config.lock_ok().settings.surprise_sounds.clone();
+        let playing = state.playing_ids.lock_ok().clone();
         let sound = pick_random_where(&state, |s| {
             (list.is_empty() || list.contains(&s.id)) && !playing.contains(&s.id) && s.path.exists()
         });
@@ -819,7 +839,7 @@ async fn refresh_devices(app: AppHandle) -> Result<Snapshot, String> {
         .await
         .map_err(|e| e.to_string())?;
     let state = app.state::<AppState>();
-    *state.devices.lock().unwrap() = devices;
+    *state.devices.lock_ok() = devices;
     Ok(state.snapshot())
 }
 
@@ -829,7 +849,7 @@ async fn refresh_devices(app: AppHandle) -> Result<Snapshot, String> {
 #[tauri::command]
 async fn add_sounds(app: AppHandle, paths: Vec<String>) -> Result<Snapshot, String> {
     let state = app.state::<AppState>();
-    let first_index = state.config.lock().unwrap().sounds.len();
+    let first_index = state.config.lock_ok().sounds.len();
     let sounds_dir = state.sounds_dir.clone();
     let results = tauri::async_runtime::spawn_blocking(move || {
         paths
@@ -842,7 +862,7 @@ async fn add_sounds(app: AppHandle, paths: Vec<String>) -> Result<Snapshot, Stri
     .map_err(|e| e.to_string())?;
     let mut errors = Vec::new();
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         for res in results {
             match res {
                 Ok(sound) => config.sounds.push(sound),
@@ -919,7 +939,7 @@ async fn replace_sound_file(app: AppHandle, id: String) -> Result<Option<Snapsho
     .map_err(|e| e.to_string())??;
     state.audio.stop(&id);
     let old = {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         let sound = config.sounds.iter_mut().find(|s| s.id == id).ok_or("son introuvable")?;
         let old = std::mem::replace(&mut sound.path, dest);
         // L'empreinte suit le nouveau fichier : sinon un pote recevait
@@ -944,7 +964,7 @@ async fn replace_sound_file(app: AppHandle, id: String) -> Result<Option<Snapsho
             });
         });
     }
-    state.waveforms.lock().unwrap().remove(&id);
+    state.waveforms.lock_ok().remove(&id);
     measure_segments(app.clone());
     Ok(Some(state.snapshot()))
 }
@@ -952,7 +972,7 @@ async fn replace_sound_file(app: AppHandle, id: String) -> Result<Option<Snapsho
 #[tauri::command]
 fn update_sound(app: AppHandle, state: State<AppState>, sound: Sound) -> Result<Snapshot, String> {
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         let existing = config
             .sounds
             .iter_mut()
@@ -1015,7 +1035,7 @@ const ORPHAN_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(120);
 /// Prévient quand des sons sont dans le dossier de l'app mais plus dans la liste.
 fn check_orphans(state: &AppState) {
     let n = {
-        let config = state.config.lock().unwrap();
+        let config = state.config.lock_ok();
         orphan_files(&state.sounds_dir, &config, ORPHAN_MIN_AGE).len()
     };
     let msg = match n {
@@ -1047,7 +1067,7 @@ fn old_sound_entries(config_path: &Path) -> HashMap<std::ffi::OsString, Sound> {
 async fn recover_sounds(app: AppHandle, keep: bool) -> Result<(usize, Snapshot), String> {
     let state = app.state::<AppState>();
     let files = {
-        let config = state.config.lock().unwrap();
+        let config = state.config.lock_ok();
         orphan_files(&state.sounds_dir, &config, ORPHAN_MIN_AGE)
     };
     if !keep {
@@ -1058,7 +1078,7 @@ async fn recover_sounds(app: AppHandle, keep: bool) -> Result<(usize, Snapshot),
         return Ok((0, state.snapshot()));
     }
     let old = old_sound_entries(&state.config_path);
-    let first_index = state.config.lock().unwrap().sounds.len();
+    let first_index = state.config.lock_ok().sounds.len();
     let found: Vec<Sound> = tauri::async_runtime::spawn_blocking(move || {
         let mut n = 0;
         files
@@ -1094,7 +1114,7 @@ async fn recover_sounds(app: AppHandle, keep: bool) -> Result<(usize, Snapshot),
     .map_err(|e| e.to_string())?;
     let count;
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         let mut ids: std::collections::HashSet<String> = config.sounds.iter().map(|s| s.id.clone()).collect();
         let mut hotkeys: Vec<String> = config.sounds.iter().filter_map(|s| s.hotkey.clone()).collect();
         let before = config.sounds.len();
@@ -1140,7 +1160,7 @@ async fn recover_sounds(app: AppHandle, keep: bool) -> Result<(usize, Snapshot),
 #[tauri::command]
 fn remove_sound(app: AppHandle, state: State<AppState>, id: String) -> Result<Snapshot, String> {
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         if let Some(pos) = config.sounds.iter().position(|s| s.id == id) {
             let sound = config.sounds.remove(pos);
             // Sous Windows, un fichier en cours de lecture ne peut pas être
@@ -1149,7 +1169,7 @@ fn remove_sound(app: AppHandle, state: State<AppState>, id: String) -> Result<Sn
             // Le son précédent de la corbeille part pour de bon.
             empty_trash(&state);
             let trashed = move_to_trash(&state, sound);
-            *state.trash.lock().unwrap() = Some((trashed, pos));
+            *state.trash.lock_ok() = Some((trashed, pos));
         }
         state.save(&config)?;
     }
@@ -1161,7 +1181,7 @@ fn remove_sound(app: AppHandle, state: State<AppState>, id: String) -> Result<Sn
 #[tauri::command]
 fn restore_sound(app: AppHandle, state: State<AppState>, id: Option<String>) -> Result<Snapshot, String> {
     let (mut sound, pos) = {
-        let mut trash = state.trash.lock().unwrap();
+        let mut trash = state.trash.lock_ok();
         // Le bouton « Annuler » d'un son ne doit jamais en ramener un autre.
         if id.is_some() && trash.as_ref().map(|(s, _)| &s.id) != id.as_ref() {
             return Err("Ce son ne peut plus être restauré : seule la dernière suppression s'annule".into());
@@ -1184,7 +1204,7 @@ fn restore_sound(app: AppHandle, state: State<AppState>, id: Option<String>) -> 
         back(img, images_dir(&state));
     }
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         // Un raccourci repris entre-temps par un autre son reste à celui-ci.
         if let Some(hk) = &sound.hotkey {
             if config.sounds.iter().any(|s| s.hotkey.as_ref() == Some(hk)) {
@@ -1236,7 +1256,7 @@ fn move_to_trash(state: &AppState, mut sound: Sound) -> Sound {
 
 /// Vide la corbeille (au lancement et à chaque nouvelle suppression).
 fn empty_trash(state: &AppState) {
-    state.trash.lock().unwrap().take();
+    state.trash.lock_ok().take();
     let _ = fs::remove_dir_all(trash_dir(state));
 }
 
@@ -1257,8 +1277,8 @@ fn remove_image_files(state: &AppState, sound: &Sound) {
 fn giphy_key(state: &AppState) -> Option<String> {
     state
         .config
-        .lock()
-        .unwrap()
+        
+        .lock_ok()
         .settings
         .giphy_key
         .as_deref()
@@ -1288,7 +1308,7 @@ fn store_image(
         }
         None => anim_path.clone(),
     };
-    let mut config = state.config.lock().unwrap();
+    let mut config = state.config.lock_ok();
     let Some(sound) = config.sounds.iter_mut().find(|s| s.id == id) else {
         let _ = fs::remove_file(&anim_path);
         let _ = fs::remove_file(&still_path);
@@ -1345,7 +1365,7 @@ async fn pick_sound_image(app: AppHandle, id: String) -> Result<Snapshot, String
 #[tauri::command]
 fn clear_sound_image(state: State<AppState>, id: String) -> Result<Snapshot, String> {
     let old = {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         let sound = config.sounds.iter_mut().find(|s| s.id == id).ok_or("son introuvable")?;
         let old = sound.clone();
         sound.image = None;
@@ -1367,8 +1387,8 @@ async fn auto_images(app: AppHandle, ids: Option<Vec<String>>) -> Result<usize, 
     };
     let todo: Vec<(String, String)> = state
         .config
-        .lock()
-        .unwrap()
+        
+        .lock_ok()
         .sounds
         .iter()
         .filter(|s| s.image.is_none() && ids.as_ref().is_none_or(|ids| ids.contains(&s.id)))
@@ -1403,7 +1423,7 @@ fn open_giphy_key_page(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn import_play_counts(state: State<AppState>, counts: HashMap<String, u32>) -> Result<Snapshot, String> {
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         for s in config.sounds.iter_mut() {
             if let Some(&n) = counts.get(&s.id) {
                 if s.plays == 0 {
@@ -1420,7 +1440,7 @@ fn import_play_counts(state: State<AppState>, counts: HashMap<String, u32>) -> R
 #[tauri::command]
 fn reset_stats(state: State<AppState>) -> Result<Snapshot, String> {
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         for s in config.sounds.iter_mut() {
             s.plays = 0;
             s.played_ms = 0;
@@ -1465,7 +1485,7 @@ async fn calibrate_voice(app: AppHandle) -> Result<calibration::VoiceReport, Str
 
     let state = app.state::<AppState>();
     let settings = {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         config.settings.mic_calibration = Some(cal);
         config.settings.voice_eq = report.eq;
         state.save(&config)?;
@@ -1522,11 +1542,11 @@ fn discord_running() -> Option<bool> {
 #[tauri::command]
 async fn run_diagnostics(app: AppHandle) -> Result<Vec<Check>, String> {
     let state = app.state::<AppState>();
-    *state.devices.lock().unwrap() = audio::list_devices();
-    let devices = state.devices.lock().unwrap().clone();
-    let config = state.config.lock().unwrap().clone();
+    *state.devices.lock_ok() = audio::list_devices();
+    let devices = state.devices.lock_ok().clone();
+    let config = state.config.lock_ok().clone();
     let settings = &config.settings;
-    let warnings = state.warnings.lock().unwrap().clone();
+    let warnings = state.warnings.lock_ok().clone();
     let warned = |kind: &str| -> Vec<String> {
         warnings.iter().filter_map(|w| w.strip_prefix(kind).map(String::from)).collect()
     };
@@ -1698,7 +1718,7 @@ async fn run_diagnostics(app: AppHandle) -> Result<Vec<Check>, String> {
 #[tauri::command]
 fn move_sound(state: State<AppState>, id: String, to: usize) -> Result<Snapshot, String> {
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         if let Some(from) = config.sounds.iter().position(|s| s.id == id) {
             let sound = config.sounds.remove(from);
             let to = to.min(config.sounds.len());
@@ -1715,7 +1735,7 @@ fn update_settings(app: AppHandle, state: State<AppState>, mut settings: Setting
     let audio_changed;
     let room_changed;
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         // Le code du téléphone ne se change que par « Nouveau code ».
         settings.phone_token = config.settings.phone_token.clone();
         // Tenus à jour par l'app elle-même (abonnements, partages, salon).
@@ -1751,7 +1771,7 @@ fn update_settings(app: AppHandle, state: State<AppState>, mut settings: Setting
     // Relancer l'audio coupe les sons et le micro une seconde : seulement
     // si un réglage du son a changé (pas pour un raccourci ou une clé).
     // (ou pour réessayer quand un périphérique manquait).
-    let audio_failed = state.warnings.lock().unwrap().iter().any(|w| w.starts_with(WARN_AUDIO));
+    let audio_failed = state.warnings.lock_ok().iter().any(|w| w.starts_with(WARN_AUDIO));
     if audio_changed || audio_failed {
         apply_audio(&state, settings);
     }
@@ -1806,9 +1826,9 @@ fn log_ui(message: String) {
 /// Rapport à copier-coller quand quelque chose ne marche pas.
 #[tauri::command]
 fn diagnostic_report(state: State<AppState>) -> String {
-    let config = state.config.lock().unwrap().clone();
-    let devices = state.devices.lock().unwrap().clone();
-    let warnings = state.warnings.lock().unwrap().clone();
+    let config = state.config.lock_ok().clone();
+    let devices = state.devices.lock_ok().clone();
+    let warnings = state.warnings.lock_ok().clone();
     let s = &config.settings;
     let missing = config.sounds.iter().filter(|x| !x.path.exists()).count();
     let opt = |o: &Option<String>| o.clone().unwrap_or_else(|| "par défaut".into());
@@ -1877,14 +1897,14 @@ fn stop_preview(state: State<AppState>) {
 #[tauri::command]
 async fn get_waveform(app: AppHandle, id: String) -> Result<Vec<f32>, String> {
     let state = app.state::<AppState>();
-    if let Some(peaks) = state.waveforms.lock().unwrap().get(&id) {
+    if let Some(peaks) = state.waveforms.lock_ok().get(&id) {
         return Ok(peaks.clone());
     }
     let sound = find_sound(&state, &id)?;
     let peaks = tauri::async_runtime::spawn_blocking(move || analysis::waveform(&sound.path, 2400))
         .await
         .map_err(|e| e.to_string())??;
-    state.waveforms.lock().unwrap().insert(id, peaks.clone());
+    state.waveforms.lock_ok().insert(id, peaks.clone());
     Ok(peaks)
 }
 
@@ -1901,8 +1921,8 @@ async fn search_online(
             let key = app
                 .state::<AppState>()
                 .config
-                .lock()
-                .unwrap()
+                
+                .lock_ok()
                 .settings
                 .freesound_key
                 .clone()
@@ -1918,7 +1938,7 @@ async fn search_online(
 async fn add_online(app: AppHandle, name: String, url: String) -> Result<Snapshot, String> {
     let data = online::download(&url).await?;
     let state = app.state::<AppState>();
-    let index = state.config.lock().unwrap().sounds.len();
+    let index = state.config.lock_ok().sounds.len();
     let sounds_dir = state.sounds_dir.clone();
     let sound = tauri::async_runtime::spawn_blocking(move || {
         store_sound(&data, "mp3", name, &sounds_dir, index)
@@ -1926,7 +1946,7 @@ async fn add_online(app: AppHandle, name: String, url: String) -> Result<Snapsho
     .await
     .map_err(|e| e.to_string())??;
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         config.sounds.push(sound);
         state.save(&config)?;
     }
@@ -1936,7 +1956,7 @@ async fn add_online(app: AppHandle, name: String, url: String) -> Result<Snapsho
 #[tauri::command]
 fn toggle_favorite(state: State<AppState>, id: String) -> Result<Snapshot, String> {
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         let sound = config.sounds.iter_mut().find(|s| s.id == id).ok_or("son introuvable")?;
         sound.favorite = !sound.favorite;
         state.save(&config)?;
@@ -1948,7 +1968,7 @@ fn toggle_favorite(state: State<AppState>, id: String) -> Result<Snapshot, Strin
 #[tauri::command]
 fn set_category(state: State<AppState>, ids: Vec<String>, category: Option<String>) -> Result<Snapshot, String> {
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         let category = clean_category(category);
         for sound in config.sounds.iter_mut().filter(|s| ids.contains(&s.id)) {
             sound.category = category.clone();
@@ -1962,7 +1982,7 @@ fn set_category(state: State<AppState>, ids: Vec<String>, category: Option<Strin
 #[tauri::command]
 fn set_tabs(state: State<AppState>, names: Vec<String>) -> Result<Snapshot, String> {
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         let mut tabs: Vec<String> = Vec::new();
         for name in names.into_iter().filter_map(|n| clean_category(Some(n))) {
             if !tabs.contains(&name) {
@@ -1980,7 +2000,7 @@ fn set_tabs(state: State<AppState>, names: Vec<String>) -> Result<Snapshot, Stri
 #[tauri::command]
 fn rename_tab(state: State<AppState>, old: String, new: Option<String>) -> Result<Snapshot, String> {
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         let new = clean_category(new);
         for sound in config.sounds.iter_mut().filter(|s| s.category.as_deref() == Some(old.as_str())) {
             sound.category = new.clone();
@@ -2011,14 +2031,14 @@ fn rename_tab(state: State<AppState>, old: String, new: Option<String>) -> Resul
 async fn add_from_url(app: AppHandle, url: String) -> Result<Snapshot, String> {
     let (data, ext, name) = online::download_link(url.trim()).await?;
     let state = app.state::<AppState>();
-    let index = state.config.lock().unwrap().sounds.len();
+    let index = state.config.lock_ok().sounds.len();
     let sounds_dir = state.sounds_dir.clone();
     let sound = tauri::async_runtime::spawn_blocking(move || store_sound(&data, &ext, name, &sounds_dir, index))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|_| "ce lien ne mène pas à un fichier audio (il faut un lien direct vers un .mp3, .wav…)".to_string())?;
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         config.sounds.push(sound);
         state.save(&config)?;
     }
@@ -2068,14 +2088,14 @@ async fn youtube_import(app: &AppHandle, url: String) -> Result<AddedSound, Stri
     })
     .await
     .map_err(|e| e.to_string())??;
-    let index = state.config.lock().unwrap().sounds.len();
+    let index = state.config.lock_ok().sounds.len();
     let sounds_dir = state.sounds_dir.clone();
     let sound = tauri::async_runtime::spawn_blocking(move || store_sound(&data, "m4a", title, &sounds_dir, index))
         .await
         .map_err(|e| e.to_string())??;
     let id = sound.id.clone();
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         config.sounds.push(sound);
         state.save(&config)?;
     }
@@ -2093,7 +2113,7 @@ struct PhoneInfo {
 
 #[tauri::command]
 fn get_phone_info(state: State<AppState>) -> Result<Option<PhoneInfo>, String> {
-    let settings = state.config.lock().unwrap().settings.clone();
+    let settings = state.config.lock_ok().settings.clone();
     if !settings.phone_enabled || settings.phone_token.is_empty() {
         return Ok(None);
     }
@@ -2107,7 +2127,7 @@ fn get_phone_info(state: State<AppState>) -> Result<Option<PhoneInfo>, String> {
 #[tauri::command]
 fn regenerate_phone_token(app: AppHandle, state: State<AppState>) -> Result<Snapshot, String> {
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         config.settings.phone_token = phone::new_token();
         state.save(&config)?;
     }
@@ -2412,8 +2432,8 @@ async fn export_pack(app: AppHandle, category: Option<String>, id: Option<String
     let state = app.state::<AppState>();
     let mut sounds: Vec<Sound> = state
         .config
-        .lock()
-        .unwrap()
+        
+        .lock_ok()
         .sounds
         .iter()
         .filter(|s| match &id {
@@ -2474,7 +2494,7 @@ async fn import_pack(app: AppHandle, path: Option<String>) -> Result<Option<Impo
         return Ok(None);
     };
     let state = app.state::<AppState>();
-    let config = state.config.lock().unwrap().clone();
+    let config = state.config.lock_ok().clone();
     let sounds_dir = state.sounds_dir.clone();
     let (added, errors, _) =
         tauri::async_runtime::spawn_blocking(move || read_pack(&src, &config, &sounds_dir, &Default::default()))
@@ -2482,7 +2502,7 @@ async fn import_pack(app: AppHandle, path: Option<String>) -> Result<Option<Impo
         .map_err(|e| e.to_string())??;
     let count = added.len();
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         config.sounds.extend(added);
         state.save(&config)?;
     }
@@ -2508,7 +2528,7 @@ async fn export_backup(app: AppHandle) -> Result<Option<usize>, String> {
     else {
         return Ok(None);
     };
-    let config = app.state::<AppState>().config.lock().unwrap().clone();
+    let config = app.state::<AppState>().config.lock_ok().clone();
     tauri::async_runtime::spawn_blocking(move || backup::write(&dest, &config))
         .await
         .map_err(|e| e.to_string())?
@@ -2539,7 +2559,7 @@ async fn import_backup(app: AppHandle, path: Option<String>) -> Result<Option<Sn
     empty_trash(&state);
     let settings = restored.settings.clone();
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         // L'identité de ce PC dans le salon reste la sienne (une sauvegarde
         // venue d'un autre PC donnerait sinon deux membres au même nom
         // interne, qui se volent les sons).
@@ -2550,7 +2570,7 @@ async fn import_backup(app: AppHandle, path: Option<String>) -> Result<Option<Sn
         }
         state.save(&config)?;
     }
-    state.waveforms.lock().unwrap().clear();
+    state.waveforms.lock_ok().clear();
     journal::write("Sauvegarde restaurée");
     replay::configure(settings.replay_enabled, settings.duck_enabled, settings.duck_level);
     apply_audio(&state, settings);
@@ -2673,7 +2693,7 @@ pub fn run() {
             let audio = AudioHandle::spawn(move |event| match event {
                 AudioEvent::Playing(status) => {
                     if let Some(state) = handle.try_state::<AppState>() {
-                        *state.playing_ids.lock().unwrap() = status
+                        *state.playing_ids.lock_ok() = status
                             .iter()
                             .filter(|s| s.id != audio::PREVIEW_ID)
                             .map(|s| s.id.clone())
@@ -2690,7 +2710,7 @@ pub fn run() {
                     let handle = handle.clone();
                     std::thread::spawn(move || {
                         if let Some(state) = handle.try_state::<AppState>() {
-                            let mut config = state.config.lock().unwrap();
+                            let mut config = state.config.lock_ok();
                             config.settings.mic_learned = Some(config::MicLearned { device, speech_db });
                             let _ = state.save(&config);
                         }
@@ -2734,7 +2754,7 @@ pub fn run() {
             std::thread::spawn(move || {
                 let state = handle.state::<AppState>();
                 // Réglages du moment : ils ont pu changer entre-temps.
-                let settings = state.config.lock().unwrap().settings.clone();
+                let settings = state.config.lock_ok().settings.clone();
                 apply_autostart(&handle, settings.launch_at_startup);
                 apply_audio(&state, settings);
                 // Avant la mise à jour des packs, qui range de nouveaux fichiers.
@@ -2777,7 +2797,7 @@ pub fn run() {
                     winpos::save(&w);
                 }
                 let state = window.state::<AppState>();
-                let to_tray = state.config.lock().unwrap().settings.close_to_tray;
+                let to_tray = state.config.lock_ok().settings.close_to_tray;
                 if to_tray {
                     api.prevent_close();
                     let _ = window.hide();
@@ -2932,6 +2952,22 @@ mod tests {
         assert_eq!(b.category.as_deref(), Some("Jeux"));
         let _ = fs::remove_dir_all(&dir);
     }
+    #[test]
+    fn a_crash_while_holding_a_lock_does_not_block_the_app() {
+        use super::LockExt;
+        use std::sync::{Arc, Mutex};
+        let m = Arc::new(Mutex::new(vec![1]));
+        let m2 = m.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = m2.lock().unwrap();
+            panic!("plantage pour le test");
+        })
+        .join();
+        assert!(m.is_poisoned());
+        m.lock_ok().push(2);
+        assert_eq!(*m.lock_ok(), vec![1, 2]);
+    }
+
     #[test]
     fn pack_hotkeys_cannot_steal_typing_keys() {
         assert!(super::blocks_typing("KeyA"));

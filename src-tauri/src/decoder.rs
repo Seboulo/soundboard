@@ -28,6 +28,15 @@ pub struct AudioFile {
     pos: usize,
     spec: SignalSpec,
     total_duration: Option<Duration>,
+    /// Le décodeur a planté sur ce fichier (abîmé) : le son s'arrête là.
+    broken: bool,
+}
+
+/// Lance `f` sans laisser un plantage du décodeur sortir : un fichier abîmé
+/// faisait planter le fil qui le lisait (le son du casque ou du câble,
+/// coupé jusqu'au redémarrage de l'appli). `None` si ça a planté.
+fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
 }
 
 impl AudioFile {
@@ -73,6 +82,7 @@ impl AudioFile {
             pos: 0,
             spec: SignalSpec::new(44_100, Default::default()),
             total_duration,
+            broken: false,
         };
         // On décode le premier bloc pour connaître le format de sortie.
         if !file.refill() {
@@ -88,13 +98,12 @@ impl AudioFile {
             return;
         }
         let time = Time::new(ms / 1000, (ms % 1000) as f64 / 1000.0);
-        let seeked = self.format.seek(
-            SeekMode::Accurate,
-            SeekTo::Time {
-                time,
-                track_id: Some(self.track_id),
-            },
-        );
+        let track_id = self.track_id;
+        let format = &mut self.format;
+        let Some(seeked) = guarded(|| format.seek(SeekMode::Accurate, SeekTo::Time { time, track_id: Some(track_id) })) else {
+            self.broken = true;
+            return;
+        };
         let Ok(seeked) = seeked else {
             // Format sans saut possible : on décodera depuis le début.
             let _ = self.skip_samples(ms);
@@ -124,8 +133,24 @@ impl AudioFile {
         Some(())
     }
 
-    /// Décode le paquet suivant de la piste. Faux à la fin du fichier.
+    /// Décode le paquet suivant de la piste. Faux à la fin du fichier, ou
+    /// si le décodeur plante (fichier abîmé).
     fn refill(&mut self) -> bool {
+        if self.broken {
+            return false;
+        }
+        match guarded(|| self.decode_next()) {
+            Some(more) => more,
+            None => {
+                self.broken = true;
+                self.buffer.clear();
+                self.pos = 0;
+                false
+            }
+        }
+    }
+
+    fn decode_next(&mut self) -> bool {
         let mut errors = 0;
         loop {
             let packet = match self.format.next_packet() {

@@ -232,8 +232,8 @@ fn load_recents(state: &AppState) -> Vec<Recent> {
 /// Lien d'où vient une vidéo préparée (cette session, ou l'historique), et
 /// pour un passage seul, où il commence dans la vidéo (ms).
 fn link_for(state: &AppState, path: &str) -> Option<(String, Option<u64>)> {
-    if let Some(l) = state.clips.links.lock().unwrap().get(path) {
-        return Some((l.clone(), state.clips.cuts.lock().unwrap().get(path).copied()));
+    if let Some(l) = state.clips.links.lock_ok().get(path) {
+        return Some((l.clone(), state.clips.cuts.lock_ok().get(path).copied()));
     }
     load_recents(state).into_iter().find(|r| r.path == path).and_then(|r| Some((r.link?, r.cut_ms)))
 }
@@ -299,7 +299,7 @@ pub fn clip_dnd(app: AppHandle, on: Option<bool>) -> bool {
     if let Some(on) = on {
         state.clips.dnd.store(on, Ordering::SeqCst);
         journal::write(if on { "Ne pas déranger : activé" } else { "Ne pas déranger : coupé" });
-        let preview = state.clips.pending.lock().unwrap().as_ref().is_some_and(|c| c.preview);
+        let preview = state.clips.pending.lock_ok().as_ref().is_some_and(|c| c.preview);
         if on && !preview {
             close(&app);
         }
@@ -347,10 +347,10 @@ fn sendable(state: &AppState, media: &str) -> Result<PathBuf, String> {
         }
         let copy_key = copy.to_string_lossy().into_owned();
         if let Some(cut) = r.cut_ms {
-            state.clips.cuts.lock().unwrap().insert(copy_key.clone(), cut);
+            state.clips.cuts.lock_ok().insert(copy_key.clone(), cut);
         }
         if let Some(link) = r.link {
-            state.clips.links.lock().unwrap().insert(copy_key, link);
+            state.clips.links.lock_ok().insert(copy_key, link);
         }
     }
     Ok(copy)
@@ -360,12 +360,12 @@ fn sendable(state: &AppState, media: &str) -> Result<PathBuf, String> {
 /// la retélécharger. Renvoie le fichier et son son à part.
 fn already_have(state: &AppState, link: &str) -> Option<(PathBuf, Option<PathBuf>)> {
     // Seulement une vidéo entière (pas un passage seul).
-    let cuts = state.clips.cuts.lock().unwrap().clone();
+    let cuts = state.clips.cuts.lock_ok().clone();
     let from_session: Vec<String> = state
         .clips
         .links
-        .lock()
-        .unwrap()
+        
+        .lock_ok()
         .iter()
         .filter(|(p, l)| *l == link && !cuts.contains_key(*p))
         .map(|(p, _)| p.clone())
@@ -530,7 +530,7 @@ pub async fn clip_from_gif(app: AppHandle, url: String) -> Result<ClipPick, Stri
     let (data, ext) = giphy::download(&url).await?;
     let pick = keep_for_sending(&app, &data, ext, String::new(), None)?;
     let state = app.state::<AppState>();
-    let mut gifs = state.clips.gifs.lock().unwrap();
+    let mut gifs = state.clips.gifs.lock_ok();
     if gifs.len() >= 200 {
         gifs.clear();
     }
@@ -547,7 +547,7 @@ pub async fn clip_search_videos(app: AppHandle, query: String, start: Option<u32
     let key = query.trim().to_lowercase();
     let start = start.unwrap_or(1);
     {
-        let mut cache = CACHE.lock().unwrap();
+        let mut cache = CACHE.lock_ok();
         cache.retain(|c| c.2.elapsed() < Duration::from_secs(600));
         if let Some(c) = cache.iter().find(|c| c.0 == key && c.1 == start) {
             return Ok(c.3.clone());
@@ -563,7 +563,7 @@ pub async fn clip_search_videos(app: AppHandle, query: String, start: Option<u32
         .await
         .map_err(|e| e.to_string())??;
     if !found.is_empty() {
-        let mut cache = CACHE.lock().unwrap();
+        let mut cache = CACHE.lock_ok();
         if cache.len() >= 30 {
             cache.remove(0);
         }
@@ -637,9 +637,9 @@ pub async fn clip_from_link(app: AppHandle, url: String, start_s: Option<f64>, c
         pick.cut = was_cut;
         // Un passage seul part aussi par lien : le pote récupère le même
         // passage (ffmpeg chez lui aussi), sans passer par le relais.
-        state.clips.links.lock().unwrap().insert(pick.path.clone(), url.clone());
+        state.clips.links.lock_ok().insert(pick.path.clone(), url.clone());
         if was_cut {
-            state.clips.cuts.lock().unwrap().insert(pick.path.clone(), (start * 1000.0) as u64);
+            state.clips.cuts.lock_ok().insert(pick.path.clone(), (start * 1000.0) as u64);
         }
         Ok(pick)
     }
@@ -938,7 +938,7 @@ pub async fn send_clip(
         }
         room.publish(&msg).await?;
         journal::write("Extrait : lien envoyé (le pote télécharge la vidéo)");
-        *state.extras.last_sent.lock().unwrap() = Some(Instant::now());
+        *state.extras.last_sent.lock_ok() = Some(Instant::now());
         add_recent(&state, Recent {
             path: path_key,
             kind: "video".into(),
@@ -962,7 +962,7 @@ pub async fn send_clip(
     // la place du relais (environ 100 Mo toutes les 3 h), vite remplie.
     let pad_sound = sound_id.as_deref().is_some_and(|s| !s.is_empty());
     let gif = (kind_of(&media_ext) == Some("image") && !pad_sound)
-        .then(|| state.clips.gifs.lock().unwrap().get(&path_key).cloned())
+        .then(|| state.clips.gifs.lock_ok().get(&path_key).cloned())
         .flatten()
         .filter(|u| giphy::allowed(u))
         .filter(|_| state.extras.room.gif_links_ok(receivers));
@@ -991,7 +991,7 @@ pub async fn send_clip(
         }
         room.publish(&msg).await?;
         journal::write("Extrait : GIF envoyé par son adresse (le pote le prend chez GIPHY)");
-        *state.extras.last_sent.lock().unwrap() = Some(Instant::now());
+        *state.extras.last_sent.lock_ok() = Some(Instant::now());
         add_recent(&state, Recent {
             path: path_key,
             kind: "image".into(),
@@ -1098,7 +1098,7 @@ pub async fn send_clip(
         return Err(e);
     }
     journal::write(&format!("Extrait : envoyé en {} s", sent.elapsed().as_secs()));
-    *state.extras.last_sent.lock().unwrap() = Some(Instant::now());
+    *state.extras.last_sent.lock_ok() = Some(Instant::now());
     let is_video = kind_of(&media.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase()) == Some("video");
     add_recent(&state, Recent {
         path: media.to_string_lossy().into_owned(),
@@ -1189,7 +1189,7 @@ pub async fn receive(
     style: String,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let mode = state.config.lock().unwrap().settings.clips_mode.clone();
+    let mode = state.config.lock_ok().settings.clips_mode.clone();
     if mode == "off" {
         return Ok(());
     }
@@ -1204,7 +1204,7 @@ pub async fn receive(
         return Ok(());
     }
     {
-        let mut last = state.clips.last_from.lock().unwrap();
+        let mut last = state.clips.last_from.lock_ok();
         if last.get(&from).is_some_and(|t| t.elapsed() < SPAM_GAP) {
             return Ok(());
         }
@@ -1290,7 +1290,7 @@ pub async fn receive(
         (None, None) => return Ok(()),
     };
     // Arrêté par le pote (« Tout arrêter ») pendant que ça arrivait.
-    if state.clips.stopped.lock().unwrap().get(&from).is_some_and(|t| *t >= got) {
+    if state.clips.stopped.lock_ok().get(&from).is_some_and(|t| *t >= got) {
         journal::write(&format!("Extrait de {name} : arrêté par lui avant d'arriver"));
         return Ok(());
     }
@@ -1481,10 +1481,10 @@ const QUEUE_MAX: usize = 3;
 /// l'écran : il passera juste après, au lieu de le couper.
 fn show_window(app: &AppHandle, show: ClipShow) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let busy = state.clips.pending.lock().unwrap().is_some()
-        && state.clips.window.lock().unwrap().as_deref().is_some_and(|l| app.get_webview_window(l).is_some());
+    let busy = state.clips.pending.lock_ok().is_some()
+        && state.clips.window.lock_ok().as_deref().is_some_and(|l| app.get_webview_window(l).is_some());
     if busy && !show.preview {
-        let mut queue = state.clips.queue.lock().unwrap();
+        let mut queue = state.clips.queue.lock_ok();
         if queue.len() >= QUEUE_MAX {
             journal::write(&format!("Extrait de {} ignoré (déjà {QUEUE_MAX} en attente)", show.from));
             return Ok(());
@@ -1500,7 +1500,7 @@ fn show_window(app: &AppHandle, show: ClipShow) -> Result<(), String> {
 /// Passe à l'extrait suivant de la file ; ferme la fenêtre s'il n'y en a plus.
 fn advance(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let next = state.clips.queue.lock().unwrap().pop_front();
+    let next = state.clips.queue.lock_ok().pop_front();
     match next {
         Some(show) => {
             if show_now(app, show).is_err() {
@@ -1523,12 +1523,12 @@ fn show_now(app: &AppHandle, show: ClipShow) -> Result<(), String> {
     foreground::remember();
     let state = app.state::<AppState>();
     let ask = show.ask;
-    let before = state.clips.pending.lock().unwrap().replace(show.clone());
-    let current = state.clips.window.lock().unwrap().clone();
+    let before = state.clips.pending.lock_ok().replace(show.clone());
+    let current = state.clips.window.lock_ok().clone();
     if let Some(w) = current.as_deref().and_then(|l| app.get_webview_window(l)) {
         if let Some(before) = before.filter(|b| comes_back(b, &show)) {
             journal::write(&format!("Extrait de {} remis en attente (aperçu)", before.from));
-            state.clips.queue.lock().unwrap().push_front(before);
+            state.clips.queue.lock_ok().push_front(before);
         }
         // L'extrait d'avant est remplacé : son son s'arrête avec lui (sinon il
         // continuait jusqu'à 30 s sous la carte « Afficher / Refuser »).
@@ -1566,7 +1566,7 @@ fn show_now(app: &AppHandle, show: ClipShow) -> Result<(), String> {
     }
     // La fenêtre se charge puis lit l'extrait en attente (clip_pending).
     builder.build().map_err(|e| e.to_string())?;
-    *state.clips.window.lock().unwrap() = Some(label);
+    *state.clips.window.lock_ok() = Some(label);
     // WebView2 peut activer sa fenêtre en se chargeant, sans que Windows le
     // signale toujours : on vérifie encore quelques fois.
     #[cfg(windows)]
@@ -1604,7 +1604,7 @@ pub async fn clip_audio(app: AppHandle, path: String, start_ms: u64, end_ms: Opt
 /// demandé par un extrait fermé ou remplacé entre-temps ne doit pas partir
 /// (sinon il jouait jusqu'à 30 s sans fenêtre).
 fn still_shown(state: &AppState, path: &Path) -> bool {
-    state.clips.pending.lock().unwrap().as_ref().is_some_and(|c| {
+    state.clips.pending.lock_ok().as_ref().is_some_and(|c| {
         Path::new(&c.media) == path || c.sound.as_deref().is_some_and(|s| Path::new(s) == path)
     })
 }
@@ -1647,14 +1647,14 @@ const CLIP_SOUND_ID: &str = "extrait-recu";
 fn level_of(state: &AppState, path: &Path, start_ms: u64, end_ms: Option<u64>) -> Result<(crate::config::Analysis, u64), String> {
     let end = end_ms.unwrap_or(u64::MAX).min(start_ms.saturating_add(30_500));
     let cache_key = (path.to_path_buf(), start_ms, end);
-    let known = state.clips.levels.lock().unwrap().iter().find(|(k, _)| *k == cache_key).map(|(_, a)| *a);
+    let known = state.clips.levels.lock_ok().iter().find(|(k, _)| *k == cache_key).map(|(_, a)| *a);
     if let Some(a) = known {
         return Ok((a, end));
     }
     let key = crate::config::SegmentKey { start_ms, end_ms: Some(end), fx: Default::default() };
     let mut a = analysis::analyze_segment(path, &key)?;
     a.duration_ms += start_ms;
-    let mut levels = state.clips.levels.lock().unwrap();
+    let mut levels = state.clips.levels.lock_ok();
     if !levels.iter().any(|(k, _)| *k == cache_key) {
         if levels.len() >= 16 {
             levels.remove(0);
@@ -1765,7 +1765,7 @@ pub async fn clip_preview(
 #[tauri::command]
 pub async fn clip_keep(app: AppHandle) -> Result<String, String> {
     let state = app.state::<AppState>();
-    let c = state.clips.pending.lock().unwrap().clone().ok_or("l'extrait est déjà fermé")?;
+    let c = state.clips.pending.lock_ok().clone().ok_or("l'extrait est déjà fermé")?;
     if c.preview {
         return Err("c'est ton propre extrait".into());
     }
@@ -1781,7 +1781,7 @@ pub async fn clip_keep(app: AppHandle) -> Result<String, String> {
     let data = fs::read(&sound_path).map_err(|_| "l'extrait a déjà été effacé".to_string())?;
     let name = if c.title.trim().is_empty() { format!("Extrait de {}", c.from) } else { c.title.trim().to_string() };
     let sounds_dir = state.sounds_dir.clone();
-    let index = state.config.lock().unwrap().sounds.len();
+    let index = state.config.lock_ok().sounds.len();
     let mut sound = tauri::async_runtime::spawn_blocking(move || store_sound(&data, &sound_ext, name, &sounds_dir, index))
         .await
         .map_err(|e| e.to_string())??;
@@ -1791,7 +1791,7 @@ pub async fn clip_keep(app: AppHandle) -> Result<String, String> {
     let id = sound.id.clone();
     let name = sound.name.clone();
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         config.sounds.push(sound);
         state.save(&config)?;
     }
@@ -1810,7 +1810,7 @@ pub async fn clip_keep(app: AppHandle) -> Result<String, String> {
 /// L'extrait en attente (lu par la fenêtre quand elle s'ouvre).
 #[tauri::command]
 pub fn clip_pending(state: State<AppState>) -> Option<ClipShow> {
-    state.clips.pending.lock().unwrap().clone()
+    state.clips.pending.lock_ok().clone()
 }
 
 /// La fenêtre de l'extrait se met à sa taille : la petite carte pour
@@ -1849,7 +1849,7 @@ pub async fn clip_close(app: AppHandle, media: Option<String>, why: Option<Strin
     // c'est lui qui est attendu maintenant, on ne le ferme pas.
     if let Some(media) = media {
         let state = app.state::<AppState>();
-        let other = state.clips.pending.lock().unwrap().as_ref().is_some_and(|c| c.media != media);
+        let other = state.clips.pending.lock_ok().as_ref().is_some_and(|c| c.media != media);
         if other {
             return;
         }
@@ -1859,9 +1859,9 @@ pub async fn clip_close(app: AppHandle, media: Option<String>, why: Option<Strin
 
 pub fn close(app: &AppHandle) {
     if let Some(state) = app.try_state::<AppState>() {
-        state.clips.queue.lock().unwrap().clear();
-        state.clips.pending.lock().unwrap().take();
-        state.clips.window.lock().unwrap().take();
+        state.clips.queue.lock_ok().clear();
+        state.clips.pending.lock_ok().take();
+        state.clips.window.lock_ok().take();
         stop_audio(&state);
     }
     for (label, w) in app.webview_windows() {
@@ -1884,10 +1884,10 @@ fn stop_audio(state: &AppState) {
 /// Ferme l'extrait s'il vient de ce pote.
 pub fn close_from(app: &AppHandle, from: &str) {
     let state = app.state::<AppState>();
-    state.clips.stopped.lock().unwrap().insert(from.to_string(), Instant::now());
-    let from_him = state.clips.pending.lock().unwrap().as_ref().is_some_and(|c| c.from_id == from);
+    state.clips.stopped.lock_ok().insert(from.to_string(), Instant::now());
+    let from_him = state.clips.pending.lock_ok().as_ref().is_some_and(|c| c.from_id == from);
     // Ses extraits en attente partent aussi ; ceux des autres restent.
-    state.clips.queue.lock().unwrap().retain(|c| c.from_id != from);
+    state.clips.queue.lock_ok().retain(|c| c.from_id != from);
     if from_him {
         advance(app);
     }

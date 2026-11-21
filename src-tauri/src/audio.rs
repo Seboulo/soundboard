@@ -8,6 +8,7 @@
 //! Les flux audio ne sont pas `Send` sur toutes les plateformes, donc tout
 //! vit dans un thread dédié piloté par des messages.
 
+use crate::LockExt;
 use crate::config::Settings;
 use crate::denoise::{self, MicFilters, MicLevel, MicMeter, MicProcessor, Recording};
 use crate::dynamics::LookaheadLimiter;
@@ -839,7 +840,7 @@ impl Engine {
                 let res = match &self.mic_take {
                     None => Err("ta voix n'est pas envoyée : active « Envoyer ma voix dans Discord » et choisis ton micro dans les réglages".to_string()),
                     Some(take) => {
-                        let mut t = take.lock().unwrap();
+                        let mut t = take.lock_ok();
                         if start {
                             *t = Some(Vec::with_capacity(10 * denoise::RATE as usize));
                             Ok(Vec::new())
