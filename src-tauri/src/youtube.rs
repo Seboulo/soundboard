@@ -228,10 +228,54 @@ pub fn normalize_args(video: &Path, audio: Option<&Path>, start_s: f64, dur_s: f
 /// Convertit le passage d'une vidéo en extrait « propre » (voir
 /// `normalize_args`) dans `out`.
 pub fn normalize_clip(ffmpeg_dir: &Path, video: &Path, audio: Option<&Path>, start_s: f64, dur_s: f64, with_sound: bool, out: &Path) -> Result<(), String> {
+    run_ffmpeg(ffmpeg_dir, normalize_args(video, audio, start_s, dur_s, with_sound, out), out)
+}
+
+/// Plus grand côté d'une photo allégée avant l'envoi (la carte chez le pote
+/// fait 480 points de large au plus : 1280 reste net sur un écran très fin).
+const PHOTO_LONG_SIDE: u32 = 1280;
+
+/// Photo allégée : 1280 px au plus, en JPEG (ou en PNG si elle a de la
+/// transparence). `turn` : filtre qui la remet à l'endroit (photo de
+/// téléphone tournée par son étiquette EXIF, que ffmpeg n'applique pas ici).
+pub fn shrink_image_args(src: &Path, turn: &str, out: &Path) -> Vec<std::ffi::OsString> {
+    let n = PHOTO_LONG_SIDE;
+    let scale = format!("scale=w='if(gt(iw\\,ih)\\,min({n}\\,iw)\\,-2)':h='if(gt(iw\\,ih)\\,-2\\,min({n}\\,ih))'");
+    let vf = if turn.is_empty() { scale } else { format!("{turn},{scale}") };
+    let jpeg = out.extension().is_some_and(|e| e == "jpg");
+    let mut a: Vec<std::ffi::OsString> = ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-noautorotate", "-i"].iter().map(Into::into).collect();
+    a.push(src.into());
+    for x in ["-frames:v", "1", "-vf", &vf] {
+        a.push(x.into());
+    }
+    if jpeg {
+        for x in ["-q:v", "4"] {
+            a.push(x.into());
+        }
+    }
+    a.push(out.into());
+    a
+}
+
+/// Le passage d'un son (30 s au plus) en AAC, pour l'envoyer avec un extrait.
+pub fn cut_sound_args(src: &Path, start_s: f64, dur_s: f64, out: &Path) -> Vec<std::ffi::OsString> {
+    let start = format!("{:.3}", start_s.max(0.0));
+    let dur = format!("{:.3}", dur_s.clamp(0.5, 30.0));
+    let mut a: Vec<std::ffi::OsString> = ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-ss", &start, "-t", &dur, "-i"].iter().map(Into::into).collect();
+    a.push(src.into());
+    for x in ["-vn", "-map", "0:a:0", "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-movflags", "+faststart", "-f", "mp4"] {
+        a.push(x.into());
+    }
+    a.push(out.into());
+    a
+}
+
+/// Lance ffmpeg ; `out` doit exister et ne pas être vide ensuite.
+pub fn run_ffmpeg(ffmpeg_dir: &Path, args: Vec<std::ffi::OsString>, out: &Path) -> Result<(), String> {
     let exe = ffmpeg_dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
     let _ = fs::remove_file(out);
     let res = command(&exe)
-        .args(normalize_args(video, audio, start_s, dur_s, with_sound, out))
+        .args(args)
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| format!("ffmpeg ne démarre pas ({e})"))?;

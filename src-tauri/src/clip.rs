@@ -742,6 +742,132 @@ async fn prepare_video(app: &AppHandle, dir: &Path, media: &Path, start_s: Optio
     (size <= MAX_MEDIA).then_some(out)
 }
 
+/// Photo de plus de 400 Ko allégée avant l'envoi (voir
+/// `youtube::shrink_image_args`) : une photo de téléphone de 4 Mo en fait
+/// quelques centaines de Ko. `None` : pas de ffmpeg, GIF animé, photo en
+/// miroir, ou rien à gagner ; elle part alors telle quelle.
+async fn prepare_image(app: &AppHandle, media: &Path, ext: &str) -> Option<PathBuf> {
+    let state = app.state::<AppState>();
+    let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
+    let ff = youtube::ffmpeg_ready(&data_dir.join("tools"))?;
+    let size = fs::metadata(media).ok()?.len();
+    if size < 400 * 1024 || !matches!(ext, "jpg" | "jpeg" | "png") {
+        return None;
+    }
+    let data = fs::read(media).ok()?;
+    let (turn, out_ext) = if ext == "png" {
+        ("", if png_has_alpha(&data) { "png" } else { "jpg" })
+    } else {
+        let turn = match jpeg_orientation(&data) {
+            1 => "",
+            3 => "transpose=1,transpose=1",
+            6 => "transpose=1",
+            8 => "transpose=2",
+            _ => return None,
+        };
+        (turn, "jpg")
+    };
+    let ready_dir = clips_dir(&state).join("pret");
+    fs::create_dir_all(&ready_dir).ok()?;
+    let stem = media.file_stem().and_then(|s| s.to_str()).unwrap_or("photo");
+    let out = ready_dir.join(format!("{stem}-photo.{out_ext}"));
+    if !out.exists() {
+        let (src, out2, turn) = (media.to_path_buf(), out.clone(), turn.to_string());
+        let res = tauri::async_runtime::spawn_blocking(move || youtube::run_ffmpeg(&ff, youtube::shrink_image_args(&src, &turn, &out2), &out2))
+            .await
+            .ok()?;
+        if let Err(e) = res {
+            journal::write(&format!("Extrait : photo envoyée telle quelle ({e})"));
+            return None;
+        }
+        trim_dir(&ready_dir, READY_KEEP);
+    }
+    let small = fs::metadata(&out).ok()?.len();
+    journal::write(&format!("Extrait : photo allégée ({} Ko → {} Ko)", size / 1024, small / 1024));
+    (small < size * 9 / 10).then_some(out)
+}
+
+/// Le passage joué d'un son de pad joint à un extrait (30 s au plus), en
+/// AAC : un son ajouté depuis YouTube est souvent le morceau entier (plusieurs
+/// Mo) dont on ne joue que quelques secondes. `None` : son déjà léger, pas
+/// de ffmpeg ou conversion ratée ; il part alors tel quel.
+async fn prepare_sound(app: &AppHandle, sound: &Sound) -> Option<PathBuf> {
+    let state = app.state::<AppState>();
+    let size = fs::metadata(&sound.path).ok()?.len();
+    if size < 512 * 1024 {
+        return None;
+    }
+    let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
+    let ff = youtube::ffmpeg_ready(&data_dir.join("tools"))?;
+    let start_ms = sound.start_ms;
+    let end_ms = sound.end_ms.or(sound.analysis.map(|a| a.duration_ms)).unwrap_or(start_ms + 30_000);
+    let dur_ms = end_ms.saturating_sub(start_ms).clamp(500, 30_000);
+    let ready_dir = clips_dir(&state).join("pret");
+    fs::create_dir_all(&ready_dir).ok()?;
+    // Nommé d'après le fichier : un fichier remplacé donne un nouveau passage.
+    let stem = sound.path.file_stem().and_then(|s| s.to_str()).unwrap_or("son");
+    let out = ready_dir.join(format!("{stem}-{start_ms}-{dur_ms}-son.m4a"));
+    if !out.exists() {
+        let (src, out2) = (sound.path.clone(), out.clone());
+        let args = youtube::cut_sound_args(&src, start_ms as f64 / 1000.0, dur_ms as f64 / 1000.0, &out2);
+        let res = tauri::async_runtime::spawn_blocking(move || youtube::run_ffmpeg(&ff, args, &out2)).await.ok()?;
+        if let Err(e) = res {
+            journal::write(&format!("Extrait : son envoyé tel quel ({e})"));
+            return None;
+        }
+        trim_dir(&ready_dir, READY_KEEP);
+    }
+    let small = fs::metadata(&out).ok()?.len();
+    (small < size * 9 / 10).then_some(out)
+}
+
+/// Sens d'une photo JPEG d'après son étiquette EXIF (1 : à l'endroit).
+fn jpeg_orientation(data: &[u8]) -> u16 {
+    let get16 = |b: &[u8], le: bool| if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) };
+    let get32 = |b: &[u8], le: bool| if le { u32::from_le_bytes([b[0], b[1], b[2], b[3]]) } else { u32::from_be_bytes([b[0], b[1], b[2], b[3]]) };
+    let read = || -> Option<u16> {
+        if data.get(..2)? != [0xFF, 0xD8] {
+            return None;
+        }
+        let mut i = 2;
+        while i + 4 <= data.len() && data[i] == 0xFF {
+            let marker = data[i + 1];
+            let len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
+            if marker == 0xDA || len < 2 {
+                return None;
+            }
+            let seg = data.get(i + 4..i + 2 + len)?;
+            if marker == 0xE1 && seg.starts_with(b"Exif\0\0") {
+                let tiff = &seg[6..];
+                let le = match tiff.get(..2)? {
+                    b"II" => true,
+                    b"MM" => false,
+                    _ => return None,
+                };
+                let ifd = get32(tiff.get(4..8)?, le) as usize;
+                let count = get16(tiff.get(ifd..ifd + 2)?, le) as usize;
+                for k in 0..count.min(64) {
+                    let e = tiff.get(ifd + 2 + k * 12..ifd + 14 + k * 12)?;
+                    if get16(&e[0..2], le) == 0x0112 {
+                        return Some(get16(&e[8..10], le));
+                    }
+                }
+                return None;
+            }
+            i += 2 + len;
+        }
+        None
+    };
+    read().unwrap_or(1)
+}
+
+/// Une image PNG avec de la transparence (elle reste en PNG).
+fn png_has_alpha(data: &[u8]) -> bool {
+    let color = data.get(25).copied().unwrap_or(6);
+    let head = &data[..data.len().min(64 * 1024)];
+    matches!(color, 4 | 6) || head.windows(4).any(|w| w == b"tRNS")
+}
+
 /// « Envoyer à » : tout le salon, et soi-même aussi pour tester.
 const ME_TOO: &str = "*moi";
 
@@ -886,25 +1012,36 @@ pub async fn send_clip(
     }
     // Vidéo convertie avant l'envoi (H.264 + AAC, passage coupé) : elle se
     // lit sans à-coup chez le pote et commence à 0. Sinon, telle quelle.
+    // Une photo lourde est allégée de la même façon.
     let ready = match kind_of(&media_ext) {
         Some("video") => prepare_video(&app, &dir, &media, start_s, end_s, !pad_sound).await,
+        Some("image") => prepare_image(&app, &media, &media_ext).await,
         _ => None,
     };
+    let video_ready = ready.is_some() && kind_of(&media_ext) == Some("video");
     let media_data = fs::read(ready.as_deref().unwrap_or(&media)).map_err(|_| "image ou vidéo introuvable, choisis-la à nouveau".to_string())?;
-    let media_ext = if ready.is_some() { "mp4".to_string() } else { media_ext };
+    let media_ext = match &ready {
+        Some(p) => p.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_lowercase(),
+        None => media_ext,
+    };
     let sound = match sound_id.filter(|s| !s.is_empty()) {
         Some(id) => Some(find_sound(&state, &id)?),
         None => None,
     };
     let (sound_data, header) = match &sound {
         Some(s) => {
-            let data = fs::read(&s.path).map_err(|e| e.to_string())?;
-            let ext = s.path.extension().and_then(|e| e.to_str()).unwrap_or("mp3").to_lowercase();
+            // Seul le passage joué part, s'il pèse lourd (déjà coupé : il
+            // commence à 0 et finit au bout du fichier).
+            let (path, ext, start_ms, end_ms) = match prepare_sound(&app, s).await {
+                Some(p) => (p, "m4a".to_string(), 0, None),
+                None => (s.path.clone(), s.path.extension().and_then(|e| e.to_str()).unwrap_or("mp3").to_lowercase(), s.start_ms, s.end_ms),
+            };
+            let data = fs::read(&path).map_err(|e| e.to_string())?;
             let h = Header {
                 sound_ext: ext,
                 sound_len: data.len() as u64,
-                start_ms: s.start_ms,
-                end_ms: s.end_ms,
+                start_ms,
+                end_ms,
                 volume: s.volume,
                 ..Default::default()
             };
@@ -919,9 +1056,9 @@ pub async fn send_clip(
             let stem = media.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
             let side = ["m4a", "mp3", "aac"].iter().map(|e| dir.join(format!("{stem}-son.{e}"))).find(|p| p.exists());
             // Une image reçue avec son son (renvoyée depuis l'historique) le garde.
-            match side.filter(|_| ready.is_none()) {
+            match side.filter(|_| !video_ready) {
                 // Vidéo convertie : déjà coupée, son compris.
-                _ if ready.is_some() => (Vec::new(), Header { volume: video_volume, ..Default::default() }),
+                _ if video_ready => (Vec::new(), Header { volume: video_volume, ..Default::default() }),
                 Some(p) => {
                     let data = fs::read(&p).map_err(|e| e.to_string())?;
                     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("m4a").to_string();
@@ -1800,6 +1937,88 @@ mod tests {
         assert_eq!(fit_size(0.0, 0.0), SHOW_SIZE);
         // Formes extrêmes bornées.
         assert_eq!(fit_size(10_000.0, 10.0), fit_size(2.4, 1.0));
+    }
+
+    /// JPEG `w`×`h` fait par ffmpeg, avec une étiquette EXIF de sens `o`.
+    fn jpeg_with_orientation(ff: &Path, dir: &Path, w: u32, h: u32, o: u16) -> PathBuf {
+        let plain = dir.join(format!("plain-{o}.jpg"));
+        let ok = std::process::Command::new(ff.join("ffmpeg"))
+            .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i", &format!("testsrc=size={w}x{h}"), "-frames:v", "1"])
+            .arg(&plain)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let data = fs::read(&plain).unwrap();
+        // APP1 « Exif » en petit-boutiste : une seule entrée, Orientation.
+        let mut tiff = b"II*\0\x08\0\0\0".to_vec();
+        tiff.extend_from_slice(&1u16.to_le_bytes());
+        tiff.extend_from_slice(&0x0112u16.to_le_bytes());
+        tiff.extend_from_slice(&3u16.to_le_bytes());
+        tiff.extend_from_slice(&1u32.to_le_bytes());
+        tiff.extend_from_slice(&o.to_le_bytes());
+        tiff.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        let mut seg = b"Exif\0\0".to_vec();
+        seg.extend_from_slice(&tiff);
+        let mut out = data[..2].to_vec();
+        out.extend_from_slice(&[0xFF, 0xE1]);
+        out.extend_from_slice(&((seg.len() + 2) as u16).to_be_bytes());
+        out.extend_from_slice(&seg);
+        out.extend_from_slice(&data[2..]);
+        let p = dir.join(format!("exif-{o}.jpg"));
+        fs::write(&p, out).unwrap();
+        p
+    }
+
+    #[test]
+    fn reads_photo_orientation_and_transparency() {
+        assert_eq!(jpeg_orientation(b"pas une image"), 1);
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR\0\0\0\x10\0\0\0\x10\x08\x02".to_vec();
+        png.extend_from_slice(&[0; 8]);
+        assert!(!png_has_alpha(&png));
+        png[25] = 6;
+        assert!(png_has_alpha(&png));
+    }
+
+    /// Avec un ffmpeg sur la machine (Linux de test) : une photo de téléphone
+    /// tournée par son étiquette EXIF arrive à l'endroit, plus petite ; un son
+    /// joint est coupé à son passage.
+    #[test]
+    fn photos_and_sounds_are_shrunk_before_sending() {
+        let Some(bin) = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"].into_iter().map(Path::new).find(|p| p.exists()) else { return };
+        let ff = bin.parent().unwrap();
+        let dir = std::env::temp_dir().join(format!("sb-shrink-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let probe = |p: &Path, what: &str| {
+            let out = std::process::Command::new(ff.join("ffprobe"))
+                .args(["-v", "error", "-show_entries", what, "-of", "default=nw=1"])
+                .arg(p)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).to_string()
+        };
+        // Photo en largeur 3000×2000 marquée « tourner de 90° » (6) : portrait.
+        let src = jpeg_with_orientation(ff, &dir, 3000, 2000, 6);
+        assert_eq!(jpeg_orientation(&fs::read(&src).unwrap()), 6);
+        let out = dir.join("petite.jpg");
+        youtube::run_ffmpeg(ff, youtube::shrink_image_args(&src, "transpose=1", &out), &out).unwrap();
+        let info = probe(&out, "stream=width,height");
+        assert!(info.contains("width=854") && info.contains("height=1280"), "{info}");
+        // Le passage d'un son de 60 s, de 10 à 14 s.
+        let song = dir.join("morceau.wav");
+        let ok = std::process::Command::new(bin)
+            .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=60"])
+            .arg(&song)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let cut = dir.join("passage.m4a");
+        youtube::run_ffmpeg(ff, youtube::cut_sound_args(&song, 10.0, 4.0, &cut), &cut).unwrap();
+        let info = probe(&cut, "stream=codec_name:format=duration");
+        assert!(info.contains("codec_name=aac"), "{info}");
+        let d: f64 = info.lines().find_map(|l| l.strip_prefix("duration=")).unwrap().parse().unwrap();
+        assert!((d - 4.0).abs() < 0.2, "{d}");
+        assert!(fs::metadata(&cut).unwrap().len() * 10 < fs::metadata(&song).unwrap().len());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
