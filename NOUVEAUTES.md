@@ -1,6 +1,16 @@
 Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
 Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
+Nouveautés de la 3.3.0 :
+- Lancer avec Windows : aussi dans le menu de l'icône près de l'horloge (clic droit). Au démarrage de Windows, l'appli se lance sans charger sa fenêtre : une bonne centaine de Mo de mémoire en moins tant que tu ne l'ouvres pas. Désactivée dans le Gestionnaire des tâches, elle respecte ce choix.
+- Moins de mémoire et de processeur en arrière-plan : la fenêtre cachée ne se dessine plus, et se ferme pour de bon au bout de 30 min (elle se rouvre en un clic, sur le même onglet). Les sons avec effets gardés en mémoire sont libérés après 10 min sans son. La page du téléphone n'interroge plus le PC quand elle n'est pas affichée.
+- Envois aux potes plus légers, le relais ne se remplit plus aussi vite : les GIF de GIPHY partent par leur adresse, les vidéos sont 2 à 3 fois plus légères, les photos sont réduites, et seul le passage joué d'un son joint part.
+- Packs de potes suivis : ils ne sont plus retéléchargés en entier à chaque démarrage et toutes les 2 h. L'appli demande d'abord s'ils ont changé.
+- Salon : moins de messages envoyés au relais quand tu y es seul ou sans internet. Les sons et extraits envoyés partent un peu plus vite.
+- Enregistrer les réglages ou supprimer un son qui joue ne fige plus la fenêtre ni les raccourcis.
+- Plus solide : un plantage dans une partie de l'appli (fichier son abîmé, pilote audio capricieux) ne bloque plus le reste jusqu'au redémarrage.
+- Corrigé : un appui sur un raccourci pouvait lancer le son puis l'arrêter aussitôt ; le bouton 🎲 ignorait « Joue chez … » ; un son dont on avait remplacé le fichier arrivait abîmé chez le pote à qui on le partageait ; un son remplacé ou en cours d'ajout pouvait revenir en double comme « son retrouvé ».
+
 Nouveautés de la 3.2.0 :
 - Partager un son à un pote du salon : il l'ajoute à sa soundboard en un clic (« ⋯ » → partager). Un son s'exporte aussi seul en .zip.
 - Liens Spotify : colle le lien d'un morceau, l'appli retrouve le titre et l'artiste et va le chercher sur YouTube.
