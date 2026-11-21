@@ -1504,7 +1504,8 @@ const MAX_ZOOM = 32;
 
 function fmtTime(ms) {
   const s = ms / 1000;
-  return s < 60 ? s.toFixed(2) + " s" : `${Math.floor(s / 60)} min ${(s % 60).toFixed(1).padStart(4, "0")} s`;
+  const t = s < 60 ? s.toFixed(2) + " s" : `${Math.floor(s / 60)} min ${(s % 60).toFixed(1).padStart(4, "0")} s`;
+  return t.replace(".", ",");
 }
 
 async function openTrim(sound) {
@@ -1732,6 +1733,13 @@ canvas.addEventListener("pointerdown", (e) => {
       trim.grab = ms - trim.cuts[i].from;
     }
   }
+  // Clic dans la partie gardée, loin des poignées : on écoute à partir de là.
+  const near = (v) => Math.abs(px(v) - at) <= 14;
+  if (!pick && ms > trim.start && ms < trim.end && !near(trim.start) && !near(trim.end)) {
+    canvas.focus({ preventScroll: true });
+    startPreview(ms);
+    return;
+  }
   trim.drag = pick ?? (Math.abs(ms - trim.start) <= Math.abs(ms - trim.end) ? "start" : "end");
   trim.focus = trim.drag.endsWith("m") ? trim.drag.slice(0, -1) + "f" : trim.drag;
   canvas.focus({ preventScroll: true });
@@ -1748,7 +1756,20 @@ canvas.addEventListener("dblclick", (e) => {
   drawTrim();
   commitEdit();
 });
-canvas.addEventListener("pointermove", (e) => trim.drag && moveHandle(msAt(e)));
+canvas.addEventListener("pointermove", (e) => {
+  if (trim.drag) return moveHandle(msAt(e));
+  if (!trim.duration) return;
+  // Le curseur dit ce que fera le clic : régler une poignée, déplacer un
+  // passage enlevé, ou écouter d'ici.
+  const ms = msAt(e);
+  const [v0, v1] = trim.view;
+  const px = (v) => ((v - v0) / (v1 - v0)) * canvas.clientWidth;
+  const at = px(ms);
+  const edges = [trim.start, trim.end, ...trim.cuts.flatMap((c) => [c.from, c.to])];
+  canvas.style.cursor = edges.some((v) => Math.abs(px(v) - at) <= 14) || ms <= trim.start || ms >= trim.end
+    ? "ew-resize"
+    : trim.cuts.some((c) => ms > c.from && ms < c.to) ? "grab" : "pointer";
+});
 canvas.addEventListener("pointerup", () => {
   if (!trim.drag) return;
   trim.drag = null;
@@ -1902,13 +1923,16 @@ previewBtn.addEventListener("click", () => {
   startPreview();
 });
 
-function startPreview() {
+/** Pré-écoute du passage gardé, depuis `from` (ms dans le fichier) si donné. */
+function startPreview(from) {
   playhead.fx = currentFx();
   playhead.elapsed = 0;
   playhead.at = performance.now();
+  // À l'envers, le son part toujours de la fin du passage.
+  playhead.from = typeof from === "number" && !playhead.fx.reverse ? Math.round(from) : trim.start;
   call("preview_sound", {
     id: editing.id,
-    startMs: trim.start,
+    startMs: playhead.from,
     endMs: trim.end >= trim.duration ? null : trim.end,
     cuts: trimValues().cuts,
     volume: Number(formSound.volume.value),
@@ -1942,8 +1966,8 @@ function playheadMs() {
     ms = trim.end - moved;
     for (const c of [...trim.cuts].reverse()) if (ms < c.to) ms -= c.to - c.from;
   } else {
-    ms = trim.start + moved;
-    for (const c of trim.cuts) if (ms >= c.from) ms += c.to - c.from;
+    ms = (playhead.from ?? trim.start) + moved;
+    for (const c of trim.cuts) if (c.to > (playhead.from ?? trim.start) && ms >= c.from) ms += c.to - Math.max(c.from, playhead.from ?? trim.start);
   }
   return Math.min(Math.max(ms, trim.start), trim.end);
 }
@@ -2093,7 +2117,7 @@ const fxBox = $(".fx", dlgSound);
 const fxInputs = [...fxBox.querySelectorAll("[data-fx]")];
 
 function fmtFx(key, v) {
-  if (key === "speed") return `× ${Number(v).toFixed(2).replace(/0$/, "")}`;
+  if (key === "speed") return `× ${Number(v).toFixed(2).replace(/0$/, "").replace(".", ",")}`;
   if (key === "pitch") return v == 0 ? "normale" : `${v > 0 ? "+" : ""}${v} demi-ton${Math.abs(v) > 1 ? "s" : ""}`;
   if (key === "echo") return v == 0 ? "aucun" : Math.round(v * 100) + " %";
   return v == 0 ? "aucun" : (v / 1000).toFixed(1).replace(".", ",") + " s";
