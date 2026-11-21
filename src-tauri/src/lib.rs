@@ -596,12 +596,8 @@ fn register_hotkeys(app: &AppHandle) {
     state.set_warnings(WARN_HOTKEY, errors);
 }
 
-/// Appelé par les deux voies (raccourci Windows et crochet clavier en jeu) :
-/// une même pression n'est jouée qu'une fois.
+/// Appelé par les deux voies (raccourci Windows et crochet clavier en jeu).
 fn on_hotkey(app: &AppHandle, id: u32) {
-    if !keyhook::first_press(id) {
-        return;
-    }
     let state = app.state::<AppState>();
     let action = state.hotkeys.lock().unwrap().get(&id).cloned();
     match action {
@@ -2653,7 +2649,8 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
-                    if event.state() == ShortcutState::Pressed {
+                    // Déjà vu par le crochet clavier : c'est la même pression.
+                    if event.state() == ShortcutState::Pressed && !keyhook::seen_by_hook(shortcut.id()) {
                         on_hotkey(app, shortcut.id());
                     }
                 })

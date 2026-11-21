@@ -8,8 +8,9 @@
 //! touche est enfoncée, sans toucher au jeu, sans bloquer la touche et sans
 //! simuler de frappe.
 //!
-//! Les deux voies peuvent voir la même pression : `first_press` ne laisse passer
-//! que la première.
+//! Les deux voies peuvent voir la même pression. Le crochet la voit toujours
+//! en premier (Windows l'appelle avant de reconnaître le raccourci) : il note
+//! l'heure, et `seen_by_hook` fait ignorer le doublon de l'autre voie.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -17,9 +18,11 @@ use std::time::{Duration, Instant};
 
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
 
-/// Une pression vue par les deux voies arrive en quelques millisecondes ;
-/// 250 ms laisse quand même relancer un son en tapant vite.
-const SAME_PRESS: Duration = Duration::from_millis(250);
+/// Le doublon d'une pression arrive en quelques millisecondes, ou plus tard
+/// si la fenêtre est occupée : sans marge, le son démarrait puis s'arrêtait
+/// aussitôt (deuxième appui = arrêt). Les appuis rapides passent quand même :
+/// chacun est vu par le crochet.
+const SAME_PRESS: Duration = Duration::from_millis(1500);
 
 pub const MOD_CTRL: u8 = 1;
 pub const MOD_SHIFT: u8 = 2;
@@ -134,16 +137,28 @@ fn vk_of(code: Code) -> Option<u32> {
     })
 }
 
-/// Vrai pour la première pression d'un raccourci, faux si l'autre voie
-/// vient déjà de la signaler.
-pub fn first_press(id: u32) -> bool {
-    static LAST: OnceLock<Mutex<HashMap<u32, Instant>>> = OnceLock::new();
-    let mut last = LAST.get_or_init(Default::default).lock().unwrap();
-    let now = Instant::now();
-    match last.insert(id, now) {
-        Some(before) => now.duration_since(before) >= SAME_PRESS,
-        None => true,
+/// Dernière pression de chaque raccourci vue par le crochet.
+fn hook_seen() -> &'static Mutex<HashMap<u32, Instant>> {
+    static SEEN: OnceLock<Mutex<HashMap<u32, Instant>>> = OnceLock::new();
+    SEEN.get_or_init(Default::default)
+}
+
+/// Noté par le crochet, au moment même de la pression.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn note_hook_press(id: u32) {
+    if let Ok(mut seen) = hook_seen().lock() {
+        seen.insert(id, Instant::now());
     }
+}
+
+/// Vrai si le crochet vient de voir ce raccourci : l'appel du raccourci
+/// Windows est alors le doublon de la même pression.
+pub fn seen_by_hook(id: u32) -> bool {
+    hook_seen()
+        .lock()
+        .ok()
+        .and_then(|seen| seen.get(&id).map(|t| t.elapsed() < SAME_PRESS))
+        .unwrap_or(false)
 }
 
 static BINDINGS: Mutex<Vec<Binding>> = Mutex::new(Vec::new());
@@ -175,7 +190,7 @@ mod win {
     use std::sync::mpsc::{channel, Sender};
     use std::sync::{Mutex, OnceLock};
 
-    use super::{matching, MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN};
+    use super::{matching, note_hook_press, MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN};
 
     #[repr(C)]
     struct KbdLlHook {
@@ -251,6 +266,7 @@ mod win {
                 WM_KEYDOWN | WM_SYSKEYDOWN => {
                     if held.insert(vk) {
                         if let Some(id) = matching(vk, mods_now()) {
+                            note_hook_press(id);
                             if let Some(tx) = SENDER.get() {
                                 let _ = tx.lock().unwrap().send(id);
                             }
@@ -313,9 +329,11 @@ mod tests {
 
     #[test]
     fn same_press_from_both_paths_counts_once() {
-        assert!(first_press(987_654));
-        assert!(!first_press(987_654));
-        assert!(first_press(987_655));
+        assert!(!seen_by_hook(987_654));
+        note_hook_press(987_654);
+        // Le raccourci Windows de la même pression est ignoré, même en retard.
+        assert!(seen_by_hook(987_654));
+        assert!(!seen_by_hook(987_655));
     }
 
     #[test]
