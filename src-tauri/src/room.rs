@@ -131,8 +131,11 @@ pub const CAP_LINK: u32 = 1;
 pub const CAP_CUT: u32 = 2;
 /// L'appli sait recevoir un son partagé (et proposer de l'ajouter).
 pub const CAP_GIFT: u32 = 4;
+/// L'appli sait recevoir un GIF par sa seule adresse GIPHY (et le
+/// télécharger), sans pièce jointe sur le relais.
+pub const CAP_GIF_LINK: u32 = 8;
 /// Ce que cette version sait faire.
-const MY_CAPS: u32 = CAP_LINK | CAP_CUT | CAP_GIFT;
+const MY_CAPS: u32 = CAP_LINK | CAP_CUT | CAP_GIFT | CAP_GIF_LINK;
 /// Un fichier déjà envoyé au relais y reste 3 h : pendant 2 h 30, on renvoie
 /// son adresse au lieu de le renvoyer (ça ne compte pas dans la limite
 /// d'envois du relais, et ça part tout de suite).
@@ -273,6 +276,12 @@ impl Room {
     /// d'une vidéo longue reçue par lien ?
     pub fn cut_links_ok(&self, to: &str) -> bool {
         self.all_can(to, CAP_LINK | CAP_CUT)
+    }
+
+    /// Tous ceux qui vont recevoir savent-ils récupérer un GIF par son
+    /// adresse GIPHY ?
+    pub fn gif_links_ok(&self, to: &str) -> bool {
+        self.all_can(to, CAP_GIF_LINK)
     }
 
     fn all_can(&self, to: &str, caps: u32) -> bool {
@@ -711,6 +720,10 @@ mod tests {
         let members = room.status().members;
         assert!(members.iter().find(|m| m.id == "new").unwrap().gift);
         assert!(!members.iter().find(|m| m.id == "old").unwrap().gift);
+        // Un GIF ne part par son adresse que si tous ceux qui reçoivent savent la lire.
+        assert!(room.gif_links_ok("new"));
+        assert!(!room.gif_links_ok("old"));
+        assert!(!room.gif_links_ok(""));
     }
 
     #[test]

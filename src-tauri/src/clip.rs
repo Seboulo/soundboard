@@ -268,6 +268,9 @@ pub struct Clips {
     audio_discord: AtomicBool,
     /// Fichier préparé → lien d'où il vient.
     links: Mutex<HashMap<String, String>>,
+    /// GIF préparé → son adresse GIPHY : il part par son adresse, sans
+    /// remplir la place limitée du relais.
+    gifs: Mutex<HashMap<String, String>>,
     /// Fichier préparé qui n'est qu'un passage → où il commence (ms).
     cuts: Mutex<HashMap<String, u64>>,
     /// Dernier « Tout arrêter » de chaque pote : un extrait encore en train
@@ -525,7 +528,14 @@ pub fn from_upload(app: &AppHandle, ext: &str, data: &[u8]) -> Result<ClipPick, 
 #[tauri::command]
 pub async fn clip_from_gif(app: AppHandle, url: String) -> Result<ClipPick, String> {
     let (data, ext) = giphy::download(&url).await?;
-    keep_for_sending(&app, &data, ext, String::new(), None)
+    let pick = keep_for_sending(&app, &data, ext, String::new(), None)?;
+    let state = app.state::<AppState>();
+    let mut gifs = state.clips.gifs.lock().unwrap();
+    if gifs.len() >= 200 {
+        gifs.clear();
+    }
+    gifs.insert(pick.path.clone(), url);
+    Ok(pick)
 }
 
 /// Vidéos YouTube trouvées par mots-clés, pour l'onglet « Lien vidéo ».
@@ -821,9 +831,61 @@ pub async fn send_clip(
         });
         return Ok(());
     }
+    // GIF de GIPHY sans son : seule son adresse part, chaque pote le
+    // télécharge chez GIPHY. Envoyé en fichier, il prenait jusqu'à 5 Mo de
+    // la place du relais (environ 100 Mo toutes les 3 h), vite remplie.
+    let pad_sound = sound_id.as_deref().is_some_and(|s| !s.is_empty());
+    let gif = (kind_of(&media_ext) == Some("image") && !pad_sound)
+        .then(|| state.clips.gifs.lock().unwrap().get(&path_key).cloned())
+        .flatten()
+        .filter(|u| giphy::allowed(u))
+        .filter(|_| state.extras.room.gif_links_ok(receivers));
+    if let Some(gif) = gif {
+        let room = &state.extras.room;
+        let with_me = to.as_deref() == Some(ME_TOO);
+        let to = to.filter(|t| !t.is_empty() && t != ME_TOO).unwrap_or_default();
+        if !to.is_empty() && !room.status().members.iter().any(|m| m.id == to) {
+            return Err("ce pote n'est plus en ligne".into());
+        }
+        let title: String = title.trim().chars().take(60).collect();
+        let msg = Msg::Clip {
+            from: room.my_id(),
+            name: room.my_name(),
+            to,
+            title: title.clone(),
+            link: gif,
+            start_ms: 0,
+            end_ms: None,
+            volume: None,
+            cut: false,
+            style,
+        };
+        if with_me {
+            room.expect_echo();
+        }
+        room.publish(&msg).await?;
+        journal::write("Extrait : GIF envoyé par son adresse (le pote le prend chez GIPHY)");
+        *state.extras.last_sent.lock().unwrap() = Some(Instant::now());
+        add_recent(&state, Recent {
+            path: path_key,
+            kind: "image".into(),
+            title,
+            start_s: None,
+            end_s: None,
+            volume: None,
+            sound_id: None,
+            from: None,
+            sound: None,
+            at: now_s(),
+            link: None,
+            cut_ms: None,
+            style: recent_style,
+            origin: None,
+        });
+        return Ok(());
+    }
     // Vidéo convertie avant l'envoi (H.264 + AAC, passage coupé) : elle se
     // lit sans à-coup chez le pote et commence à 0. Sinon, telle quelle.
-    let pad_sound = sound_id.as_deref().is_some_and(|s| !s.is_empty());
     let ready = match kind_of(&media_ext) {
         Some("video") => prepare_video(&app, &dir, &media, start_s, end_s, !pad_sound).await,
         _ => None,
@@ -1016,9 +1078,23 @@ pub async fn receive(
     trim_dir(&dir, 40);
     let id = uuid::Uuid::new_v4().simple().to_string();
     let got = Instant::now();
-    let link_url = link.as_ref().map(|l| l.url.clone());
+    // Un GIF reçu par son adresse GIPHY n'est pas un lien de vidéo.
+    let link_url = link.as_ref().map(|l| l.url.clone()).filter(|u| !giphy::allowed(u));
     let mut cut_ms = None;
     let (kind, media_path, sound_path, start_ms, end_ms, volume) = match (link, url) {
+        (Some(l), _) if giphy::allowed(&l.url) => {
+            let (data, ext) = match giphy::download(&l.url).await {
+                Ok(x) => x,
+                Err(e) => {
+                    journal::write(&format!("Extrait de {name} : GIF pas récupéré chez GIPHY ({e})"));
+                    return Err(e);
+                }
+            };
+            let media = dir.join(format!("{id}.{ext}"));
+            fs::write(&media, data).map_err(|e| e.to_string())?;
+            journal::write(&format!("Extrait de {name} : GIF récupéré chez GIPHY en {} s", got.elapsed().as_secs()));
+            ("image", media, None, 0, None, 1.0)
+        }
         (Some(l), _) => {
             // Vidéo déjà là (son propre extrait « moi compris », ou déjà
             // reçue) : copiée tout de suite au lieu d'être retéléchargée.
