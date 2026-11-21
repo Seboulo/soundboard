@@ -2056,5 +2056,6 @@ dialog.ask .actions { display: flex; flex-wrap: wrap; justify-content: flex-end;
 
 /* Éditeur de son : l'onde sur toute la largeur, « Écouter » toujours en bas. */
 .sheet-body > .trim-wide { grid-column: 1 / -1; }
-.grp .trim canvas { height: 140px; cursor: pointer; }
+.grp .trim canvas { height: 132px; cursor: pointer; background: var(--fill); border: 0; border-radius: 10px; }
+.grp .trim canvas:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; }
 .sheet-foot [data-action="preview"] { min-width: 112px; }

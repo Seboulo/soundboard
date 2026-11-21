@@ -1531,86 +1531,137 @@ async function openTrim(sound) {
 
 function drawTrim() {
   const ctx = canvas.getContext("2d");
+  // Dessin net à la taille réelle de l'onde (et de l'écran).
+  const dpr = window.devicePixelRatio || 1;
+  const cw = Math.round(canvas.clientWidth * dpr), chh = Math.round(canvas.clientHeight * dpr);
+  if (cw > 0 && chh > 0 && (canvas.width !== cw || canvas.height !== chh)) {
+    canvas.width = cw;
+    canvas.height = chh;
+  }
   const { width: w, height: h } = canvas;
+  const u = dpr; // 1 px d'écran
   const css = getComputedStyle(document.documentElement);
+  const v = (name) => css.getPropertyValue(name).trim();
   ctx.clearRect(0, 0, w, h);
   const [v0, v1] = trim.view;
   const x = (ms) => ((ms - v0) / (v1 - v0)) * w;
   const xs = x(trim.start);
   const xe = x(trim.end);
+  const color = editing?.color || v("--accent");
+  const pad = 8 * u; // marge en haut et en bas pour le cadre
+  const mid = h / 2;
 
-  // Forme d'onde : une barre par pic visible, plus sombre hors de la zone gardée.
+  // Forme d'onde : des barres arrondies espacées, à la couleur du son dans
+  // la partie gardée, grises ailleurs et dans les passages enlevés.
   const n = trim.peaks.length;
-  const i0 = Math.max(0, Math.floor((v0 / trim.duration) * n));
-  const i1 = Math.min(n, Math.ceil((v1 / trim.duration) * n));
-  const bw = Math.max(1, w / Math.max(1, i1 - i0) - 1);
-  for (let i = i0; i < i1; i++) {
-    const px = x((i / n) * trim.duration);
-    const bh = Math.max(2, trim.peaks[i] * (h - 10));
-    const ms = (i / n) * trim.duration;
-    const inside = px >= xs && px <= xe && !trim.cuts.some((c) => ms >= c.from && ms < c.to);
-    ctx.fillStyle = inside ? editing?.color ?? "#4f46e5" : css.getPropertyValue("--wave-off");
-    ctx.fillRect(px, (h - bh) / 2, bw, bh);
+  if (n) {
+    const step = 4 * u;
+    const bw = 2.5 * u;
+    for (let px = 0; px < w; px += step) {
+      const ms0 = v0 + (px / w) * (v1 - v0);
+      const ms1 = v0 + ((px + step) / w) * (v1 - v0);
+      const i0 = Math.max(0, Math.floor((ms0 / trim.duration) * n));
+      const i1 = Math.min(n, Math.max(i0 + 1, Math.ceil((ms1 / trim.duration) * n)));
+      let peak = 0;
+      for (let k = i0; k < i1; k++) peak = Math.max(peak, trim.peaks[k] || 0);
+      const bh = Math.max(2 * u, peak * (h - pad * 2 - 6 * u));
+      const ms = (ms0 + ms1) / 2;
+      const kept = ms >= trim.start && ms <= trim.end && !trim.cuts.some((c) => ms >= c.from && ms < c.to);
+      ctx.fillStyle = kept ? color : v("--wave-off");
+      ctx.beginPath();
+      ctx.roundRect(px, mid - bh / 2, bw, bh, bw / 2);
+      ctx.fill();
+    }
+  } else {
+    ctx.fillStyle = v("--muted");
+    ctx.font = `${13 * u}px -apple-system, "Segoe UI", sans-serif`;
+    ctx.textAlign = "center";
+    ctx.fillText("Chargement de la forme d'onde…", w / 2, mid + 4 * u);
+    ctx.textAlign = "start";
   }
-  if (!n) {
-    ctx.fillStyle = css.getPropertyValue("--muted");
-    ctx.font = "26px Segoe UI, sans-serif";
-    ctx.fillText("Chargement de la forme d'onde…", 20, h / 2 + 8);
-  }
-  ctx.fillStyle = css.getPropertyValue("--wave-mask");
-  ctx.fillRect(0, 0, xs, h);
-  ctx.fillRect(xe, 0, w - xe, h);
-  // La poignée réglée aux flèches est en couleur quand l'onde a le focus.
+
   const keyboard = document.activeElement === canvas;
-  // Passages enlevés : grisés, barrés et bordés de rouge.
-  const danger = css.getPropertyValue("--danger");
+  const focusRing = (which) => keyboard && trim.focus === which;
+
+  // Passages enlevés : voile rouge léger, coins arrondis, petites poignées.
+  const danger = v("--danger");
   trim.cuts.forEach((c, i) => {
     const a = x(c.from), b = x(c.to);
     if (b < 0 || a > w) return;
-    ctx.fillStyle = css.getPropertyValue("--wave-mask");
-    ctx.fillRect(a, 0, b - a, h);
     ctx.save();
+    ctx.globalAlpha = 0.12;
+    ctx.fillStyle = danger;
     ctx.beginPath();
-    ctx.rect(a, 0, b - a, h);
-    ctx.clip();
-    ctx.strokeStyle = danger;
-    ctx.globalAlpha = 0.35;
-    ctx.lineWidth = 2;
-    for (let k = a - h; k < b; k += 14) {
-      ctx.beginPath();
-      ctx.moveTo(k, h);
-      ctx.lineTo(k + h, 0);
-      ctx.stroke();
-    }
+    ctx.roundRect(a, pad, b - a, h - pad * 2, 6 * u);
+    ctx.fill();
     ctx.restore();
     for (const [hx, which] of [[a, `c${i}f`], [b, `c${i}t`]]) {
-      ctx.fillStyle = keyboard && trim.focus === which ? css.getPropertyValue("--accent") : danger;
-      ctx.fillRect(hx - 2, 0, 4, h);
-      ctx.fillRect(hx - 7, h / 2 - 9, 14, 18);
-    }
-    if (b - a > 26) {
       ctx.fillStyle = danger;
-      ctx.font = "bold 26px Segoe UI, sans-serif";
+      ctx.beginPath();
+      ctx.roundRect(hx - 1.5 * u, pad, 3 * u, h - pad * 2, 1.5 * u);
+      ctx.fill();
+      // Pastille ronde au milieu, plus grosse quand elle a le focus clavier.
+      const r = (focusRing(which) ? 7 : 5.5) * u;
+      ctx.beginPath();
+      ctx.arc(hx, mid, r, 0, Math.PI * 2);
+      ctx.fillStyle = danger;
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(hx, mid, r - 2.5 * u, 0, Math.PI * 2);
+      ctx.fillStyle = "#fff";
+      ctx.fill();
+    }
+    if (b - a > 30 * u) {
+      ctx.fillStyle = danger;
+      ctx.font = `600 ${11 * u}px -apple-system, "Segoe UI", sans-serif`;
       ctx.textAlign = "center";
-      ctx.fillText("✂", (a + b) / 2, 30);
+      ctx.fillText("enlevé", (a + b) / 2, pad + 14 * u);
       ctx.textAlign = "start";
     }
   });
-  for (const [hx, which] of [[xs, "start"], [xe, "end"]]) {
-    ctx.fillStyle = css.getPropertyValue(keyboard && trim.focus === which ? "--accent" : "--text");
-    ctx.fillRect(hx - 2, 0, 4, h);
-    ctx.fillRect(hx - 9, 0, 18, 14);
-    ctx.fillRect(hx - 9, h - 14, 18, 14);
+
+  // Cadre de la partie gardée, façon découpe de vidéo : un contour à la
+  // couleur d'accent et deux poignées épaisses avec un trait blanc.
+  const accent = v("--accent");
+  const grip = 12 * u;
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 2.5 * u;
+  ctx.beginPath();
+  ctx.roundRect(xs + grip / 2, pad / 2 + u, Math.max(0, xe - xs - grip), h - pad - 2 * u, 2 * u);
+  ctx.stroke();
+  for (const [hx, which, side] of [[xs, "start", 1], [xe, "end", -1]]) {
+    const gx = side > 0 ? hx : hx - grip;
+    ctx.fillStyle = accent;
+    ctx.globalAlpha = focusRing(which) || trim.focus === which && trim.drag ? 1 : 0.92;
+    ctx.beginPath();
+    ctx.roundRect(gx, pad / 2, grip, h - pad, side > 0 ? [6 * u, 0, 0, 6 * u] : [0, 6 * u, 6 * u, 0]);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.roundRect(gx + grip / 2 - 1.25 * u, mid - 9 * u, 2.5 * u, 18 * u, 1.25 * u);
+    ctx.fill();
+    if (focusRing(which)) {
+      ctx.strokeStyle = accent;
+      ctx.globalAlpha = 0.35;
+      ctx.lineWidth = 4 * u;
+      ctx.beginPath();
+      ctx.roundRect(gx - 3 * u, pad / 2 - 3 * u, grip + 6 * u, h - pad + 6 * u, 8 * u);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
   }
+
+  // Curseur de lecture : un trait fin et une pastille.
   const now = typeof playheadMs === "function" ? playheadMs() : null;
   if (now !== null) {
     const px = x(now);
-    ctx.fillStyle = css.getPropertyValue("--accent");
-    ctx.fillRect(px - 2, 0, 4, h);
+    ctx.fillStyle = v("--text");
     ctx.beginPath();
-    ctx.moveTo(px - 10, 0);
-    ctx.lineTo(px + 10, 0);
-    ctx.lineTo(px, 14);
+    ctx.roundRect(px - u, pad, 2 * u, h - pad * 2, u);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(px, pad, 4 * u, 0, Math.PI * 2);
     ctx.fill();
   }
   const zoom = trim.duration / (v1 - v0);
@@ -1871,6 +1922,8 @@ function handleOrder() {
   return ["start", ...trim.cuts.flatMap((_, i) => [`c${i}f`, `c${i}t`]), "end"];
 }
 canvas.addEventListener("focus", () => drawTrim());
+// La fiche change de largeur : l'onde est redessinée à sa nouvelle taille.
+if (window.ResizeObserver) new ResizeObserver(() => trim.duration && drawTrim()).observe(canvas);
 canvas.addEventListener("blur", () => drawTrim());
 
 // Coupe le silence au début et à la fin du passage gardé (marge de 30 ms
