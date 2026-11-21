@@ -33,11 +33,11 @@ function toast(message, isError = false, action = null) {
   el.classList.toggle("error", isError);
   el.hidden = false;
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => (el.hidden = true), action ? 8000 : isError ? 6000 : 2500);
+  toast.timer = setTimeout(() => (el.hidden = true), action ? (action.timeout ?? 8000) : isError ? 6000 : 2500);
 }
 
 // Un son ajouté pendant qu'un onglet est ouvert y est rangé directement.
-const ADD_CMDS = new Set(["pick_sounds", "add_sounds", "add_online", "add_from_url", "add_from_youtube"]);
+const ADD_CMDS = new Set(["pick_sounds", "add_sounds", "add_online", "add_from_url", "add_from_youtube", "accept_gift"]);
 
 async function call(cmd, args) {
   try {
@@ -205,6 +205,11 @@ function enterSaves(dialog) {
 
 
 function render(snapshot) {
+  // Une photo plus ancienne que celle affichée (réponses arrivées dans le
+  // désordre) ne doit pas faire disparaître un son ajouté entre-temps.
+  if (state && snapshot.rev < state.rev) {
+    snapshot = { ...snapshot, config: state.config, missing: state.missing, rev: state.rev };
+  }
   state = snapshot;
   renderStatus();
   renderMic();
@@ -252,7 +257,9 @@ const TOP_TAB = "\u0000top";
 const TOP_COUNT = 20;
 // Onglet spécial des favoris, quel que soit leur onglet.
 const FAV_TAB = "\u0000fav";
-const isSpecialTab = (tab) => tab === RECENT_TAB || tab === TOP_TAB || tab === FAV_TAB;
+// Onglet spécial des sons qui ont un raccourci clavier.
+const KEY_TAB = "\u0000keys";
+const isSpecialTab = (tab) => tab === RECENT_TAB || tab === TOP_TAB || tab === FAV_TAB || tab === KEY_TAB;
 const RECENT_KEY = "soundboard.recent";
 let recent = [];
 try {
@@ -346,8 +353,11 @@ function renderTabs() {
   document.body.classList.toggle("no-sounds", empty);
   const special = empty
     ? []
-    : [tab("Tous", null, "grid", state.config.sounds.length), tab("Récents", RECENT_TAB, "clock"), tab("Les plus joués", TOP_TAB, "chart"), tab("Favoris", FAV_TAB, "star", state.config.sounds.filter((s) => s.favorite).length)];
-  if (special.length) special[2].title = "Tes 20 sons les plus joués";
+    : [tab("Tous", null, "grid", state.config.sounds.length), tab("Récents", RECENT_TAB, "clock"), tab("Les plus joués", TOP_TAB, "chart"), tab("Favoris", FAV_TAB, "star", state.config.sounds.filter((s) => s.favorite).length), tab("Avec raccourci", KEY_TAB, "keyboard", state.config.sounds.filter((s) => s.hotkey).length)];
+  if (special.length) {
+    special[2].title = "Tes 20 sons les plus joués";
+    special[4].title = "Les sons que tu lances avec une touche du clavier";
+  }
   // Barre latérale : la bibliothèque, « Envoyer », puis tes onglets.
   const head = document.createElement("div");
   head.className = "side-head";
@@ -383,6 +393,7 @@ function warningAction(w) {
   if (w.startsWith("Téléphone : ")) return settings("remote");
   if (w.startsWith("Démarrage : ")) return settings("general");
   if (w.startsWith("Réglages : ")) return null;
+  if (w.startsWith("Sons : ")) return { label: "Les retrouver", run: recoverSounds };
   return { label: "Diagnostic", run: openDiagnostics };
 }
 
@@ -452,6 +463,8 @@ function renderGrid() {
     sounds = recent.map((id) => byId.get(id)).filter((s) => s && matches(s));
   } else if (currentTab === FAV_TAB) {
     sounds = sortSounds(state.config.sounds.filter((s) => s.favorite && matches(s)));
+  } else if (currentTab === KEY_TAB) {
+    sounds = sortSounds(state.config.sounds.filter((s) => s.hotkey && matches(s)));
   } else {
     sounds = sortSounds(state.config.sounds.filter((s) => (!currentTab || s.category === currentTab) && matches(s)));
   }
@@ -484,6 +497,7 @@ function renderGrid() {
   $("#tab-empty").hidden = !(currentTab && !isSpecialTab(currentTab) && sounds.length === 0 && !q);
   $("#recent-empty").hidden = !(currentTab === RECENT_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
   $("#fav-empty").hidden = !(currentTab === FAV_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
+  $("#key-empty").hidden = !(currentTab === KEY_TAB && sounds.length === 0 && state.config.sounds.length > 0 && !q);
   $("#search-empty").hidden = !(q && sounds.length === 0 && state.config.sounds.length > 0);
   $('#search-empty [data-action="search-online"] span').textContent = `Chercher « ${$("#search").value.trim()} » en ligne`;
   // Rien dans cet onglet, mais peut-être dans un autre : on le propose.
@@ -499,7 +513,7 @@ function renderGrid() {
 let lastShown = 0;
 function renderViewTitle(shown = lastShown) {
   lastShown = shown;
-  const title = sendOpen ? "Envoyer" : currentTab === RECENT_TAB ? "Récents" : currentTab === TOP_TAB ? "Les plus joués" : currentTab === FAV_TAB ? "Favoris" : currentTab || "Tous";
+  const title = sendOpen ? "Envoyer" : currentTab === RECENT_TAB ? "Récents" : currentTab === TOP_TAB ? "Les plus joués" : currentTab === FAV_TAB ? "Favoris" : currentTab === KEY_TAB ? "Avec raccourci" : currentTab || "Tous";
   $("#view-title").textContent = title;
   const n = sendOpen || !shown ? null : shown;
   $("#view-count").textContent = n == null ? "" : `${n} son${n > 1 ? "s" : ""}`;
@@ -704,6 +718,7 @@ function openPadMenu(sound, anchor) {
     ctxItem("pencil", "Modifier…", () => openSoundDialog(sound)),
     ctxItem(isPlaying ? "stop" : "volume", isPlaying ? "Arrêter" : "Jouer", () => playSound(sound.id)),
     ctxItem("star", sound.favorite ? "Retirer des favoris" : "Mettre en favori", () => call("toggle_favorite", { id: sound.id })),
+    ctxItem("send", "Partager à un pote…", () => openShareMenu(sound, anchor)),
     ctxItem("keyboard", sound.hotkey ? "Changer le raccourci" : "Choisir un raccourci", () => {
       const chip = document.querySelector(`#grid .pad[data-id="${CSS.escape(sound.id)}"] .add-key`);
       if (chip) captureHotkey(sound, chip);
@@ -718,6 +733,44 @@ function openPadMenu(sound, anchor) {
   items.push(document.createElement("hr"), ctxItem("trash", "Supprimer", () => deleteSound(sound), true));
   const r = anchor.getBoundingClientRect();
   showCtxMenu(items, r.left, r.bottom + 4);
+}
+/** « Partager à un pote… » : les potes du salon (en un clic), ou un fichier. */
+function openShareMenu(sound, anchor) {
+  const note = (text) => {
+    const d = document.createElement("div");
+    d.className = "empty-note";
+    d.textContent = text;
+    return d;
+  };
+  const title = document.createElement("div");
+  title.className = "room-menu-title";
+  title.textContent = `Partager « ${sound.name} » avec…`;
+  const items = [title];
+  for (const m of room.members) {
+    if (m.gift) {
+      items.push(ctxItem("people", m.name, () => shareWith(sound, m)));
+    } else {
+      const b = ctxItem("people", `${m.name} (doit mettre à jour l'appli)`, () => {});
+      b.disabled = true;
+      items.push(b);
+    }
+  }
+  if (!state.config.settings.room_code) items.push(note("Pour l'envoyer en un clic, mettez le même code de salon dans Réglages → Potes."));
+  else if (!room.members.length) items.push(note(room.connected ? "Aucun pote en ligne dans le salon pour l'instant." : "Connexion au salon…"));
+  items.push(
+    document.createElement("hr"),
+    ctxItem("download", "Enregistrer en fichier…", async () => {
+      if (await call("export_pack", { category: null, id: sound.id }))
+        toast(`« ${sound.name} » enregistré : ton pote n'a qu'à glisser le fichier sur sa soundboard`);
+    }),
+  );
+  const r = anchor.getBoundingClientRect();
+  showCtxMenu(items, r.left, r.bottom + 4);
+}
+async function shareWith(sound, m) {
+  toast(`Envoi de « ${sound.name} » à ${m.name}…`);
+  if (await call("share_sound", { id: sound.id, to: m.id }))
+    toast(`« ${sound.name} » partagé : ${m.name} n'a plus qu'à cliquer sur « Ajouter »`);
 }
 document.addEventListener("contextmenu", (e) => {
   if (e.target.closest(".pad, dialog, input, textarea, .menu") || !e.target.closest("main, .tabbar")) return;
@@ -1161,6 +1214,13 @@ function padElement(sound, index) {
   const keyHint = sound.hotkey ? `, raccourci ${hotkeyLabel(sound.hotkey)}` : "";
   pad.setAttribute("aria-label", `${sound.name}${missing ? ", fichier manquant" : ""}${keyHint}`);
   pad.title = missing ? "Le fichier de ce son a disparu : clique pour en choisir un autre" : "";
+  // Nom coupé (« … ») : on le montre en entier au survol.
+  if (!missing) {
+    pad.addEventListener("mouseenter", () => {
+      const cut = name.scrollHeight > name.clientHeight + 1 || name.scrollWidth > name.clientWidth + 1;
+      pad.title = cut ? sound.name : "";
+    });
+  }
 
   pad.addEventListener("click", (e) => {
     if (reorder.justDropped) return;
@@ -1826,6 +1886,22 @@ $('[data-action="delete"]', dlgSound).addEventListener("click", () => {
   deleteSound(editing);
 });
 
+/** Sons présents dans le dossier de l'app mais plus dans la liste. */
+async function recoverSounds() {
+  const v = await ask("Remettre ces sons dans ta soundboard ?", "Ils reprennent leur nom et leur onglet quand l'appli s'en souvient, sinon ils arrivent dans l'onglet « Retrouvés ».", [
+    { label: "Plus tard", value: "later" },
+    { label: "Supprimer ces fichiers", value: "drop", kind: "danger" },
+    { label: "Les remettre", value: "keep" },
+  ]);
+  if (v !== "keep" && v !== "drop") return;
+  const res = await call("recover_sounds", { keep: v === "keep" });
+  if (!res) return;
+  const [n, snap] = res;
+  render(snap);
+  if (v === "keep") toast(n > 1 ? `${n} sons remis dans ta soundboard` : n ? "1 son remis dans ta soundboard" : "Aucun son lisible à remettre");
+  else toast("Fichiers supprimés");
+}
+
 async function deleteSound(sound) {
   const res = await call("remove_sound", { id: sound.id });
   if (res) toast(`« ${sound.name} » supprimé`, false, { label: "Annuler", run: () => call("restore_sound", { id: sound.id }) });
@@ -2425,7 +2501,11 @@ $("#grid").addEventListener("keydown", (e) => {
     return openSoundDialog(sound);
   } else if (e.key === "Delete" && sound) {
     e.preventDefault();
-    return deleteSound(sound);
+    // Une touche Suppr pressée par mégarde ne doit pas faire disparaître un son.
+    return ask(`Supprimer « ${sound.name} » ?`, "Tu pourras encore l'annuler juste après.", [
+      { label: "Garder", value: "keep" },
+      { label: "Supprimer", value: "delete", kind: "danger" },
+    ]).then((v) => v === "delete" && deleteSound(sound));
   }
   if (next) {
     e.preventDefault();
@@ -2866,6 +2946,15 @@ $("#btn-stop").addEventListener("click", () => call("stop_all"));
 $("#btn-settings").addEventListener("click", openSettings);
 $("#cable-status").addEventListener("click", () => (state.devices.vb_cable ? openDiagnostics() : openWizard()));
 $("#btn-stats").addEventListener("click", openStats);
+// Fenêtre cachée (barre des tâches, près de l'horloge) : une lettre tapée par
+// mégarde dans la recherche ne doit pas masquer des sons à la réouverture.
+document.addEventListener("visibilitychange", () => {
+  const search = $("#search");
+  if (document.hidden && search.value && document.activeElement !== search) {
+    search.value = "";
+    renderGrid();
+  }
+});
 $("#search").addEventListener("input", () => {
   // Chercher un son ramène aux sons.
   if (sendOpen) { closeSendView(); renderTabs(); }
@@ -2891,11 +2980,17 @@ $("#search").addEventListener("keydown", (e) => {
     }
   }
 });
-// Ctrl+F : la recherche. Ctrl+Tab / Ctrl+Maj+Tab : onglet suivant / précédent.
+// Ctrl+O : ajouter des sons. Ctrl+, : réglages. Ctrl+F : la recherche. Ctrl+Tab / Ctrl+Maj+Tab : onglet suivant / précédent.
 // Échap, quand il n'y a rien d'autre à fermer : arrête les sons comme « Stop ».
 document.addEventListener("keydown", (e) => {
   if (e.defaultPrevented || e.altKey || e.metaKey || document.querySelector("dialog[open]")) return;
-  if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "f") {
+  if (e.ctrlKey && !e.shiftKey && e.key === ",") {
+    e.preventDefault();
+    openSettings();
+  } else if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "o") {
+    e.preventDefault();
+    call("pick_sounds");
+  } else if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "f") {
     e.preventDefault();
     const q = sendOpen ? formClip.q : $("#search");
     q.focus();
@@ -3030,9 +3125,13 @@ sizeInput.addEventListener("input", () => {
 const LINK_RE = /^https?:\/\/\S+$/i;
 
 const YOUTUBE_RE = /^https?:\/\/((www|m|music)\.)?(youtube\.com|youtu\.be)\//i;
+// Le son de Spotify est protégé : on lit le titre et l'artiste du morceau,
+// et on le cherche sur YouTube.
+const SPOTIFY_RE = /^https?:\/\/(open\.spotify\.com|([a-z0-9-]+\.)?spotify\.link|spotify\.app\.link)\//i;
 
 async function addFromLink(url) {
   if (YOUTUBE_RE.test(url)) return addFromYoutube(url);
+  if (SPOTIFY_RE.test(url)) return addFromSpotify(url);
   toast("Téléchargement du son…");
   const res = await call("add_from_url", { url });
   if (res) toast("Son ajouté depuis le lien");
@@ -3052,6 +3151,22 @@ async function addFromYoutube(url) {
     openSoundDialog(sound);
   }
   return true;
+}
+async function addFromSpotify(url) {
+  toast("Lecture du morceau Spotify…");
+  try {
+    const q = await invoke("spotify_query", { url });
+    toast(`Recherche de « ${q} » sur YouTube…`);
+    const [hit] = await invoke("clip_search_videos", { query: q, start: 1 });
+    if (!hit) {
+      toast(`« ${q} » introuvable sur YouTube`, true);
+      return false;
+    }
+    return addFromYoutube(hit.url);
+  } catch (err) {
+    toast(String(err), true);
+    return false;
+  }
 }
 listen("youtube-status", ({ payload }) => toast(payload));
 
@@ -3638,6 +3753,8 @@ $('[data-action="sync"]', dlgSettings).addEventListener("click", async () => {
 // ---------- 2.0 : salon entre potes ----------
 
 let room = { on: false, connected: false, members: [], target: null };
+/** Sons partagés par des potes, en attente de « Ajouter ». */
+let gifts = [];
 const roomPill = $("#room-pill");
 const roomMenu = $("#room-menu");
 
@@ -3647,7 +3764,9 @@ function renderRoom() {
   wrap.hidden = !state.config.settings.room_code;
   const target = room.members.find((m) => m.id === room.target);
   roomPill.className = "pill" + (target ? " away" : "") + (room.connected ? "" : " offline");
-  roomPill.textContent = target ? `👥 Joue chez ${target.name}` : room.connected ? `👥 Salon · ${room.members.length}` : "👥 Salon…";
+  roomPill.textContent =
+    (target ? `👥 Joue chez ${target.name}` : room.connected ? `👥 Salon · ${room.members.length}` : "👥 Salon…") +
+    (gifts.length ? ` · 🎁 ${gifts.length}` : "");
   roomPill.title = target
     ? `Tes sons partent chez ${target.name} (dans Discord par son micro). Clique pour revenir chez toi.`
     : room.connected
@@ -3697,6 +3816,38 @@ function setRoomMenu(open) {
       : "Connexion au salon…";
     items.push(note);
   }
+  if (gifts.length) {
+    const t = document.createElement("div");
+    t.className = "room-menu-title";
+    t.textContent = "Sons partagés avec toi";
+    items.push(document.createElement("hr"), t);
+    for (const g of gifts) {
+      const row = document.createElement("div");
+      row.className = "gift-row";
+      const add = document.createElement("button");
+      add.type = "button";
+      add.setAttribute("role", "menuitem");
+      add.textContent = `🎁 « ${g.title} » de ${g.from}`;
+      add.title = "Ajouter ce son à ta soundboard";
+      add.addEventListener("click", () => {
+        setRoomMenu(false);
+        answerGift(g, true);
+      });
+      const no = document.createElement("button");
+      no.type = "button";
+      no.className = "gift-no";
+      no.textContent = "✕";
+      no.title = "Non merci";
+      no.setAttribute("aria-label", `Refuser « ${g.title} »`);
+      no.addEventListener("click", () => {
+        answerGift(g, false);
+        if (gifts.length) setRoomMenu(true);
+        else setRoomMenu(false);
+      });
+      row.append(add, no);
+      items.push(row);
+    }
+  }
   const clipBtn = document.createElement("button");
   clipBtn.type = "button";
   clipBtn.setAttribute("role", "menuitem");
@@ -3726,6 +3877,28 @@ listen("room", ({ payload }) => {
   if (!roomMenu.hidden) setRoomMenu(true);
   if (dlgSettings.open) renderBlockList();
   if (sendOpen) fillSendTargets();
+});
+// Sons partagés par des potes : « Ajouter » dans la bulle, ou plus tard
+// depuis le menu 👥.
+async function answerGift(g, keep) {
+  gifts = gifts.filter((x) => x.id !== g.id);
+  renderRoom();
+  const res = await call("accept_gift", { id: g.id, keep });
+  if (res?.snapshot) {
+    render(res.snapshot);
+    toast(`« ${g.title} » ajouté à ta soundboard`);
+  }
+}
+listen("room-gift", ({ payload: g }) => {
+  gifts = [...gifts.filter((x) => x.id !== g.id), g];
+  renderRoom();
+  if (!roomMenu.hidden) setRoomMenu(true);
+  if (dndOn) return;
+  toast(`${g.from} te partage « ${g.title} »${g.have ? " (tu l'as déjà)" : ""}`, false, {
+    label: "Ajouter",
+    run: () => answerGift(g, true),
+    timeout: 20000,
+  });
 });
 listen("room-played", ({ payload: [who, title] }) => toast(`${who} a joué « ${title} » chez toi`));
 listen("room-sent", ({ payload }) => {
@@ -4081,8 +4254,10 @@ function linkStart(url) {
   }
 }
 const isLink = (v) => /^https?:\/\/\S+$/i.test(v.trim());
+// Un lien Spotify se cherche (titre + artiste) au lieu d'être récupéré.
+const fetchLabel = () => (isLink(formClip.q.value) && !SPOTIFY_RE.test(formClip.q.value.trim()) ? "Récupérer" : "Chercher");
 formClip.q.addEventListener("input", () => {
-  searchBtn.textContent = isLink(formClip.q.value) ? "Récupérer" : "Chercher";
+  searchBtn.textContent = fetchLabel();
 });
 // Une seule récupération à la fois (yt-dlp).
 let clipFetching = false;
@@ -4095,6 +4270,7 @@ listen("clip-progress", ({ payload }) => {
 // `startS` : début du passage voulu ; `cut` : vidéo longue, seul ce passage
 // est récupéré (le fichier commence alors à 0).
 async function fetchClipLink(url, tile, startS = linkStart(url), cut = false) {
+  if (!tile && SPOTIFY_RE.test(url)) return searchSpotify(url);
   if (clipFetching) return toast("Une vidéo est déjà en cours de récupération, patiente un instant", true);
   clipFetching = true;
   clipFetchTile = tile || null;
@@ -4112,7 +4288,7 @@ async function fetchClipLink(url, tile, startS = linkStart(url), cut = false) {
   } finally {
     clipFetching = false;
     searchBtn.disabled = false;
-    searchBtn.textContent = isLink(formClip.q.value) ? "Récupérer" : "Chercher";
+    searchBtn.textContent = fetchLabel();
     tile?.classList.remove("loading", "on");
     if (tile) delete tile.dataset.progress;
     clipFetchTile = null;
@@ -4305,6 +4481,21 @@ async function searchVideos(q, more = false, moreBtn = null, seq = searchSeq) {
   const scroll = clipVideos.scrollTop;
   renderVideos();
   clipVideos.scrollTop = scroll;
+}
+// Lien Spotify : la recherche se fait avec le titre et l'artiste du morceau.
+async function searchSpotify(url) {
+  searchBtn.disabled = true;
+  searchBtn.textContent = "Lecture du lien…";
+  try {
+    formClip.q.value = await invoke("spotify_query", { url });
+  } catch (err) {
+    toast(String(err), true);
+    return;
+  } finally {
+    searchBtn.disabled = false;
+    searchBtn.textContent = fetchLabel();
+  }
+  runSendSearch();
 }
 async function runSendSearch() {
   const v = formClip.q.value.trim();

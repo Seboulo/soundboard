@@ -77,11 +77,11 @@
     <div class="spacer"></div>
     <label class="search-box"><svg class="ico"><use href="#i-search"/></svg><input id="search" type="search" placeholder="Rechercher…" title="Rechercher un son (Ctrl+F, ou tape n'importe où dans la fenêtre)" autocomplete="off"></label>
     <button id="btn-online" type="button" title="Chercher des sons sur internet"><svg class="ico"><use href="#i-globe"/></svg><span class="lbl">En ligne</span></button>
-    <button id="btn-add" type="button" class="primary" title="Ajouter des fichiers audio"><svg class="ico"><use href="#i-plus"/></svg><span class="lbl">Ajouter</span></button>
+    <button id="btn-add" type="button" class="primary" title="Ajouter des fichiers audio (Ctrl+O)"><svg class="ico"><use href="#i-plus"/></svg><span class="lbl">Ajouter</span></button>
     <span class="tb-sep" aria-hidden="true"></span>
     <button id="btn-stats" type="button" class="icon ghost" title="Statistiques"><svg class="ico"><use href="#i-chart"/></svg></button>
     <button id="btn-theme" type="button" class="icon ghost"><svg class="ico"><use href="#i-auto"/></svg></button>
-    <button id="btn-settings" type="button" class="icon ghost" title="Réglages"><svg class="ico"><use href="#i-sliders"/></svg></button>
+    <button id="btn-settings" type="button" class="icon ghost" title="Réglages (Ctrl+,)"><svg class="ico"><use href="#i-sliders"/></svg></button>
   </header>
 
   <div id="update-banner" class="banner" hidden>
@@ -152,6 +152,10 @@
       <p class="big">Aucun favori pour l'instant</p>
       <p>Clique sur l'étoile d'un son (ou « ⋯ » puis « Mettre en favori ») pour le retrouver ici.</p>
     </div>
+    <div id="key-empty" class="empty" hidden>
+      <p class="big">Aucun son avec raccourci</p>
+      <p>Fais un clic droit sur un son (ou « ⋯ ») puis « Choisir un raccourci » pour le retrouver ici.</p>
+    </div>
     <div id="tab-empty" class="empty" hidden>
       <p class="big">Cet onglet est vide</p>
       <p>Glisse des sons sur son nom dans la barre des onglets, ou ajoute-en avec « Ajouter ».</p>
@@ -194,7 +198,7 @@
           </div>
           <div class="send-search">
             <div class="search-row">
-              <input name="q" type="search" placeholder="Cherche un GIF ou une vidéo (ex. : bruh), ou colle un lien YouTube, TikTok, X…" aria-label="Recherche de GIF et de vidéos, ou lien">
+              <input name="q" type="search" placeholder="Cherche un GIF ou une vidéo (ex. : bruh), ou colle un lien YouTube, TikTok, X, Spotify…" aria-label="Recherche de GIF et de vidéos, ou lien">
               <button type="button" class="primary" data-action="search">Chercher</button>
             </div>
             <div class="segmented" id="clip-source">
@@ -721,10 +725,10 @@
       </label>
       <div id="online-results" class="results"></div>
       <form id="link-form" class="search-row link-row">
-        <input name="link" type="url" placeholder="🔗 Ou colle un lien YouTube, ou un lien direct vers un son (.mp3, .wav…)" autocomplete="off">
+        <input name="link" type="url" placeholder="🔗 Ou colle un lien YouTube, Spotify, ou un lien direct vers un son (.mp3, .wav…)" autocomplete="off">
         <button>Ajouter</button>
       </form>
-      <p class="hint">Astuce : tu peux aussi copier un lien (YouTube ou son) et faire Ctrl+V directement dans la fenêtre principale. Pour YouTube, l'app télécharge l'outil gratuit yt-dlp la première fois.</p>
+      <p class="hint">Astuce : tu peux aussi copier un lien (YouTube, Spotify ou son) et faire Ctrl+V directement dans la fenêtre principale. Pour YouTube, l'app télécharge l'outil gratuit yt-dlp la première fois.</p>
       <div class="actions">
         <span class="hint" id="online-credit">Sons proposés par myinstants.com</span>
         <div class="spacer"></div>
