@@ -557,6 +557,7 @@ pub struct WebVideo {
 ///    en deux fichiers, que l'appli rejoue ensemble ;
 /// 3. vidéo plus longue : la plus petite image en H.264 (240p au moins) ;
 /// 4. pareil sans exiger le H.264.
+///
 /// Vérifié avec yt-dlp sur des fiches de Short, de vidéo et de longue vidéo.
 const VIDEO_FORMATS: &str = "b[ext=mp4][filesize<8M]/b[ext=mp4][filesize_approx<8M]\
 /bv[ext=mp4][vcodec^=avc1][height<=854][width<=854][filesize<7M]+ba[ext=m4a]\

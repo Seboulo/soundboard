@@ -235,7 +235,21 @@ pub fn new_code() -> String {
 /// Envoi ou réception d'un fichier (son, extrait).
 const FILE_TIMEOUT: Duration = Duration::from_secs(240);
 
+/// Le même client pour tous les messages : sa connexion au relais reste
+/// ouverte. Un client neuf par message refaisait la connexion sécurisée à
+/// chaque fois (un son joué chez un pote partait 0,1 à 0,3 s plus tard).
 fn client(streaming: bool) -> Result<reqwest::Client, String> {
+    static SHARED: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    if !streaming {
+        if let Some(c) = SHARED.get() {
+            return Ok(c.clone());
+        }
+    }
+    let c = build_client(streaming)?;
+    Ok(if streaming { c } else { SHARED.get_or_init(|| c).clone() })
+}
+
+fn build_client(streaming: bool) -> Result<reqwest::Client, String> {
     let b = reqwest::Client::builder()
         .user_agent(concat!("Soundboard/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(15));

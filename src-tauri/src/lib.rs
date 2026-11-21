@@ -1157,8 +1157,18 @@ async fn recover_sounds(app: AppHandle, keep: bool) -> Result<(usize, Snapshot),
     Ok((count, state.snapshot()))
 }
 
+/// Hors du fil de la fenêtre : un son qui jouait garde son fichier ouvert un
+/// instant, et l'attente de la corbeille (jusqu'à 0,4 s) figeait la fenêtre
+/// et les raccourcis.
 #[tauri::command]
-fn remove_sound(app: AppHandle, state: State<AppState>, id: String) -> Result<Snapshot, String> {
+async fn remove_sound(app: AppHandle, id: String) -> Result<Snapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || remove_sound_now(&app, id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn remove_sound_now(app: &AppHandle, id: String) -> Result<Snapshot, String> {
+    let state = app.state::<AppState>();
     {
         let mut config = state.config.lock_ok();
         if let Some(pos) = config.sounds.iter().position(|s| s.id == id) {
@@ -1173,7 +1183,7 @@ fn remove_sound(app: AppHandle, state: State<AppState>, id: String) -> Result<Sn
         }
         state.save(&config)?;
     }
-    register_hotkeys(&app);
+    register_hotkeys(app);
     Ok(state.snapshot())
 }
 
@@ -1729,8 +1739,23 @@ fn move_sound(state: State<AppState>, id: String, to: usize) -> Result<Snapshot,
     Ok(state.snapshot())
 }
 
+/// Hors du fil de la fenêtre : rouvrir le casque, le câble et le micro (et
+/// charger le débruiteur) prend jusqu'à quelques secondes, pendant lesquelles
+/// la fenêtre et les raccourcis étaient figés.
 #[tauri::command]
-fn update_settings(app: AppHandle, state: State<AppState>, mut settings: Settings) -> Result<Snapshot, String> {
+async fn update_settings(app: AppHandle, settings: Settings) -> Result<Snapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // Deux enregistrements à la suite passent l'un après l'autre.
+        static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+        let _one = ONE_AT_A_TIME.lock_ok();
+        update_settings_now(&app, settings)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn update_settings_now(app: &AppHandle, mut settings: Settings) -> Result<Snapshot, String> {
+    let state = app.state::<AppState>();
     let phone_changed;
     let audio_changed;
     let room_changed;
@@ -1761,11 +1786,11 @@ fn update_settings(app: AppHandle, state: State<AppState>, mut settings: Setting
         state.save(&config)?;
     }
     if phone_changed {
-        apply_phone(&app);
+        apply_phone(app);
     }
     replay::configure(settings.replay_enabled, settings.duck_enabled, settings.duck_level);
     if room_changed {
-        extras::start_room(&app);
+        extras::start_room(app);
     }
     let autostart = settings.launch_at_startup;
     // Relancer l'audio coupe les sons et le micro une seconde : seulement
@@ -1775,8 +1800,8 @@ fn update_settings(app: AppHandle, state: State<AppState>, mut settings: Setting
     if audio_changed || audio_failed {
         apply_audio(&state, settings);
     }
-    apply_autostart(&app, autostart);
-    register_hotkeys(&app);
+    apply_autostart(app, autostart);
+    register_hotkeys(app);
     Ok(state.snapshot())
 }
 

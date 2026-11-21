@@ -27,12 +27,18 @@ pub struct OnlineSound {
     pub url: String,
 }
 
+/// Un seul client, qui garde ses connexions ouvertes (GIPHY, myinstants…).
 pub(crate) fn client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    static SHARED: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    if let Some(c) = SHARED.get() {
+        return Ok(c.clone());
+    }
+    let c = reqwest::Client::builder()
         .user_agent(concat!("Soundboard/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20))
         .build()
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(SHARED.get_or_init(|| c).clone())
 }
 
 pub async fn search(query: &str, page: u32) -> Result<Vec<OnlineSound>, String> {

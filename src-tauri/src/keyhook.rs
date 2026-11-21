@@ -169,6 +169,7 @@ pub fn set_bindings(list: Vec<Binding>) {
     *BINDINGS.lock_ok() = list;
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn matching(vk: u32, mods: u8) -> Option<u32> {
     BINDINGS
         
