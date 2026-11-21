@@ -905,13 +905,14 @@ async fn replace_sound_file(app: AppHandle, id: String) -> Result<Option<Snapsho
         return Err("fichier trop gros (200 Mo au plus)".into());
     }
     let file_id = id.clone();
-    let (dest, analysis) = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+    let (dest, analysis, key) = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
         fs::create_dir_all(&sounds_dir).map_err(|e| e.to_string())?;
         // Nom nouveau : l'ancien fichier peut encore être ouvert par le moteur audio.
         let dest = sounds_dir.join(format!("{file_id}-{}.{ext}", now_secs()));
-        fs::copy(&src, &dest).map_err(|e| format!("{} : {e}", src.display()))?;
+        let data = fs::read(&src).map_err(|e| format!("{} : {e}", src.display()))?;
+        fs::write(&dest, &data).map_err(|e| format!("{} : {e}", dest.display()))?;
         match analysis::analyze(&dest) {
-            Ok(a) => Ok((dest, a)),
+            Ok(a) => Ok((dest, a, share::key_of(&data))),
             Err(e) => {
                 let _ = fs::remove_file(&dest);
                 Err(e)
@@ -921,18 +922,31 @@ async fn replace_sound_file(app: AppHandle, id: String) -> Result<Option<Snapsho
     .await
     .map_err(|e| e.to_string())??;
     state.audio.stop(&id);
-    {
+    let old = {
         let mut config = state.config.lock().unwrap();
         let sound = config.sounds.iter_mut().find(|s| s.id == id).ok_or("son introuvable")?;
         let old = std::mem::replace(&mut sound.path, dest);
-        if old.starts_with(&state.sounds_dir) {
-            let _ = fs::remove_file(old);
-        }
+        // L'empreinte suit le nouveau fichier : sinon un pote recevait
+        // l'empreinte de l'ancien son (« fichier abîmé », ou l'ancien son
+        // rejoué chez lui). Le son n'est plus celui du pack d'un pote.
+        sound.pack_key = Some(key);
+        sound.pack_link = None;
         sound.analysis = Some(analysis);
         sound.segment = None;
         sound.start_ms = 0;
         sound.end_ms = None;
         state.save(&config)?;
+        old
+    };
+    // Le moteur audio peut lâcher l'ancien fichier un peu après l'arrêt :
+    // resté là, il revenait au lancement suivant comme « son retrouvé ».
+    if old.starts_with(&state.sounds_dir) {
+        std::thread::spawn(move || {
+            let _ = [0u64, 30, 100, 250, 500].into_iter().any(|ms| {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+                fs::remove_file(&old).is_ok() || !old.exists()
+            });
+        });
     }
     state.waveforms.lock().unwrap().remove(&id);
     measure_segments(app.clone());
@@ -976,7 +990,10 @@ fn update_sound(app: AppHandle, state: State<AppState>, sound: Sound) -> Result<
 /// Fichiers son rangés par l'app mais absents de la soundboard : un
 /// enregistrement de la config raté (fichier bloqué par un antivirus…) ou
 /// l'appli fermée au mauvais moment faisait disparaître le son de la liste.
-fn orphan_files(sounds_dir: &Path, config: &Config) -> Vec<PathBuf> {
+///
+/// Un fichier écrit il y a moins de `min_age` est ignoré : c'est un son en
+/// train d'être ajouté (téléchargement, pack), pas encore dans la liste.
+fn orphan_files(sounds_dir: &Path, config: &Config, min_age: std::time::Duration) -> Vec<PathBuf> {
     let used: std::collections::HashSet<std::ffi::OsString> =
         config.sounds.iter().filter_map(|s| s.path.file_name().map(|n| n.to_ascii_lowercase())).collect();
     let Ok(dir) = fs::read_dir(sounds_dir) else { return Vec::new() };
@@ -986,17 +1003,24 @@ fn orphan_files(sounds_dir: &Path, config: &Config) -> Vec<PathBuf> {
         .filter(|p| p.is_file())
         .filter(|p| p.extension().is_some_and(|e| e != "tmp"))
         .filter(|p| p.file_name().is_some_and(|n| !used.contains(&n.to_ascii_lowercase())))
+        .filter(|p| {
+            fs::metadata(p)
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| t.elapsed().map_or(true, |age| age >= min_age))
+        })
         .collect();
     // Les plus anciens d'abord : l'ordre dans lequel tu les avais ajoutés.
     files.sort_by_key(|p| fs::metadata(p).and_then(|m| m.modified()).ok());
     files
 }
 
+const ORPHAN_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Prévient quand des sons sont dans le dossier de l'app mais plus dans la liste.
 fn check_orphans(state: &AppState) {
     let n = {
         let config = state.config.lock().unwrap();
-        orphan_files(&state.sounds_dir, &config).len()
+        orphan_files(&state.sounds_dir, &config, ORPHAN_MIN_AGE).len()
     };
     let msg = match n {
         0 => vec![],
@@ -1028,7 +1052,7 @@ async fn recover_sounds(app: AppHandle, keep: bool) -> Result<(usize, Snapshot),
     let state = app.state::<AppState>();
     let files = {
         let config = state.config.lock().unwrap();
-        orphan_files(&state.sounds_dir, &config)
+        orphan_files(&state.sounds_dir, &config, ORPHAN_MIN_AGE)
     };
     if !keep {
         for f in &files {
@@ -2886,7 +2910,8 @@ mod tests {
         }))
         .unwrap();
         // a.mp3 est dans la liste (casse différente sous Windows), b.wav non.
-        let orphans = orphan_files(&sounds, &config);
+        let orphans = orphan_files(&sounds, &config, std::time::Duration::ZERO);
+        assert!(orphan_files(&sounds, &config, std::time::Duration::from_secs(120)).is_empty());
         assert_eq!(orphans, vec![sounds.join("b.wav")]);
         // L'ancienne config se souvient du nom et de l'onglet de b.wav.
         config.sounds[0].path = sounds.join("b.wav");
