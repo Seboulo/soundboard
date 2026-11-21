@@ -32,13 +32,6 @@ pub struct AudioFile {
     broken: bool,
 }
 
-/// Lance `f` sans laisser un plantage du décodeur sortir : un fichier abîmé
-/// faisait planter le fil qui le lisait (le son du casque ou du câble,
-/// coupé jusqu'au redémarrage de l'appli). `None` si ça a planté.
-fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
-}
-
 impl AudioFile {
     pub fn open(path: &Path) -> Result<Self, String> {
         let file = File::open(path).map_err(|e| format!("fichier illisible : {e}"))?;
@@ -100,7 +93,7 @@ impl AudioFile {
         let time = Time::new(ms / 1000, (ms % 1000) as f64 / 1000.0);
         let track_id = self.track_id;
         let format = &mut self.format;
-        let Some(seeked) = guarded(|| format.seek(SeekMode::Accurate, SeekTo::Time { time, track_id: Some(track_id) })) else {
+        let Some(seeked) = crate::survive(|| format.seek(SeekMode::Accurate, SeekTo::Time { time, track_id: Some(track_id) })) else {
             self.broken = true;
             return;
         };
@@ -139,7 +132,9 @@ impl AudioFile {
         if self.broken {
             return false;
         }
-        match guarded(|| self.decode_next()) {
+        // Un fichier abîmé faisait planter le fil qui le lisait (le son du casque
+        // ou du câble, coupé jusqu'au redémarrage de l'appli).
+        match crate::survive(|| self.decode_next()) {
             Some(more) => more,
             None => {
                 self.broken = true;

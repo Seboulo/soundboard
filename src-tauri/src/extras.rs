@@ -59,10 +59,6 @@ pub struct GiftInfo {
     have: bool,
 }
 
-fn data_dir(state: &AppState) -> PathBuf {
-    state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone())
-}
-
 /// Lancé une fois, quand l'audio est prêt.
 pub fn start(app: &AppHandle) {
     let state = app.state::<AppState>();
@@ -87,7 +83,7 @@ pub fn start(app: &AppHandle) {
         let mut tried: HashMap<String, Instant> = HashMap::new();
         loop {
             // Un plantage une fois n'arrête pas la mise à jour des packs pour de bon.
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| refresh_published(&handle)));
+            let _ = survive(|| refresh_published(&handle));
             let due: Vec<String> = {
                 let state = handle.state::<AppState>();
                 let config = state.config.lock_ok();
@@ -235,7 +231,7 @@ pub async fn tts_say(app: AppHandle, text: String, voice: Option<String>, rate: 
     let state = app.state::<AppState>();
     // Deux fichiers en alternance : le précédent peut encore être en lecture.
     let turn = state.extras.tts_turn.fetch_add(1, Ordering::Relaxed) % 2;
-    let path = data_dir(&state).join(format!("voix-{turn}.wav"));
+    let path = state.data_dir().join(format!("voix-{turn}.wav"));
     fs::write(&path, &wav).map_err(|e| e.to_string())?;
     let analysis = analysis::analyze(&path)?;
     let mut sound = store_like(&path, analysis);
@@ -255,30 +251,9 @@ pub async fn tts_create(app: AppHandle, text: String, voice: Option<String>, rat
 /// Un son qui n'est pas dans la soundboard (voix, son reçu d'un pote).
 pub(crate) fn store_like(path: &Path, analysis: config::Analysis) -> Sound {
     Sound {
-        id: String::new(),
-        name: String::new(),
-        path: path.to_path_buf(),
-        hotkey: None,
-        volume: 1.0,
         color: COLORS[0].into(),
-        start_ms: 0,
-        end_ms: None,
-        analysis: Some(analysis),
-        category: None,
-        looping: false,
-        emoji: None,
-        favorite: false,
         keep_playing: true,
-        added_at: 0,
-        image: None,
-        image_still: None,
-        plays: 0,
-        played_ms: 0,
-        last_played: 0,
-        fx: Default::default(),
-        segment: None,
-        pack_link: None,
-        pack_key: None,
+        ..Sound::new(String::new(), String::new(), path.to_path_buf(), analysis)
     }
 }
 
@@ -443,7 +418,7 @@ async fn sync_one(app: &AppHandle, url: &str) -> Result<(usize, usize, Vec<Strin
         note(None, Some((hash, validators)));
         return Ok((0, 0, Vec::new()));
     }
-    let tmp = data_dir(&state).join("pack-lien.zip");
+    let tmp = state.data_dir().join("pack-lien.zip");
     fs::write(&tmp, &data).map_err(|e| e.to_string())?;
     let config = state.config.lock_ok().clone();
     let have: HashSet<String> = config
@@ -938,8 +913,8 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
                 last.insert(from.clone(), Instant::now());
             }
             let ext = if AUDIO_EXTENSIONS.contains(&ext.as_str()) { ext } else { "mp3".into() };
-            let hash: String = hash.chars().filter(|c| c.is_ascii_hexdigit()).take(32).collect();
-            let cache = data_dir(&state).join("salon").join(format!("{hash}.{ext}"));
+            let hash: String = hash.chars().filter(char::is_ascii_hexdigit).take(32).collect();
+            let cache = state.data_dir().join("salon").join(format!("{hash}.{ext}"));
             // Le son est-il déjà là ? Reçu avant (le plus courant, et sans
             // rien lire), ou dans la soundboard (lu à côté, sans bloquer).
             let local = if cache.exists() {
@@ -998,7 +973,7 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
             // n'arrête pas celui en cours comme un clic sur un pad).
             state.audio.stop(&sound.id);
             state.audio.toggle_detached(play_request(&state, &sound));
-            state.extras.playing_from.lock_ok().insert(from.clone(), sound.id.clone());
+            state.extras.playing_from.lock_ok().insert(from.clone(), sound.id);
             let _ = app.emit("room-played", (name, title));
             Ok(())
         }
@@ -1015,7 +990,7 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
             if !AUDIO_EXTENSIONS.contains(&ext.as_str()) {
                 return Err(format!("son partagé dans un format inconnu ({ext})"));
             }
-            let hash: String = hash.chars().filter(|c| c.is_ascii_hexdigit()).take(64).collect();
+            let hash: String = hash.chars().filter(char::is_ascii_hexdigit).take(64).collect();
             let have = {
                 let (app2, h2) = (app.clone(), hash.clone());
                 tauri::async_runtime::spawn_blocking(move || find_local(&app2.state::<AppState>(), &h2, size))

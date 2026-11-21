@@ -39,7 +39,7 @@ impl Kernel {
         static CACHE: OnceLock<Cache> = OnceLock::new();
         let cache = CACHE.get_or_init(Default::default);
         let key = ratio.to_bits();
-        let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some((_, k)) = cache.iter().find(|(r, _)| *r == key) {
             return k.clone();
         }

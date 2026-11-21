@@ -221,7 +221,7 @@ pub fn topic_of(code: &str) -> String {
 }
 
 pub fn normalize_code(code: &str) -> String {
-    code.trim().to_uppercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect()
+    code.trim().to_uppercase().chars().filter(char::is_ascii_alphanumeric).collect()
 }
 
 /// Nouveau code, facile à dicter : 12 lettres et chiffres sans ambiguïté.
@@ -340,7 +340,7 @@ impl Room {
             let mut inner = self.inner.lock_ok();
             let old = std::mem::take(&mut inner.topic);
             let old_id = inner.my_id.clone();
-            *inner = Inner { my_id: my_id.clone(), my_name: my_name.clone(), ..Default::default() };
+            *inner = Inner { my_id, my_name, ..Default::default() };
             if !normalize_code(code).is_empty() {
                 inner.topic = topic_of(code);
             }

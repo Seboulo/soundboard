@@ -108,10 +108,6 @@ pub struct LinkClip {
 /// Extraits gardés dans l'historique (envoyés, et reçus).
 const RECENTS: usize = 20;
 
-fn now_s() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
-}
-
 fn received_file(state: &AppState) -> PathBuf {
     clips_dir(state).join("recus").join("index.json")
 }
@@ -206,7 +202,7 @@ pub fn clip_favorite(state: State<AppState>, path: String, on: bool) -> Result<V
         }
         r.origin = Some(path.clone());
         r.path = copy.to_string_lossy().into_owned();
-        r.at = now_s();
+        r.at = now_secs();
         list.insert(0, r);
     }
     let data = serde_json::to_vec(&list).map_err(|e| e.to_string())?;
@@ -254,6 +250,9 @@ pub fn clip_history(state: State<AppState>) -> serde_json::Value {
     serde_json::json!({ "sent": load_recents(&state), "received": load_list(&received_file(&state)) })
 }
 
+/// Passage d'un fichier : chemin, début et fin (ms).
+type LevelKey = (PathBuf, u64, u64);
+
 #[derive(Default)]
 pub struct Clips {
     pending: Mutex<Option<ClipShow>>,
@@ -278,7 +277,7 @@ pub struct Clips {
     stopped: Mutex<HashMap<String, Instant>>,
     /// Niveau du passage écouté (fichier, début, fin) : « Écouter » et
     /// « Aperçu » relancés partent tout de suite.
-    levels: Mutex<Vec<((PathBuf, u64, u64), crate::config::Analysis)>>,
+    levels: Mutex<Vec<(LevelKey, crate::config::Analysis)>>,
     /// ffmpeg déjà demandé cette session (pour convertir les vidéos envoyées).
     ffmpeg_asked: AtomicBool,
     /// « Ne pas déranger » : rien ne s'affiche ni ne joue de la part des
@@ -543,7 +542,9 @@ pub async fn clip_from_gif(app: AppHandle, url: String) -> Result<ClipPick, Stri
 pub async fn clip_search_videos(app: AppHandle, query: String, start: Option<u32>) -> Result<Vec<youtube::Found>, String> {
     // Même recherche refaite (fenêtre rouverte, téléphone) : réponse tout de
     // suite plutôt que de relancer yt-dlp, pendant 10 minutes.
-    static CACHE: Mutex<Vec<(String, u32, Instant, Vec<youtube::Found>)>> = Mutex::new(Vec::new());
+    /// (recherche, page, quand, résultats)
+    type Cached = (String, u32, Instant, Vec<youtube::Found>);
+    static CACHE: Mutex<Vec<Cached>> = Mutex::new(Vec::new());
     let key = query.trim().to_lowercase();
     let start = start.unwrap_or(1);
     {
@@ -554,7 +555,7 @@ pub async fn clip_search_videos(app: AppHandle, query: String, start: Option<u32
         }
     }
     let state = app.state::<AppState>();
-    let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
+    let data_dir = state.data_dir();
     let status = |msg: &str| {
         let _ = app.emit("youtube-status", msg);
     };
@@ -586,7 +587,7 @@ pub async fn clip_from_link(app: AppHandle, url: String, start_s: Option<f64>, c
         return Err("un téléchargement de vidéo est déjà en cours".into());
     }
     let res = async {
-        let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
+        let data_dir = state.data_dir();
         let status = |msg: &str| {
             let _ = app.emit("youtube-status", msg);
         };
@@ -622,7 +623,9 @@ pub async fn clip_from_link(app: AppHandle, url: String, start_s: Option<f64>, c
         let got = got?;
         let ext_of = |p: &Path| p.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_lowercase();
         let ext = ext_of(&got.video);
-        let read = || -> Result<(Vec<u8>, Option<(Vec<u8>, String)>), String> {
+        // La vidéo, et la piste audio à part avec son extension s'il y en a une.
+        type Media = (Vec<u8>, Option<(Vec<u8>, String)>);
+        let read = || -> Result<Media, String> {
             let video = fs::read(&got.video).map_err(|e| e.to_string())?;
             let audio = match &got.audio {
                 Some(a) => Some((fs::read(a).map_err(|e| e.to_string())?, ext_of(a))),
@@ -700,7 +703,7 @@ const READY_KEEP: usize = 10;
 /// lourde : la vidéo part alors telle quelle, comme avant.
 async fn prepare_video(app: &AppHandle, dir: &Path, media: &Path, start_s: Option<f64>, end_s: Option<f64>, with_sound: bool) -> Option<PathBuf> {
     let state = app.state::<AppState>();
-    let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
+    let data_dir = state.data_dir();
     let tools = data_dir.join("tools");
     let Some(ff) = youtube::ffmpeg_ready(&tools) else {
         if cfg!(windows) && !state.clips.ffmpeg_asked.swap(true, Ordering::SeqCst) {
@@ -748,7 +751,7 @@ async fn prepare_video(app: &AppHandle, dir: &Path, media: &Path, start_s: Optio
 /// miroir, ou rien à gagner ; elle part alors telle quelle.
 async fn prepare_image(app: &AppHandle, media: &Path, ext: &str) -> Option<PathBuf> {
     let state = app.state::<AppState>();
-    let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
+    let data_dir = state.data_dir();
     let ff = youtube::ffmpeg_ready(&data_dir.join("tools"))?;
     let size = fs::metadata(media).ok()?.len();
     if size < 400 * 1024 || !matches!(ext, "jpg" | "jpeg" | "png") {
@@ -797,7 +800,7 @@ async fn prepare_sound(app: &AppHandle, sound: &Sound) -> Option<PathBuf> {
     if size < 512 * 1024 {
         return None;
     }
-    let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
+    let data_dir = state.data_dir();
     let ff = youtube::ffmpeg_ready(&data_dir.join("tools"))?;
     let start_ms = sound.start_ms;
     let end_ms = sound.end_ms.or(sound.analysis.map(|a| a.duration_ms)).unwrap_or(start_ms + 30_000);
@@ -949,7 +952,7 @@ pub async fn send_clip(
             sound_id: None,
             from: None,
             sound: None,
-            at: now_s(),
+            at: now_secs(),
             link: Some(link),
             cut_ms,
             style: recent_style,
@@ -1002,7 +1005,7 @@ pub async fn send_clip(
             sound_id: None,
             from: None,
             sound: None,
-            at: now_s(),
+            at: now_secs(),
             link: None,
             cut_ms: None,
             style: recent_style,
@@ -1110,7 +1113,7 @@ pub async fn send_clip(
         sound_id: sound.map(|s| s.id),
         from: None,
         sound: None,
-        at: now_s(),
+        at: now_secs(),
         link: None,
         cut_ms: None,
         style: recent_style,
@@ -1129,7 +1132,7 @@ async fn fetch_link(app: &AppHandle, url: &str, dir: &Path, id: &str, start_ms: 
         return Err("lien non accepté".into());
     }
     let state = app.state::<AppState>();
-    let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
+    let data_dir = state.data_dir();
     let tools = data_dir.join("tools");
     let exe = youtube::ensure(&tools, |_| {}).await?;
     // Vidéo longue : ffmpeg (installé la première fois) pour n'en prendre
@@ -1321,7 +1324,7 @@ pub async fn receive(
         sound_id: None,
         from: Some(show.from.clone()),
         sound: show.sound.clone(),
-        at: now_s(),
+        at: now_secs(),
         link: link_url,
         cut_ms,
         style: show.style.clone(),

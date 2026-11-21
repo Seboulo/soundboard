@@ -27,7 +27,7 @@ pub fn init(dir: PathBuf) {
 
 pub fn write(message: &str) {
     let Some(path) = PATH.get() else { return };
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if fs::metadata(path).is_ok_and(|m| m.len() > MAX_BYTES) {
         let _ = fs::rename(path, path.with_extension("old.log"));
     }

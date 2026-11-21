@@ -296,7 +296,7 @@ mod win {
             for id in rx {
                 // Un plantage pendant un son ne doit pas couper les raccourcis
                 // en jeu pour le reste de la session.
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_press(id)));
+                let _ = crate::survive(|| on_press(id));
             }
         });
         std::thread::spawn(|| {

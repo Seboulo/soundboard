@@ -96,7 +96,7 @@ pub enum AudioEvent {
 pub const PREVIEW_ID: &str = "__preview";
 
 enum Command {
-    Configure(Settings, Reply),
+    Configure(Box<Settings>, Reply),
     /// Joue le son, ou l'arrête s'il est déjà en cours.
     Toggle(PlayRequest, Option<PlayReply>),
     Preview(PlayRequest, Reply),
@@ -159,7 +159,7 @@ impl AudioHandle {
 
     pub fn configure(&self, settings: Settings) -> Result<(), String> {
         let (reply, rx) = mpsc::channel();
-        self.send(Command::Configure(settings, reply))?;
+        self.send(Command::Configure(Box::new(settings), reply))?;
         wait(rx)
     }
 
@@ -801,7 +801,7 @@ impl Engine {
     fn handle(&mut self, cmd: Command) {
         match cmd {
             Command::Configure(settings, reply) => {
-                let _ = reply.send(self.configure(settings));
+                let _ = reply.send(self.configure(*settings));
             }
             Command::Toggle(req, reply) => {
                 let res = self.toggle(req);

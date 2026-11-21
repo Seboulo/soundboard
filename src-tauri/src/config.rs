@@ -69,6 +69,39 @@ pub struct Sound {
     pub pack_key: Option<String>,
 }
 
+impl Sound {
+    /// Un son tout juste rangé, avec les réglages de départ (volume normal,
+    /// joué en entier, sans raccourci ni image).
+    pub fn new(id: String, name: String, path: PathBuf, analysis: Analysis) -> Self {
+        Self {
+            id,
+            name,
+            path,
+            hotkey: None,
+            volume: 1.0,
+            color: String::new(),
+            start_ms: 0,
+            end_ms: None,
+            analysis: Some(analysis),
+            category: None,
+            looping: false,
+            emoji: None,
+            favorite: false,
+            keep_playing: false,
+            added_at: 0,
+            image: None,
+            image_still: None,
+            plays: 0,
+            played_ms: 0,
+            last_played: 0,
+            fx: Default::default(),
+            segment: None,
+            pack_link: None,
+            pack_key: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Analysis {
     pub duration_ms: u64,
@@ -478,20 +511,15 @@ impl Config {
         // ouvert un court instant : le remplacement échoue alors (« accès
         // refusé »). Sans nouvel essai, le son ajouté n'était pas enregistré
         // et disparaissait au lancement suivant.
-        let mut last = None;
-        for wait_ms in [0, 20, 50, 100, 200, 400] {
-            std::thread::sleep(std::time::Duration::from_millis(wait_ms));
-            match fs::rename(&tmp, path) {
-                Ok(()) => return Ok(()),
-                Err(e) => last = Some(e),
-            }
-        }
+        let Err(err) = patiently(&[20, 50, 100, 200, 400], || fs::rename(&tmp, path)) else {
+            return Ok(());
+        };
         // Dernier recours : écrire par-dessus (moins sûr, mais rien n'est perdu).
         if fs::copy(&tmp, path).is_ok() {
             let _ = fs::remove_file(&tmp);
             return Ok(());
         }
-        Err(last.map_or_else(|| "enregistrement impossible".into(), |e| e.to_string()))
+        Err(err.to_string())
     }
 }
 
@@ -500,15 +528,28 @@ impl Config {
 /// secours (plus ancienne) le remplaçait et les derniers sons ajoutés étaient
 /// perdus.
 fn read_patiently(p: &Path) -> Option<String> {
-    for wait_ms in [0, 50, 100, 200, 400, 800, 1500] {
-        std::thread::sleep(std::time::Duration::from_millis(wait_ms));
-        match fs::read_to_string(p) {
-            Ok(text) => return Some(text),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-            Err(_) => {}
+    let read = || match fs::read_to_string(p) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    };
+    patiently(&[50, 100, 200, 400, 800, 1500], read).ok().flatten()
+}
+
+/// Un fichier que Windows tient ouvert un court instant (antivirus,
+/// indexation, moteur audio qui n'a pas encore lâché un son) : on essaie
+/// tout de suite, puis après chaque attente de `waits_ms`. Rend le premier
+/// succès, ou la dernière erreur.
+pub fn patiently<T, E>(waits_ms: &[u64], mut op: impl FnMut() -> Result<T, E>) -> Result<T, E> {
+    let mut res = op();
+    for &ms in waits_ms {
+        if res.is_ok() {
+            break;
         }
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        res = op();
     }
-    None
+    res
 }
 
 fn backup_path(path: &Path) -> PathBuf {
@@ -518,6 +559,22 @@ fn backup_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn busy_files_are_retried_then_the_last_error_is_kept() {
+        let mut tries = 0;
+        let ok: Result<u32, String> = patiently(&[0, 0, 0], || {
+            tries += 1;
+            if tries < 3 { Err(format!("occupé {tries}")) } else { Ok(tries) }
+        });
+        assert_eq!(ok, Ok(3));
+        let mut tries = 0;
+        let err: Result<(), String> = patiently(&[0, 0], || {
+            tries += 1;
+            Err(format!("occupé {tries}"))
+        });
+        assert_eq!(err, Err("occupé 3".into()), "un essai tout de suite, puis un après chaque attente");
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("sb-config-{name}-{}", std::process::id()));

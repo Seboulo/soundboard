@@ -48,7 +48,7 @@ async fn fetch(url: &str, max: usize) -> Result<Vec<u8>, String> {
         .get(url)
         .send()
         .await
-        .and_then(|r| r.error_for_status())
+        .and_then(reqwest::Response::error_for_status)
         .map_err(|e| format!("téléchargement impossible ({url}) : {e}"))?;
     let mut data = Vec::new();
     while let Some(chunk) = res.chunk().await.map_err(|e| e.to_string())? {
@@ -81,7 +81,7 @@ static DENO_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 
 /// Empreinte du fichier « .sha256sum » de Deno (« Hash : ABCD… »).
 fn deno_hash(text: &str) -> Option<String> {
-    text.split(|c: char| !c.is_ascii_hexdigit()).find(|w| w.len() == 64).map(|h| h.to_lowercase())
+    text.split(|c: char| !c.is_ascii_hexdigit()).find(|w| w.len() == 64).map(str::to_lowercase)
 }
 
 /// Installe Deno à côté de yt-dlp, en arrière-plan (une seule fois) : la

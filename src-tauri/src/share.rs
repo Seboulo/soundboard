@@ -22,7 +22,7 @@ pub fn direct_url(link: &str) -> Result<String, String> {
     }
     let host = url.host_str().unwrap_or("").to_lowercase();
     if host.ends_with("dropbox.com") {
-        let mut url = url.clone();
+        let mut url = url;
         let pairs: Vec<(String, String)> = url
             .query_pairs()
             .filter(|(k, _)| k != "dl" && k != "raw")

@@ -117,6 +117,11 @@ struct Snapshot {
 }
 
 impl AppState {
+    /// Dossier de données de l'app, celui qui contient `sounds`.
+    fn data_dir(&self) -> PathBuf {
+        self.sounds_dir.parent().map_or_else(|| self.sounds_dir.clone(), Path::to_path_buf)
+    }
+
     /// À appeler en tenant le verrou de la config.
     fn save(&self, config: &Config) -> Result<(), String> {
         self.rev.fetch_add(1, Ordering::AcqRel);
@@ -293,13 +298,20 @@ const MINIMIZED_ARG: &str = "--minimized";
 /// plantaient à leur tour : une seule erreur pouvait bloquer les sons, les
 /// raccourcis et les réglages jusqu'au redémarrage. On reprend la donnée
 /// telle qu'elle est et l'appli continue.
+/// Lance `f` en attrapant un plantage (`None` s'il a planté) : un fil de
+/// fond qui plante une fois continue son travail au lieu de s'arrêter pour
+/// toute la session.
+pub(crate) fn survive<T>(f: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
+}
+
 pub(crate) trait LockExt<T: ?Sized> {
     fn lock_ok(&self) -> std::sync::MutexGuard<'_, T>;
 }
 
 impl<T: ?Sized> LockExt<T> for Mutex<T> {
     fn lock_ok(&self) -> std::sync::MutexGuard<'_, T> {
-        self.lock().unwrap_or_else(|e| e.into_inner())
+        self.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -686,7 +698,7 @@ fn watch_devices(app: AppHandle) {
         std::thread::sleep(std::time::Duration::from_secs(3));
         // Un plantage une fois (pilote audio capricieux…) n'arrête pas la
         // surveillance pour de bon : le casque rebranché revenait plus.
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&check));
+        let _ = survive(&check);
     });
 }
 
@@ -874,7 +886,7 @@ fn import_file(src: &Path, sounds_dir: &Path, color_index: usize) -> Result<Soun
     let ext = src
         .extension()
         .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
+        .map(str::to_lowercase)
         .unwrap_or_default();
     if !AUDIO_EXTENSIONS.contains(&ext.as_str()) {
         return Err(format!("{} : format non pris en charge", src.display()));
@@ -915,30 +927,10 @@ fn store_sound(
         }
     };
     Ok(Sound {
-        id,
-        name,
-        path: dest,
-        hotkey: None,
-        volume: 1.0,
         color: COLORS[color_index % COLORS.len()].into(),
-        start_ms: 0,
-        end_ms: None,
-        analysis: Some(analysis),
-        category: None,
-        looping: false,
-        emoji: None,
-        favorite: false,
-        keep_playing: false,
         added_at: now_secs(),
-        image: None,
-        image_still: None,
-        plays: 0,
-        played_ms: 0,
-        last_played: 0,
-        fx: Default::default(),
-        segment: None,
-        pack_link: None,
         pack_key: Some(share::key_of(data)),
+        ..Sound::new(id, name, dest, analysis)
     })
 }
 
@@ -1086,10 +1078,7 @@ async fn replace_sound_file(app: AppHandle, id: String) -> Result<Option<Snapsho
     // resté là, il revenait au lancement suivant comme « son retrouvé ».
     if old.starts_with(&state.sounds_dir) {
         std::thread::spawn(move || {
-            let _ = [0u64, 30, 100, 250, 500].into_iter().any(|ms| {
-                std::thread::sleep(std::time::Duration::from_millis(ms));
-                fs::remove_file(&old).is_ok() || !old.exists()
-            });
+            let _ = config::patiently(&[30, 100, 250, 500], || fs::remove_file(&old).or_else(|e| if old.exists() { Err(e) } else { Ok(()) }));
         });
     }
     state.waveforms.lock_ok().remove(&id);
@@ -1127,7 +1116,7 @@ fn update_sound(app: AppHandle, state: State<AppState>, sound: Sound) -> Result<
         state.save(&config)?;
     }
     register_hotkeys(&app);
-    measure_segments(app.clone());
+    measure_segments(app);
     Ok(state.snapshot())
 }
 
@@ -1139,7 +1128,7 @@ fn update_sound(app: AppHandle, state: State<AppState>, sound: Sound) -> Result<
 /// train d'être ajouté (téléchargement, pack), pas encore dans la liste.
 fn orphan_files(sounds_dir: &Path, config: &Config, min_age: std::time::Duration) -> Vec<PathBuf> {
     let used: std::collections::HashSet<std::ffi::OsString> =
-        config.sounds.iter().filter_map(|s| s.path.file_name().map(|n| n.to_ascii_lowercase())).collect();
+        config.sounds.iter().filter_map(|s| s.path.file_name().map(std::ffi::OsStr::to_ascii_lowercase)).collect();
     let Ok(dir) = fs::read_dir(sounds_dir) else { return Vec::new() };
     let mut files: Vec<PathBuf> = dir
         .flatten()
@@ -1181,7 +1170,7 @@ fn old_sound_entries(config_path: &Path) -> HashMap<std::ffi::OsString, Sound> {
     for p in [config_path.with_extension("json.bak"), config_path.with_extension("corrupt.json")] {
         let Some(old) = fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<Config>(&t).ok()) else { continue };
         for s in old.sounds {
-            if let Some(name) = s.path.file_name().map(|n| n.to_ascii_lowercase()) {
+            if let Some(name) = s.path.file_name().map(std::ffi::OsStr::to_ascii_lowercase) {
                 found.entry(name).or_insert(s);
             }
         }
@@ -1213,10 +1202,10 @@ async fn recover_sounds(app: AppHandle, keep: bool) -> Result<(usize, Snapshot),
             .into_iter()
             .filter_map(|path| {
                 let analysis = analysis::analyze(&path).ok()?;
-                let key = path.file_name().map(|n| n.to_ascii_lowercase());
+                let key = path.file_name().map(std::ffi::OsStr::to_ascii_lowercase);
                 let sound = match key.and_then(|k| old.get(&k)) {
                     // Retrouvé avec son nom, son onglet, sa couleur…
-                    Some(s) => Sound { path: path.clone(), analysis: Some(analysis), segment: None, ..s.clone() },
+                    Some(s) => Sound { path, analysis: Some(analysis), segment: None, ..s.clone() },
                     None => {
                         n += 1;
                         let mut s: Sound = serde_json::from_value(serde_json::json!({
@@ -1373,11 +1362,7 @@ fn move_to_trash(state: &AppState, mut sound: Sound) -> Sound {
         if let Some(name) = path.file_name() {
             let dest = trash.join(name);
             // Le moteur audio peut lâcher le fichier un peu après l'arrêt.
-            let moved = [0u64, 30, 100, 250].into_iter().any(|ms| {
-                std::thread::sleep(std::time::Duration::from_millis(ms));
-                fs::rename(&*path, &dest).is_ok()
-            });
-            if moved {
+            if config::patiently(&[30, 100, 250], || fs::rename(&*path, &dest)).is_ok() {
                 *path = dest;
             } else {
                 let _ = fs::remove_file(&*path);
@@ -1773,7 +1758,7 @@ async fn run_diagnostics(app: AppHandle) -> Result<Vec<Check>, String> {
                 None,
             ));
         }
-        if settings.strong_denoise && settings.noise_suppression && std::thread::available_parallelism().map_or(4, |n| n.get()) < 4 {
+        if settings.strong_denoise && settings.noise_suppression && std::thread::available_parallelism().map_or(4, std::num::NonZero::get) < 4 {
             checks.push(check(
                 "info",
                 "Processeur modeste",
@@ -2227,7 +2212,7 @@ async fn youtube_import(app: &AppHandle, url: String) -> Result<AddedSound, Stri
         return Err("ce n'est pas un lien YouTube".into());
     }
     let state = app.state::<AppState>();
-    let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
+    let data_dir = state.data_dir();
     let tools_dir = data_dir.join("tools");
     let status = |msg: &str| {
         let _ = app.emit("youtube-status", msg);
@@ -2502,7 +2487,7 @@ fn read_pack(
         let ext = Path::new(&p.file)
             .extension()
             .and_then(|e| e.to_str())
-            .map(|e| e.to_lowercase())
+            .map(str::to_lowercase)
             .unwrap_or_default();
         if !AUDIO_EXTENSIONS.contains(&ext.as_str()) {
             errors.push(format!("{} : format non pris en charge", p.name));
@@ -2876,7 +2861,7 @@ pub fn run() {
             });
 
             let state = AppState {
-                config: Mutex::new(config.clone()),
+                config: Mutex::new(config),
                 config_path,
                 sounds_dir,
                 audio,
