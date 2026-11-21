@@ -169,13 +169,16 @@ pub fn ffmpeg_ready(tools_dir: &Path) -> Option<PathBuf> {
     ffmpeg_starts(&dir).then_some(dir)
 }
 
-/// Plus grand côté d'un extrait converti (720p, en large ou en hauteur).
-const NORMALIZE_LONG_SIDE: u32 = 1280;
+/// Plus grand côté d'un extrait converti (480p, en large ou en hauteur).
+/// La carte chez le pote fait 480 points de large au plus : en 720p, la
+/// moitié de l'image ne se voyait pas et le fichier pesait deux fois plus
+/// sur la place limitée du relais.
+const NORMALIZE_LONG_SIDE: u32 = 854;
 
 /// Réglages de ffmpeg pour un extrait « propre », que tout PC lit sans
 /// à-coup : H.264 (couleurs yuv420p) + AAC dans un MP4, une image clé par
-/// seconde, index au début du fichier (`+faststart`), 720p au plus et débit
-/// plafonné (30 s tiennent dans le relais). Le passage choisi est coupé ici :
+/// seconde, index au début du fichier (`+faststart`), 480p et 30 images/s au
+/// plus, débit plafonné (30 s font 5 Mo au plus, souvent bien moins). Le passage choisi est coupé ici :
 /// chez le pote, la vidéo commence à 0, sans saut à faire.
 pub fn normalize_args(video: &Path, audio: Option<&Path>, start_s: f64, dur_s: f64, with_sound: bool, out: &Path) -> Vec<std::ffi::OsString> {
     let n = NORMALIZE_LONG_SIDE;
@@ -203,13 +206,13 @@ pub fn normalize_args(video: &Path, audio: Option<&Path>, start_s: f64, dur_s: f
         push(if sidecar.is_some() { "1:a:0" } else { "0:a:0?" });
     }
     for x in [
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-maxrate", "2M", "-bufsize", "4M", "-pix_fmt", "yuv420p", "-vf", &scale,
-        "-force_key_frames", "expr:gte(t,n_forced*1)",
+        "-c:v", "libx264", "-preset", "faster", "-crf", "26", "-maxrate", "1200k", "-bufsize", "2400k", "-pix_fmt", "yuv420p", "-vf", &scale,
+        "-fpsmax", "30", "-force_key_frames", "expr:gte(t,n_forced*1)",
     ] {
         push(x);
     }
     if with_sound {
-        for x in ["-c:a", "aac", "-b:a", "128k", "-ac", "2"] {
+        for x in ["-c:a", "aac", "-b:a", "96k", "-ac", "2"] {
             push(x);
         }
     } else {
@@ -725,7 +728,7 @@ mod tests {
     /// Avec un ffmpeg sur la machine (Linux de test), la conversion donne
     /// bien un MP4 H.264 + AAC, à la bonne taille et coupé au passage.
     #[test]
-    fn normalized_clip_is_h264_aac_720p() {
+    fn normalized_clip_is_h264_aac_480p() {
         let Some(bin) = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"].into_iter().map(Path::new).find(|p| p.exists()) else { return };
         let ff = bin.parent().unwrap();
         let dir = std::env::temp_dir().join(format!("sb-norm-{}", std::process::id()));
@@ -733,7 +736,7 @@ mod tests {
         let src = dir.join("haute.webm");
         let ok = Command::new(bin)
             .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=1080x1920:rate=30", "-f", "lavfi", "-i", "sine=frequency=440"])
-            .args(["-t", "8", "-c:v", "libvpx-vp9", "-deadline", "realtime", "-c:a", "libopus"])
+            .args(["-t", "8", "-r", "60", "-c:v", "libvpx-vp9", "-deadline", "realtime", "-c:a", "libopus"])
             .arg(&src)
             .status()
             .unwrap();
@@ -741,13 +744,15 @@ mod tests {
         let out = dir.join("pret.mp4");
         normalize_clip(ff, &src, None, 2.0, 4.0, true, &out).unwrap();
         let probe = Command::new(ff.join("ffprobe"))
-            .args(["-v", "error", "-show_entries", "stream=codec_name,width,height,pix_fmt:format=duration", "-of", "default=nw=1"])
+            .args(["-v", "error", "-show_entries", "stream=codec_name,width,height,pix_fmt,avg_frame_rate:format=duration", "-of", "default=nw=1"])
             .arg(&out)
             .output()
             .unwrap();
         let info = String::from_utf8_lossy(&probe.stdout).to_string();
         assert!(info.contains("codec_name=h264") && info.contains("codec_name=aac"), "{info}");
-        assert!(info.contains("width=720") && info.contains("height=1280") && info.contains("pix_fmt=yuv420p"), "{info}");
+        assert!(info.contains("width=480") && info.contains("height=854") && info.contains("pix_fmt=yuv420p"), "{info}");
+        // Une vidéo à 60 images/s repart à 30 : deux fois moins lourde.
+        assert!(info.contains("avg_frame_rate=30/1"), "{info}");
         let d: f64 = info.lines().find_map(|l| l.strip_prefix("duration=")).unwrap().parse().unwrap();
         assert!((d - 4.0).abs() < 0.2, "{d}");
         // Début après la fin : erreur claire, pas de fichier vide.
