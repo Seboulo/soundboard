@@ -8,6 +8,7 @@
 //! l'a déjà (pack partagé), il le joue tout de suite ; sinon il le demande
 //! et le fichier lui est envoyé (pièce jointe gardée 3 h au plus par ntfy).
 
+use crate::LockExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -131,8 +132,11 @@ pub const CAP_LINK: u32 = 1;
 pub const CAP_CUT: u32 = 2;
 /// L'appli sait recevoir un son partagé (et proposer de l'ajouter).
 pub const CAP_GIFT: u32 = 4;
+/// L'appli sait recevoir un GIF par sa seule adresse GIPHY (et le
+/// télécharger), sans pièce jointe sur le relais.
+pub const CAP_GIF_LINK: u32 = 8;
 /// Ce que cette version sait faire.
-const MY_CAPS: u32 = CAP_LINK | CAP_CUT | CAP_GIFT;
+const MY_CAPS: u32 = CAP_LINK | CAP_CUT | CAP_GIFT | CAP_GIF_LINK;
 /// Un fichier déjà envoyé au relais y reste 3 h : pendant 2 h 30, on renvoie
 /// son adresse au lieu de le renvoyer (ça ne compte pas dans la limite
 /// d'envois du relais, et ça part tout de suite).
@@ -217,7 +221,7 @@ pub fn topic_of(code: &str) -> String {
 }
 
 pub fn normalize_code(code: &str) -> String {
-    code.trim().to_uppercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect()
+    code.trim().to_uppercase().chars().filter(char::is_ascii_alphanumeric).collect()
 }
 
 /// Nouveau code, facile à dicter : 12 lettres et chiffres sans ambiguïté.
@@ -231,7 +235,21 @@ pub fn new_code() -> String {
 /// Envoi ou réception d'un fichier (son, extrait).
 const FILE_TIMEOUT: Duration = Duration::from_secs(240);
 
+/// Le même client pour tous les messages : sa connexion au relais reste
+/// ouverte. Un client neuf par message refaisait la connexion sécurisée à
+/// chaque fois (un son joué chez un pote partait 0,1 à 0,3 s plus tard).
 fn client(streaming: bool) -> Result<reqwest::Client, String> {
+    static SHARED: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    if !streaming {
+        if let Some(c) = SHARED.get() {
+            return Ok(c.clone());
+        }
+    }
+    let c = build_client(streaming)?;
+    Ok(if streaming { c } else { SHARED.get_or_init(|| c).clone() })
+}
+
+fn build_client(streaming: bool) -> Result<reqwest::Client, String> {
     let b = reqwest::Client::builder()
         .user_agent(concat!("Soundboard/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(15));
@@ -242,7 +260,7 @@ fn client(streaming: bool) -> Result<reqwest::Client, String> {
 
 impl Room {
     pub fn status(&self) -> RoomStatus {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock_ok();
         inner.members.retain(|_, (_, seen, _)| seen.elapsed() < MEMBER_TTL);
         let mut members: Vec<Member> =
             inner
@@ -260,7 +278,7 @@ impl Room {
     /// Le prochain extrait qu'on envoie nous revient aussi (pour tester),
     /// s'il arrive dans les 2 minutes.
     pub fn expect_echo(&self) {
-        self.inner.lock().unwrap().echo_until = Some(Instant::now() + Duration::from_secs(120));
+        self.inner.lock_ok().echo_until = Some(Instant::now() + Duration::from_secs(120));
     }
 
     /// Tous ceux qui vont recevoir (`to`, ou tout le salon si vide)
@@ -275,8 +293,14 @@ impl Room {
         self.all_can(to, CAP_LINK | CAP_CUT)
     }
 
+    /// Tous ceux qui vont recevoir savent-ils récupérer un GIF par son
+    /// adresse GIPHY ?
+    pub fn gif_links_ok(&self, to: &str) -> bool {
+        self.all_can(to, CAP_GIF_LINK)
+    }
+
     fn all_can(&self, to: &str, caps: u32) -> bool {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock_ok();
         let ok = |m: &(String, Instant, u32)| m.2 & caps == caps;
         if to.is_empty() {
             inner.members.values().filter(|m| m.1.elapsed() < MEMBER_TTL).all(ok)
@@ -286,10 +310,10 @@ impl Room {
     }
 
     pub fn my_id(&self) -> String {
-        self.inner.lock().unwrap().my_id.clone()
+        self.inner.lock_ok().my_id.clone()
     }
     pub fn my_name(&self) -> String {
-        self.inner.lock().unwrap().my_name.clone()
+        self.inner.lock_ok().my_name.clone()
     }
 
     pub fn target(&self) -> Option<String> {
@@ -297,7 +321,7 @@ impl Room {
     }
 
     pub fn set_target(&self, target: Option<String>) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock_ok();
         inner.target = target.filter(|t| inner.members.contains_key(t));
     }
 
@@ -313,10 +337,10 @@ impl Room {
     ) {
         let gen = self.gen.fetch_add(1, Ordering::SeqCst) + 1;
         let old_topic = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock_ok();
             let old = std::mem::take(&mut inner.topic);
             let old_id = inner.my_id.clone();
-            *inner = Inner { my_id: my_id.clone(), my_name: my_name.clone(), ..Default::default() };
+            *inner = Inner { my_id, my_name, ..Default::default() };
             if !normalize_code(code).is_empty() {
                 inner.topic = topic_of(code);
             }
@@ -336,13 +360,23 @@ impl Room {
         let on_event = Arc::new(on_event);
         let on_change = Arc::new(on_change);
         tauri::async_runtime::spawn(async move {
+            let (mut delay, mut last_error) = (Duration::ZERO, String::new());
             while me.gen.load(Ordering::SeqCst) == gen {
+                let started = Instant::now();
                 if let Err(e) = me.listen(gen, on_event.clone(), on_change.clone()).await {
-                    crate::journal::write(&format!("Salon : {e}"));
+                    // Hors ligne, la même erreur revenait toutes les 5 s et
+                    // poussait le reste hors du journal.
+                    if e != last_error {
+                        crate::journal::write(&format!("Salon : {e}"));
+                        last_error = e;
+                    }
+                } else {
+                    last_error.clear();
                 }
-                me.inner.lock().unwrap().connected = false;
+                me.inner.lock_ok().connected = false;
                 on_change();
-                tokio_sleep(Duration::from_secs(5)).await;
+                delay = retry_delay(delay, started.elapsed());
+                tokio_sleep(delay).await;
             }
         });
     }
@@ -354,7 +388,7 @@ impl Room {
         on_change: Arc<impl Fn() + Send + Sync + 'static>,
     ) -> Result<(), String> {
         let (topic, since) = {
-            let inner = self.inner.lock().unwrap();
+            let inner = self.inner.lock_ok();
             let since = inner.last_msg.as_ref().filter(|(_, t)| t.elapsed() < RESUME_WITHIN).map(|(id, _)| id.clone());
             (inner.topic.clone(), since)
         };
@@ -370,7 +404,7 @@ impl Room {
         if !res.status().is_success() {
             return Err(format!("relais : erreur {}", res.status().as_u16()));
         }
-        self.inner.lock().unwrap().connected = true;
+        self.inner.lock_ok().connected = true;
         self.hello(false).await;
         on_change();
         let mut line = Vec::new();
@@ -396,12 +430,19 @@ impl Room {
                 }
                 if let Some((id, incoming)) = parse_line(&text) {
                     if !id.is_empty() {
-                        self.inner.lock().unwrap().last_msg = Some((id, Instant::now()));
+                        self.inner.lock_ok().last_msg = Some((id, Instant::now()));
                     }
                     self.receive(incoming, &*on_event, &*on_change).await;
                 }
             }
-            let stale = self.inner.lock().unwrap().last_hello.is_none_or(|t| t.elapsed() > HELLO_EVERY);
+            // Seul dans le salon, se rappeler à personne ne sert à rien : un
+            // pote qui arrive se présente, et on lui répond. Ça faisait
+            // 96 messages par jour au relais pour une appli restée allumée.
+            let stale = {
+                let inner = self.inner.lock_ok();
+                inner.last_hello.is_none_or(|t| t.elapsed() > HELLO_EVERY)
+                    && inner.members.values().any(|m| m.1.elapsed() < MEMBER_TTL)
+            };
             if stale {
                 self.hello(false).await;
             }
@@ -414,7 +455,7 @@ impl Room {
             // Son propre extrait, envoyé « moi compris » : on le reçoit
             // comme les potes, par le même chemin.
             let echo = matches!(incoming.msg, Msg::Clip { .. }) && {
-                let mut inner = self.inner.lock().unwrap();
+                let mut inner = self.inner.lock_ok();
                 inner.echo_until.take().is_some_and(|t| Instant::now() < t)
             };
             if echo {
@@ -424,7 +465,7 @@ impl Room {
         }
         match &incoming.msg {
             Msg::Hi { from, name, reply, caps } => {
-                let new = self.inner.lock().unwrap().seen(from, name, Some(*caps));
+                let new = self.inner.lock_ok().seen(from, name, Some(*caps));
                 // Un nouveau venu ne connaît personne : on se présente.
                 if !reply && new {
                     self.hello(true).await;
@@ -432,19 +473,19 @@ impl Room {
                 on_change();
             }
             Msg::Bye { from } => {
-                self.inner.lock().unwrap().members.remove(from);
+                self.inner.lock_ok().members.remove(from);
                 on_change();
             }
             Msg::Play { to, from, name, .. } if *to == me => {
-                self.inner.lock().unwrap().seen(from, name, None);
+                self.inner.lock_ok().seen(from, name, None);
                 on_event(incoming);
             }
             Msg::Clip { to, from, name, .. } if to.is_empty() || *to == me => {
-                self.inner.lock().unwrap().seen(from, name, None);
+                self.inner.lock_ok().seen(from, name, None);
                 on_event(incoming);
             }
             Msg::Gift { to, from, name, .. } if *to == me => {
-                self.inner.lock().unwrap().seen(from, name, None);
+                self.inner.lock_ok().seen(from, name, None);
                 on_event(incoming);
             }
             Msg::Need { to, .. } if *to == me => on_event(incoming),
@@ -455,7 +496,7 @@ impl Room {
 
     async fn hello(&self, reply: bool) {
         let (from, name) = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock_ok();
             inner.last_hello = Some(Instant::now());
             (inner.my_id.clone(), inner.my_name.clone())
         };
@@ -463,7 +504,7 @@ impl Room {
     }
 
     pub async fn publish(&self, msg: &Msg) -> Result<(), String> {
-        let topic = self.inner.lock().unwrap().topic.clone();
+        let topic = self.inner.lock_ok().topic.clone();
         if topic.is_empty() {
             return Err("tu n'es dans aucun salon".into());
         }
@@ -496,7 +537,7 @@ impl Room {
         data: impl FnOnce() -> Result<Vec<u8>, String>,
     ) -> Result<(), String> {
         let cached = {
-            let mut up = self.uploads.lock().unwrap();
+            let mut up = self.uploads.lock_ok();
             up.retain(|_, (_, at)| at.elapsed() < REUSE_UPLOAD);
             up.get(key).map(|(url, _)| url.clone())
         };
@@ -508,20 +549,20 @@ impl Room {
                 }
                 Err(e) => {
                     crate::journal::write(&format!("Salon : renvoi par adresse raté ({e}), envoi du fichier"));
-                    self.uploads.lock().unwrap().remove(key);
+                    self.uploads.lock_ok().remove(key);
                 }
             }
         }
         let url = self.publish_file(msg, file_name, data()?).await?;
         if let Some(url) = url {
-            self.uploads.lock().unwrap().insert(key.to_string(), (url, Instant::now()));
+            self.uploads.lock_ok().insert(key.to_string(), (url, Instant::now()));
         }
         Ok(())
     }
 
     /// Message avec, en pièce jointe, un fichier déjà sur le relais.
     async fn publish_attached(&self, msg: &Msg, url: &str, file_name: &str) -> Result<(), String> {
-        let topic = self.inner.lock().unwrap().topic.clone();
+        let topic = self.inner.lock_ok().topic.clone();
         if topic.is_empty() {
             return Err("tu n'es dans aucun salon".into());
         }
@@ -546,7 +587,7 @@ impl Room {
     /// Envoie le fichier en pièce jointe, avec le message qui dit quoi en
     /// faire. Renvoie l'adresse du fichier sur le relais (pour le réutiliser).
     async fn publish_file(&self, msg: &Msg, file_name: &str, data: Vec<u8>) -> Result<Option<String>, String> {
-        let topic = self.inner.lock().unwrap().topic.clone();
+        let topic = self.inner.lock_ok().topic.clone();
         if topic.is_empty() {
             return Err("tu n'es dans aucun salon".into());
         }
@@ -632,6 +673,20 @@ pub async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     Ok(data)
 }
 
+/// Attente avant de se reconnecter au relais. Une connexion tenue plus
+/// d'une minute coupée : on revient vite. Des échecs d'affilée (pas
+/// d'internet, relais en panne) : 5 s, 10 s, 20 s… jusqu'à 2 min, au lieu
+/// d'une demande toutes les 5 s pendant des heures.
+fn retry_delay(previous: Duration, connected_for: Duration) -> Duration {
+    const FIRST: Duration = Duration::from_secs(5);
+    const MAX: Duration = Duration::from_secs(120);
+    if connected_for > Duration::from_secs(60) {
+        FIRST
+    } else {
+        (previous * 2).clamp(FIRST, MAX)
+    }
+}
+
 async fn tokio_sleep(d: Duration) {
     let _ = tauri::async_runtime::spawn_blocking(move || std::thread::sleep(d)).await;
 }
@@ -645,6 +700,20 @@ mod tests {
         assert_eq!(topic_of("abcd-efgh-2345"), topic_of(" ABCDEFGH2345 "));
         assert_ne!(topic_of("ABCD-EFGH-2345"), topic_of("ABCD-EFGH-2346"));
         assert!(!topic_of("x").contains("X"));
+    }
+
+    #[test]
+    fn reconnecting_slows_down_when_the_relay_keeps_failing() {
+        let s = Duration::from_secs;
+        let mut d = Duration::ZERO;
+        let mut waits = Vec::new();
+        for _ in 0..7 {
+            d = retry_delay(d, s(1));
+            waits.push(d.as_secs());
+        }
+        assert_eq!(waits, [5, 10, 20, 40, 80, 120, 120]);
+        // Connexion tenue un moment puis coupée : on revient vite.
+        assert_eq!(retry_delay(s(120), s(600)), s(5));
     }
 
     #[test]
@@ -704,20 +773,24 @@ mod tests {
         assert_eq!(serde_json::from_str::<Msg>(&json).unwrap(), msg);
         let room = Room::default();
         {
-            let mut inner = room.inner.lock().unwrap();
+            let mut inner = room.inner.lock_ok();
             inner.seen("new", "Neuf", Some(MY_CAPS));
             inner.seen("old", "Vieux", Some(CAP_LINK | CAP_CUT));
         }
         let members = room.status().members;
         assert!(members.iter().find(|m| m.id == "new").unwrap().gift);
         assert!(!members.iter().find(|m| m.id == "old").unwrap().gift);
+        // Un GIF ne part par son adresse que si tous ceux qui reçoivent savent la lire.
+        assert!(room.gif_links_ok("new"));
+        assert!(!room.gif_links_ok("old"));
+        assert!(!room.gif_links_ok(""));
     }
 
     #[test]
     fn old_apps_cannot_take_links() {
         let room = Room::default();
         {
-            let mut inner = room.inner.lock().unwrap();
+            let mut inner = room.inner.lock_ok();
             inner.seen("new", "Léa", Some(CAP_LINK));
             inner.seen("old", "Tom", None);
         }
@@ -726,11 +799,11 @@ mod tests {
         assert!(!room.links_ok(""));
         assert!(!room.links_ok("absent"));
         // Un son reçu ne fait pas oublier ce que l'appli sait faire.
-        room.inner.lock().unwrap().seen("new", "Léa", None);
+        room.inner.lock_ok().seen("new", "Léa", None);
         assert!(room.links_ok("new"));
         // Une 2.4 (lien sans passage seul) reçoit les vidéos longues en fichier.
         assert!(!room.cut_links_ok("new"));
-        room.inner.lock().unwrap().seen("new", "Léa", Some(CAP_LINK | CAP_CUT));
+        room.inner.lock_ok().seen("new", "Léa", Some(CAP_LINK | CAP_CUT));
         assert!(room.cut_links_ok("new"));
         // Un ancien « Hi » (sans caps) se lit toujours.
         let hi: Msg = serde_json::from_str(r#"{"t":"hi","from":"a","name":"b"}"#).unwrap();

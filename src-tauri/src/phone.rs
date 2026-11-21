@@ -136,7 +136,7 @@ pub fn route(method: &Method, url: &str, token: &str) -> Result<Option<Option<Re
         (Method::Post, "/api/clip/gif") => param(&params, "url").map(|u| Some(Request::ClipGif(percent_decode(u)))),
         (Method::Post, "/api/clip/link") => param(&params, "url").map(|u| Some(Request::ClipLink(percent_decode(u)))),
         (Method::Post, "/api/clip/upload") => param(&params, "ext")
-            .map(|e| e.to_ascii_lowercase())
+            .map(str::to_ascii_lowercase)
             .filter(|e| e.len() <= 5 && e.chars().all(|c| c.is_ascii_alphanumeric()))
             .map(|ext| Some(Request::ClipUpload { ext, data: Vec::new() })),
         (Method::Post, "/api/clip/send") => param(&params, "media").map(|m| {

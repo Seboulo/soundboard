@@ -108,10 +108,6 @@ pub struct LinkClip {
 /// Extraits gardés dans l'historique (envoyés, et reçus).
 const RECENTS: usize = 20;
 
-fn now_s() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
-}
-
 fn received_file(state: &AppState) -> PathBuf {
     clips_dir(state).join("recus").join("index.json")
 }
@@ -206,7 +202,7 @@ pub fn clip_favorite(state: State<AppState>, path: String, on: bool) -> Result<V
         }
         r.origin = Some(path.clone());
         r.path = copy.to_string_lossy().into_owned();
-        r.at = now_s();
+        r.at = now_secs();
         list.insert(0, r);
     }
     let data = serde_json::to_vec(&list).map_err(|e| e.to_string())?;
@@ -232,8 +228,8 @@ fn load_recents(state: &AppState) -> Vec<Recent> {
 /// Lien d'où vient une vidéo préparée (cette session, ou l'historique), et
 /// pour un passage seul, où il commence dans la vidéo (ms).
 fn link_for(state: &AppState, path: &str) -> Option<(String, Option<u64>)> {
-    if let Some(l) = state.clips.links.lock().unwrap().get(path) {
-        return Some((l.clone(), state.clips.cuts.lock().unwrap().get(path).copied()));
+    if let Some(l) = state.clips.links.lock_ok().get(path) {
+        return Some((l.clone(), state.clips.cuts.lock_ok().get(path).copied()));
     }
     load_recents(state).into_iter().find(|r| r.path == path).and_then(|r| Some((r.link?, r.cut_ms)))
 }
@@ -254,6 +250,9 @@ pub fn clip_history(state: State<AppState>) -> serde_json::Value {
     serde_json::json!({ "sent": load_recents(&state), "received": load_list(&received_file(&state)) })
 }
 
+/// Passage d'un fichier : chemin, début et fin (ms).
+type LevelKey = (PathBuf, u64, u64);
+
 #[derive(Default)]
 pub struct Clips {
     pending: Mutex<Option<ClipShow>>,
@@ -268,6 +267,9 @@ pub struct Clips {
     audio_discord: AtomicBool,
     /// Fichier préparé → lien d'où il vient.
     links: Mutex<HashMap<String, String>>,
+    /// GIF préparé → son adresse GIPHY : il part par son adresse, sans
+    /// remplir la place limitée du relais.
+    gifs: Mutex<HashMap<String, String>>,
     /// Fichier préparé qui n'est qu'un passage → où il commence (ms).
     cuts: Mutex<HashMap<String, u64>>,
     /// Dernier « Tout arrêter » de chaque pote : un extrait encore en train
@@ -275,7 +277,7 @@ pub struct Clips {
     stopped: Mutex<HashMap<String, Instant>>,
     /// Niveau du passage écouté (fichier, début, fin) : « Écouter » et
     /// « Aperçu » relancés partent tout de suite.
-    levels: Mutex<Vec<((PathBuf, u64, u64), crate::config::Analysis)>>,
+    levels: Mutex<Vec<(LevelKey, crate::config::Analysis)>>,
     /// ffmpeg déjà demandé cette session (pour convertir les vidéos envoyées).
     ffmpeg_asked: AtomicBool,
     /// « Ne pas déranger » : rien ne s'affiche ni ne joue de la part des
@@ -296,7 +298,7 @@ pub fn clip_dnd(app: AppHandle, on: Option<bool>) -> bool {
     if let Some(on) = on {
         state.clips.dnd.store(on, Ordering::SeqCst);
         journal::write(if on { "Ne pas déranger : activé" } else { "Ne pas déranger : coupé" });
-        let preview = state.clips.pending.lock().unwrap().as_ref().is_some_and(|c| c.preview);
+        let preview = state.clips.pending.lock_ok().as_ref().is_some_and(|c| c.preview);
         if on && !preview {
             close(&app);
         }
@@ -344,10 +346,10 @@ fn sendable(state: &AppState, media: &str) -> Result<PathBuf, String> {
         }
         let copy_key = copy.to_string_lossy().into_owned();
         if let Some(cut) = r.cut_ms {
-            state.clips.cuts.lock().unwrap().insert(copy_key.clone(), cut);
+            state.clips.cuts.lock_ok().insert(copy_key.clone(), cut);
         }
         if let Some(link) = r.link {
-            state.clips.links.lock().unwrap().insert(copy_key, link);
+            state.clips.links.lock_ok().insert(copy_key, link);
         }
     }
     Ok(copy)
@@ -357,12 +359,12 @@ fn sendable(state: &AppState, media: &str) -> Result<PathBuf, String> {
 /// la retélécharger. Renvoie le fichier et son son à part.
 fn already_have(state: &AppState, link: &str) -> Option<(PathBuf, Option<PathBuf>)> {
     // Seulement une vidéo entière (pas un passage seul).
-    let cuts = state.clips.cuts.lock().unwrap().clone();
+    let cuts = state.clips.cuts.lock_ok().clone();
     let from_session: Vec<String> = state
         .clips
         .links
-        .lock()
-        .unwrap()
+        
+        .lock_ok()
         .iter()
         .filter(|(p, l)| *l == link && !cuts.contains_key(*p))
         .map(|(p, _)| p.clone())
@@ -525,7 +527,14 @@ pub fn from_upload(app: &AppHandle, ext: &str, data: &[u8]) -> Result<ClipPick, 
 #[tauri::command]
 pub async fn clip_from_gif(app: AppHandle, url: String) -> Result<ClipPick, String> {
     let (data, ext) = giphy::download(&url).await?;
-    keep_for_sending(&app, &data, ext, String::new(), None)
+    let pick = keep_for_sending(&app, &data, ext, String::new(), None)?;
+    let state = app.state::<AppState>();
+    let mut gifs = state.clips.gifs.lock_ok();
+    if gifs.len() >= 200 {
+        gifs.clear();
+    }
+    gifs.insert(pick.path.clone(), url);
+    Ok(pick)
 }
 
 /// Vidéos YouTube trouvées par mots-clés, pour l'onglet « Lien vidéo ».
@@ -533,18 +542,20 @@ pub async fn clip_from_gif(app: AppHandle, url: String) -> Result<ClipPick, Stri
 pub async fn clip_search_videos(app: AppHandle, query: String, start: Option<u32>) -> Result<Vec<youtube::Found>, String> {
     // Même recherche refaite (fenêtre rouverte, téléphone) : réponse tout de
     // suite plutôt que de relancer yt-dlp, pendant 10 minutes.
-    static CACHE: Mutex<Vec<(String, u32, Instant, Vec<youtube::Found>)>> = Mutex::new(Vec::new());
+    /// (recherche, page, quand, résultats)
+    type Cached = (String, u32, Instant, Vec<youtube::Found>);
+    static CACHE: Mutex<Vec<Cached>> = Mutex::new(Vec::new());
     let key = query.trim().to_lowercase();
     let start = start.unwrap_or(1);
     {
-        let mut cache = CACHE.lock().unwrap();
+        let mut cache = CACHE.lock_ok();
         cache.retain(|c| c.2.elapsed() < Duration::from_secs(600));
         if let Some(c) = cache.iter().find(|c| c.0 == key && c.1 == start) {
             return Ok(c.3.clone());
         }
     }
     let state = app.state::<AppState>();
-    let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
+    let data_dir = state.data_dir();
     let status = |msg: &str| {
         let _ = app.emit("youtube-status", msg);
     };
@@ -553,7 +564,7 @@ pub async fn clip_search_videos(app: AppHandle, query: String, start: Option<u32
         .await
         .map_err(|e| e.to_string())??;
     if !found.is_empty() {
-        let mut cache = CACHE.lock().unwrap();
+        let mut cache = CACHE.lock_ok();
         if cache.len() >= 30 {
             cache.remove(0);
         }
@@ -576,7 +587,7 @@ pub async fn clip_from_link(app: AppHandle, url: String, start_s: Option<f64>, c
         return Err("un téléchargement de vidéo est déjà en cours".into());
     }
     let res = async {
-        let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
+        let data_dir = state.data_dir();
         let status = |msg: &str| {
             let _ = app.emit("youtube-status", msg);
         };
@@ -612,7 +623,9 @@ pub async fn clip_from_link(app: AppHandle, url: String, start_s: Option<f64>, c
         let got = got?;
         let ext_of = |p: &Path| p.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_lowercase();
         let ext = ext_of(&got.video);
-        let read = || -> Result<(Vec<u8>, Option<(Vec<u8>, String)>), String> {
+        // La vidéo, et la piste audio à part avec son extension s'il y en a une.
+        type Media = (Vec<u8>, Option<(Vec<u8>, String)>);
+        let read = || -> Result<Media, String> {
             let video = fs::read(&got.video).map_err(|e| e.to_string())?;
             let audio = match &got.audio {
                 Some(a) => Some((fs::read(a).map_err(|e| e.to_string())?, ext_of(a))),
@@ -627,9 +640,9 @@ pub async fn clip_from_link(app: AppHandle, url: String, start_s: Option<f64>, c
         pick.cut = was_cut;
         // Un passage seul part aussi par lien : le pote récupère le même
         // passage (ffmpeg chez lui aussi), sans passer par le relais.
-        state.clips.links.lock().unwrap().insert(pick.path.clone(), url.clone());
+        state.clips.links.lock_ok().insert(pick.path.clone(), url.clone());
         if was_cut {
-            state.clips.cuts.lock().unwrap().insert(pick.path.clone(), (start * 1000.0) as u64);
+            state.clips.cuts.lock_ok().insert(pick.path.clone(), (start * 1000.0) as u64);
         }
         Ok(pick)
     }
@@ -690,7 +703,7 @@ const READY_KEEP: usize = 10;
 /// lourde : la vidéo part alors telle quelle, comme avant.
 async fn prepare_video(app: &AppHandle, dir: &Path, media: &Path, start_s: Option<f64>, end_s: Option<f64>, with_sound: bool) -> Option<PathBuf> {
     let state = app.state::<AppState>();
-    let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
+    let data_dir = state.data_dir();
     let tools = data_dir.join("tools");
     let Some(ff) = youtube::ffmpeg_ready(&tools) else {
         if cfg!(windows) && !state.clips.ffmpeg_asked.swap(true, Ordering::SeqCst) {
@@ -730,6 +743,132 @@ async fn prepare_video(app: &AppHandle, dir: &Path, media: &Path, start_s: Optio
     }
     let size = fs::metadata(&out).ok()?.len();
     (size <= MAX_MEDIA).then_some(out)
+}
+
+/// Photo de plus de 400 Ko allégée avant l'envoi (voir
+/// `youtube::shrink_image_args`) : une photo de téléphone de 4 Mo en fait
+/// quelques centaines de Ko. `None` : pas de ffmpeg, GIF animé, photo en
+/// miroir, ou rien à gagner ; elle part alors telle quelle.
+async fn prepare_image(app: &AppHandle, media: &Path, ext: &str) -> Option<PathBuf> {
+    let state = app.state::<AppState>();
+    let data_dir = state.data_dir();
+    let ff = youtube::ffmpeg_ready(&data_dir.join("tools"))?;
+    let size = fs::metadata(media).ok()?.len();
+    if size < 400 * 1024 || !matches!(ext, "jpg" | "jpeg" | "png") {
+        return None;
+    }
+    let data = fs::read(media).ok()?;
+    let (turn, out_ext) = if ext == "png" {
+        ("", if png_has_alpha(&data) { "png" } else { "jpg" })
+    } else {
+        let turn = match jpeg_orientation(&data) {
+            1 => "",
+            3 => "transpose=1,transpose=1",
+            6 => "transpose=1",
+            8 => "transpose=2",
+            _ => return None,
+        };
+        (turn, "jpg")
+    };
+    let ready_dir = clips_dir(&state).join("pret");
+    fs::create_dir_all(&ready_dir).ok()?;
+    let stem = media.file_stem().and_then(|s| s.to_str()).unwrap_or("photo");
+    let out = ready_dir.join(format!("{stem}-photo.{out_ext}"));
+    if !out.exists() {
+        let (src, out2, turn) = (media.to_path_buf(), out.clone(), turn.to_string());
+        let res = tauri::async_runtime::spawn_blocking(move || youtube::run_ffmpeg(&ff, youtube::shrink_image_args(&src, &turn, &out2), &out2))
+            .await
+            .ok()?;
+        if let Err(e) = res {
+            journal::write(&format!("Extrait : photo envoyée telle quelle ({e})"));
+            return None;
+        }
+        trim_dir(&ready_dir, READY_KEEP);
+    }
+    let small = fs::metadata(&out).ok()?.len();
+    journal::write(&format!("Extrait : photo allégée ({} Ko → {} Ko)", size / 1024, small / 1024));
+    (small < size * 9 / 10).then_some(out)
+}
+
+/// Le passage joué d'un son de pad joint à un extrait (30 s au plus), en
+/// AAC : un son ajouté depuis YouTube est souvent le morceau entier (plusieurs
+/// Mo) dont on ne joue que quelques secondes. `None` : son déjà léger, pas
+/// de ffmpeg ou conversion ratée ; il part alors tel quel.
+async fn prepare_sound(app: &AppHandle, sound: &Sound) -> Option<PathBuf> {
+    let state = app.state::<AppState>();
+    let size = fs::metadata(&sound.path).ok()?.len();
+    if size < 512 * 1024 {
+        return None;
+    }
+    let data_dir = state.data_dir();
+    let ff = youtube::ffmpeg_ready(&data_dir.join("tools"))?;
+    let start_ms = sound.start_ms;
+    let end_ms = sound.end_ms.or(sound.analysis.map(|a| a.duration_ms)).unwrap_or(start_ms + 30_000);
+    let dur_ms = end_ms.saturating_sub(start_ms).clamp(500, 30_000);
+    let ready_dir = clips_dir(&state).join("pret");
+    fs::create_dir_all(&ready_dir).ok()?;
+    // Nommé d'après le fichier : un fichier remplacé donne un nouveau passage.
+    let stem = sound.path.file_stem().and_then(|s| s.to_str()).unwrap_or("son");
+    let out = ready_dir.join(format!("{stem}-{start_ms}-{dur_ms}-son.m4a"));
+    if !out.exists() {
+        let (src, out2) = (sound.path.clone(), out.clone());
+        let args = youtube::cut_sound_args(&src, start_ms as f64 / 1000.0, dur_ms as f64 / 1000.0, &out2);
+        let res = tauri::async_runtime::spawn_blocking(move || youtube::run_ffmpeg(&ff, args, &out2)).await.ok()?;
+        if let Err(e) = res {
+            journal::write(&format!("Extrait : son envoyé tel quel ({e})"));
+            return None;
+        }
+        trim_dir(&ready_dir, READY_KEEP);
+    }
+    let small = fs::metadata(&out).ok()?.len();
+    (small < size * 9 / 10).then_some(out)
+}
+
+/// Sens d'une photo JPEG d'après son étiquette EXIF (1 : à l'endroit).
+fn jpeg_orientation(data: &[u8]) -> u16 {
+    let get16 = |b: &[u8], le: bool| if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) };
+    let get32 = |b: &[u8], le: bool| if le { u32::from_le_bytes([b[0], b[1], b[2], b[3]]) } else { u32::from_be_bytes([b[0], b[1], b[2], b[3]]) };
+    let read = || -> Option<u16> {
+        if data.get(..2)? != [0xFF, 0xD8] {
+            return None;
+        }
+        let mut i = 2;
+        while i + 4 <= data.len() && data[i] == 0xFF {
+            let marker = data[i + 1];
+            let len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
+            if marker == 0xDA || len < 2 {
+                return None;
+            }
+            let seg = data.get(i + 4..i + 2 + len)?;
+            if marker == 0xE1 && seg.starts_with(b"Exif\0\0") {
+                let tiff = &seg[6..];
+                let le = match tiff.get(..2)? {
+                    b"II" => true,
+                    b"MM" => false,
+                    _ => return None,
+                };
+                let ifd = get32(tiff.get(4..8)?, le) as usize;
+                let count = get16(tiff.get(ifd..ifd + 2)?, le) as usize;
+                for k in 0..count.min(64) {
+                    let e = tiff.get(ifd + 2 + k * 12..ifd + 14 + k * 12)?;
+                    if get16(&e[0..2], le) == 0x0112 {
+                        return Some(get16(&e[8..10], le));
+                    }
+                }
+                return None;
+            }
+            i += 2 + len;
+        }
+        None
+    };
+    read().unwrap_or(1)
+}
+
+/// Une image PNG avec de la transparence (elle reste en PNG).
+fn png_has_alpha(data: &[u8]) -> bool {
+    let color = data.get(25).copied().unwrap_or(6);
+    let head = &data[..data.len().min(64 * 1024)];
+    matches!(color, 4 | 6) || head.windows(4).any(|w| w == b"tRNS")
 }
 
 /// « Envoyer à » : tout le salon, et soi-même aussi pour tester.
@@ -802,7 +941,7 @@ pub async fn send_clip(
         }
         room.publish(&msg).await?;
         journal::write("Extrait : lien envoyé (le pote télécharge la vidéo)");
-        *state.extras.last_sent.lock().unwrap() = Some(Instant::now());
+        *state.extras.last_sent.lock_ok() = Some(Instant::now());
         add_recent(&state, Recent {
             path: path_key,
             kind: "video".into(),
@@ -813,7 +952,7 @@ pub async fn send_clip(
             sound_id: None,
             from: None,
             sound: None,
-            at: now_s(),
+            at: now_secs(),
             link: Some(link),
             cut_ms,
             style: recent_style,
@@ -821,28 +960,91 @@ pub async fn send_clip(
         });
         return Ok(());
     }
+    // GIF de GIPHY sans son : seule son adresse part, chaque pote le
+    // télécharge chez GIPHY. Envoyé en fichier, il prenait jusqu'à 5 Mo de
+    // la place du relais (environ 100 Mo toutes les 3 h), vite remplie.
+    let pad_sound = sound_id.as_deref().is_some_and(|s| !s.is_empty());
+    let gif = (kind_of(&media_ext) == Some("image") && !pad_sound)
+        .then(|| state.clips.gifs.lock_ok().get(&path_key).cloned())
+        .flatten()
+        .filter(|u| giphy::allowed(u))
+        .filter(|_| state.extras.room.gif_links_ok(receivers));
+    if let Some(gif) = gif {
+        let room = &state.extras.room;
+        let with_me = to.as_deref() == Some(ME_TOO);
+        let to = to.filter(|t| !t.is_empty() && t != ME_TOO).unwrap_or_default();
+        if !to.is_empty() && !room.status().members.iter().any(|m| m.id == to) {
+            return Err("ce pote n'est plus en ligne".into());
+        }
+        let title: String = title.trim().chars().take(60).collect();
+        let msg = Msg::Clip {
+            from: room.my_id(),
+            name: room.my_name(),
+            to,
+            title: title.clone(),
+            link: gif,
+            start_ms: 0,
+            end_ms: None,
+            volume: None,
+            cut: false,
+            style,
+        };
+        if with_me {
+            room.expect_echo();
+        }
+        room.publish(&msg).await?;
+        journal::write("Extrait : GIF envoyé par son adresse (le pote le prend chez GIPHY)");
+        *state.extras.last_sent.lock_ok() = Some(Instant::now());
+        add_recent(&state, Recent {
+            path: path_key,
+            kind: "image".into(),
+            title,
+            start_s: None,
+            end_s: None,
+            volume: None,
+            sound_id: None,
+            from: None,
+            sound: None,
+            at: now_secs(),
+            link: None,
+            cut_ms: None,
+            style: recent_style,
+            origin: None,
+        });
+        return Ok(());
+    }
     // Vidéo convertie avant l'envoi (H.264 + AAC, passage coupé) : elle se
     // lit sans à-coup chez le pote et commence à 0. Sinon, telle quelle.
-    let pad_sound = sound_id.as_deref().is_some_and(|s| !s.is_empty());
+    // Une photo lourde est allégée de la même façon.
     let ready = match kind_of(&media_ext) {
         Some("video") => prepare_video(&app, &dir, &media, start_s, end_s, !pad_sound).await,
+        Some("image") => prepare_image(&app, &media, &media_ext).await,
         _ => None,
     };
+    let video_ready = ready.is_some() && kind_of(&media_ext) == Some("video");
     let media_data = fs::read(ready.as_deref().unwrap_or(&media)).map_err(|_| "image ou vidéo introuvable, choisis-la à nouveau".to_string())?;
-    let media_ext = if ready.is_some() { "mp4".to_string() } else { media_ext };
+    let media_ext = match &ready {
+        Some(p) => p.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_lowercase(),
+        None => media_ext,
+    };
     let sound = match sound_id.filter(|s| !s.is_empty()) {
         Some(id) => Some(find_sound(&state, &id)?),
         None => None,
     };
     let (sound_data, header) = match &sound {
         Some(s) => {
-            let data = fs::read(&s.path).map_err(|e| e.to_string())?;
-            let ext = s.path.extension().and_then(|e| e.to_str()).unwrap_or("mp3").to_lowercase();
+            // Seul le passage joué part, s'il pèse lourd (déjà coupé : il
+            // commence à 0 et finit au bout du fichier).
+            let (path, ext, start_ms, end_ms) = match prepare_sound(&app, s).await {
+                Some(p) => (p, "m4a".to_string(), 0, None),
+                None => (s.path.clone(), s.path.extension().and_then(|e| e.to_str()).unwrap_or("mp3").to_lowercase(), s.start_ms, s.end_ms),
+            };
+            let data = fs::read(&path).map_err(|e| e.to_string())?;
             let h = Header {
                 sound_ext: ext,
                 sound_len: data.len() as u64,
-                start_ms: s.start_ms,
-                end_ms: s.end_ms,
+                start_ms,
+                end_ms,
                 volume: s.volume,
                 ..Default::default()
             };
@@ -857,9 +1059,9 @@ pub async fn send_clip(
             let stem = media.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
             let side = ["m4a", "mp3", "aac"].iter().map(|e| dir.join(format!("{stem}-son.{e}"))).find(|p| p.exists());
             // Une image reçue avec son son (renvoyée depuis l'historique) le garde.
-            match side.filter(|_| ready.is_none()) {
+            match side.filter(|_| !video_ready) {
                 // Vidéo convertie : déjà coupée, son compris.
-                _ if ready.is_some() => (Vec::new(), Header { volume: video_volume, ..Default::default() }),
+                _ if video_ready => (Vec::new(), Header { volume: video_volume, ..Default::default() }),
                 Some(p) => {
                     let data = fs::read(&p).map_err(|e| e.to_string())?;
                     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("m4a").to_string();
@@ -899,7 +1101,7 @@ pub async fn send_clip(
         return Err(e);
     }
     journal::write(&format!("Extrait : envoyé en {} s", sent.elapsed().as_secs()));
-    *state.extras.last_sent.lock().unwrap() = Some(Instant::now());
+    *state.extras.last_sent.lock_ok() = Some(Instant::now());
     let is_video = kind_of(&media.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase()) == Some("video");
     add_recent(&state, Recent {
         path: media.to_string_lossy().into_owned(),
@@ -911,7 +1113,7 @@ pub async fn send_clip(
         sound_id: sound.map(|s| s.id),
         from: None,
         sound: None,
-        at: now_s(),
+        at: now_secs(),
         link: None,
         cut_ms: None,
         style: recent_style,
@@ -930,7 +1132,7 @@ async fn fetch_link(app: &AppHandle, url: &str, dir: &Path, id: &str, start_ms: 
         return Err("lien non accepté".into());
     }
     let state = app.state::<AppState>();
-    let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
+    let data_dir = state.data_dir();
     let tools = data_dir.join("tools");
     let exe = youtube::ensure(&tools, |_| {}).await?;
     // Vidéo longue : ffmpeg (installé la première fois) pour n'en prendre
@@ -990,7 +1192,7 @@ pub async fn receive(
     style: String,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let mode = state.config.lock().unwrap().settings.clips_mode.clone();
+    let mode = state.config.lock_ok().settings.clips_mode.clone();
     if mode == "off" {
         return Ok(());
     }
@@ -1005,7 +1207,7 @@ pub async fn receive(
         return Ok(());
     }
     {
-        let mut last = state.clips.last_from.lock().unwrap();
+        let mut last = state.clips.last_from.lock_ok();
         if last.get(&from).is_some_and(|t| t.elapsed() < SPAM_GAP) {
             return Ok(());
         }
@@ -1016,9 +1218,23 @@ pub async fn receive(
     trim_dir(&dir, 40);
     let id = uuid::Uuid::new_v4().simple().to_string();
     let got = Instant::now();
-    let link_url = link.as_ref().map(|l| l.url.clone());
+    // Un GIF reçu par son adresse GIPHY n'est pas un lien de vidéo.
+    let link_url = link.as_ref().map(|l| l.url.clone()).filter(|u| !giphy::allowed(u));
     let mut cut_ms = None;
     let (kind, media_path, sound_path, start_ms, end_ms, volume) = match (link, url) {
+        (Some(l), _) if giphy::allowed(&l.url) => {
+            let (data, ext) = match giphy::download(&l.url).await {
+                Ok(x) => x,
+                Err(e) => {
+                    journal::write(&format!("Extrait de {name} : GIF pas récupéré chez GIPHY ({e})"));
+                    return Err(e);
+                }
+            };
+            let media = dir.join(format!("{id}.{ext}"));
+            fs::write(&media, data).map_err(|e| e.to_string())?;
+            journal::write(&format!("Extrait de {name} : GIF récupéré chez GIPHY en {} s", got.elapsed().as_secs()));
+            ("image", media, None, 0, None, 1.0)
+        }
         (Some(l), _) => {
             // Vidéo déjà là (son propre extrait « moi compris », ou déjà
             // reçue) : copiée tout de suite au lieu d'être retéléchargée.
@@ -1077,7 +1293,7 @@ pub async fn receive(
         (None, None) => return Ok(()),
     };
     // Arrêté par le pote (« Tout arrêter ») pendant que ça arrivait.
-    if state.clips.stopped.lock().unwrap().get(&from).is_some_and(|t| *t >= got) {
+    if state.clips.stopped.lock_ok().get(&from).is_some_and(|t| *t >= got) {
         journal::write(&format!("Extrait de {name} : arrêté par lui avant d'arriver"));
         return Ok(());
     }
@@ -1108,7 +1324,7 @@ pub async fn receive(
         sound_id: None,
         from: Some(show.from.clone()),
         sound: show.sound.clone(),
-        at: now_s(),
+        at: now_secs(),
         link: link_url,
         cut_ms,
         style: show.style.clone(),
@@ -1268,10 +1484,10 @@ const QUEUE_MAX: usize = 3;
 /// l'écran : il passera juste après, au lieu de le couper.
 fn show_window(app: &AppHandle, show: ClipShow) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let busy = state.clips.pending.lock().unwrap().is_some()
-        && state.clips.window.lock().unwrap().as_deref().is_some_and(|l| app.get_webview_window(l).is_some());
+    let busy = state.clips.pending.lock_ok().is_some()
+        && state.clips.window.lock_ok().as_deref().is_some_and(|l| app.get_webview_window(l).is_some());
     if busy && !show.preview {
-        let mut queue = state.clips.queue.lock().unwrap();
+        let mut queue = state.clips.queue.lock_ok();
         if queue.len() >= QUEUE_MAX {
             journal::write(&format!("Extrait de {} ignoré (déjà {QUEUE_MAX} en attente)", show.from));
             return Ok(());
@@ -1287,7 +1503,7 @@ fn show_window(app: &AppHandle, show: ClipShow) -> Result<(), String> {
 /// Passe à l'extrait suivant de la file ; ferme la fenêtre s'il n'y en a plus.
 fn advance(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let next = state.clips.queue.lock().unwrap().pop_front();
+    let next = state.clips.queue.lock_ok().pop_front();
     match next {
         Some(show) => {
             if show_now(app, show).is_err() {
@@ -1310,12 +1526,12 @@ fn show_now(app: &AppHandle, show: ClipShow) -> Result<(), String> {
     foreground::remember();
     let state = app.state::<AppState>();
     let ask = show.ask;
-    let before = state.clips.pending.lock().unwrap().replace(show.clone());
-    let current = state.clips.window.lock().unwrap().clone();
+    let before = state.clips.pending.lock_ok().replace(show.clone());
+    let current = state.clips.window.lock_ok().clone();
     if let Some(w) = current.as_deref().and_then(|l| app.get_webview_window(l)) {
         if let Some(before) = before.filter(|b| comes_back(b, &show)) {
             journal::write(&format!("Extrait de {} remis en attente (aperçu)", before.from));
-            state.clips.queue.lock().unwrap().push_front(before);
+            state.clips.queue.lock_ok().push_front(before);
         }
         // L'extrait d'avant est remplacé : son son s'arrête avec lui (sinon il
         // continuait jusqu'à 30 s sous la carte « Afficher / Refuser »).
@@ -1353,7 +1569,7 @@ fn show_now(app: &AppHandle, show: ClipShow) -> Result<(), String> {
     }
     // La fenêtre se charge puis lit l'extrait en attente (clip_pending).
     builder.build().map_err(|e| e.to_string())?;
-    *state.clips.window.lock().unwrap() = Some(label);
+    *state.clips.window.lock_ok() = Some(label);
     // WebView2 peut activer sa fenêtre en se chargeant, sans que Windows le
     // signale toujours : on vérifie encore quelques fois.
     #[cfg(windows)]
@@ -1391,7 +1607,7 @@ pub async fn clip_audio(app: AppHandle, path: String, start_ms: u64, end_ms: Opt
 /// demandé par un extrait fermé ou remplacé entre-temps ne doit pas partir
 /// (sinon il jouait jusqu'à 30 s sans fenêtre).
 fn still_shown(state: &AppState, path: &Path) -> bool {
-    state.clips.pending.lock().unwrap().as_ref().is_some_and(|c| {
+    state.clips.pending.lock_ok().as_ref().is_some_and(|c| {
         Path::new(&c.media) == path || c.sound.as_deref().is_some_and(|s| Path::new(s) == path)
     })
 }
@@ -1434,14 +1650,14 @@ const CLIP_SOUND_ID: &str = "extrait-recu";
 fn level_of(state: &AppState, path: &Path, start_ms: u64, end_ms: Option<u64>) -> Result<(crate::config::Analysis, u64), String> {
     let end = end_ms.unwrap_or(u64::MAX).min(start_ms.saturating_add(30_500));
     let cache_key = (path.to_path_buf(), start_ms, end);
-    let known = state.clips.levels.lock().unwrap().iter().find(|(k, _)| *k == cache_key).map(|(_, a)| *a);
+    let known = state.clips.levels.lock_ok().iter().find(|(k, _)| *k == cache_key).map(|(_, a)| *a);
     if let Some(a) = known {
         return Ok((a, end));
     }
     let key = crate::config::SegmentKey { start_ms, end_ms: Some(end), fx: Default::default() };
     let mut a = analysis::analyze_segment(path, &key)?;
     a.duration_ms += start_ms;
-    let mut levels = state.clips.levels.lock().unwrap();
+    let mut levels = state.clips.levels.lock_ok();
     if !levels.iter().any(|(k, _)| *k == cache_key) {
         if levels.len() >= 16 {
             levels.remove(0);
@@ -1552,7 +1768,7 @@ pub async fn clip_preview(
 #[tauri::command]
 pub async fn clip_keep(app: AppHandle) -> Result<String, String> {
     let state = app.state::<AppState>();
-    let c = state.clips.pending.lock().unwrap().clone().ok_or("l'extrait est déjà fermé")?;
+    let c = state.clips.pending.lock_ok().clone().ok_or("l'extrait est déjà fermé")?;
     if c.preview {
         return Err("c'est ton propre extrait".into());
     }
@@ -1568,7 +1784,7 @@ pub async fn clip_keep(app: AppHandle) -> Result<String, String> {
     let data = fs::read(&sound_path).map_err(|_| "l'extrait a déjà été effacé".to_string())?;
     let name = if c.title.trim().is_empty() { format!("Extrait de {}", c.from) } else { c.title.trim().to_string() };
     let sounds_dir = state.sounds_dir.clone();
-    let index = state.config.lock().unwrap().sounds.len();
+    let index = state.config.lock_ok().sounds.len();
     let mut sound = tauri::async_runtime::spawn_blocking(move || store_sound(&data, &sound_ext, name, &sounds_dir, index))
         .await
         .map_err(|e| e.to_string())??;
@@ -1578,7 +1794,7 @@ pub async fn clip_keep(app: AppHandle) -> Result<String, String> {
     let id = sound.id.clone();
     let name = sound.name.clone();
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         config.sounds.push(sound);
         state.save(&config)?;
     }
@@ -1597,7 +1813,7 @@ pub async fn clip_keep(app: AppHandle) -> Result<String, String> {
 /// L'extrait en attente (lu par la fenêtre quand elle s'ouvre).
 #[tauri::command]
 pub fn clip_pending(state: State<AppState>) -> Option<ClipShow> {
-    state.clips.pending.lock().unwrap().clone()
+    state.clips.pending.lock_ok().clone()
 }
 
 /// La fenêtre de l'extrait se met à sa taille : la petite carte pour
@@ -1636,7 +1852,7 @@ pub async fn clip_close(app: AppHandle, media: Option<String>, why: Option<Strin
     // c'est lui qui est attendu maintenant, on ne le ferme pas.
     if let Some(media) = media {
         let state = app.state::<AppState>();
-        let other = state.clips.pending.lock().unwrap().as_ref().is_some_and(|c| c.media != media);
+        let other = state.clips.pending.lock_ok().as_ref().is_some_and(|c| c.media != media);
         if other {
             return;
         }
@@ -1646,9 +1862,9 @@ pub async fn clip_close(app: AppHandle, media: Option<String>, why: Option<Strin
 
 pub fn close(app: &AppHandle) {
     if let Some(state) = app.try_state::<AppState>() {
-        state.clips.queue.lock().unwrap().clear();
-        state.clips.pending.lock().unwrap().take();
-        state.clips.window.lock().unwrap().take();
+        state.clips.queue.lock_ok().clear();
+        state.clips.pending.lock_ok().take();
+        state.clips.window.lock_ok().take();
         stop_audio(&state);
     }
     for (label, w) in app.webview_windows() {
@@ -1671,10 +1887,10 @@ fn stop_audio(state: &AppState) {
 /// Ferme l'extrait s'il vient de ce pote.
 pub fn close_from(app: &AppHandle, from: &str) {
     let state = app.state::<AppState>();
-    state.clips.stopped.lock().unwrap().insert(from.to_string(), Instant::now());
-    let from_him = state.clips.pending.lock().unwrap().as_ref().is_some_and(|c| c.from_id == from);
+    state.clips.stopped.lock_ok().insert(from.to_string(), Instant::now());
+    let from_him = state.clips.pending.lock_ok().as_ref().is_some_and(|c| c.from_id == from);
     // Ses extraits en attente partent aussi ; ceux des autres restent.
-    state.clips.queue.lock().unwrap().retain(|c| c.from_id != from);
+    state.clips.queue.lock_ok().retain(|c| c.from_id != from);
     if from_him {
         advance(app);
     }
@@ -1724,6 +1940,88 @@ mod tests {
         assert_eq!(fit_size(0.0, 0.0), SHOW_SIZE);
         // Formes extrêmes bornées.
         assert_eq!(fit_size(10_000.0, 10.0), fit_size(2.4, 1.0));
+    }
+
+    /// JPEG `w`×`h` fait par ffmpeg, avec une étiquette EXIF de sens `o`.
+    fn jpeg_with_orientation(ff: &Path, dir: &Path, w: u32, h: u32, o: u16) -> PathBuf {
+        let plain = dir.join(format!("plain-{o}.jpg"));
+        let ok = std::process::Command::new(ff.join("ffmpeg"))
+            .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i", &format!("testsrc=size={w}x{h}"), "-frames:v", "1"])
+            .arg(&plain)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let data = fs::read(&plain).unwrap();
+        // APP1 « Exif » en petit-boutiste : une seule entrée, Orientation.
+        let mut tiff = b"II*\0\x08\0\0\0".to_vec();
+        tiff.extend_from_slice(&1u16.to_le_bytes());
+        tiff.extend_from_slice(&0x0112u16.to_le_bytes());
+        tiff.extend_from_slice(&3u16.to_le_bytes());
+        tiff.extend_from_slice(&1u32.to_le_bytes());
+        tiff.extend_from_slice(&o.to_le_bytes());
+        tiff.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        let mut seg = b"Exif\0\0".to_vec();
+        seg.extend_from_slice(&tiff);
+        let mut out = data[..2].to_vec();
+        out.extend_from_slice(&[0xFF, 0xE1]);
+        out.extend_from_slice(&((seg.len() + 2) as u16).to_be_bytes());
+        out.extend_from_slice(&seg);
+        out.extend_from_slice(&data[2..]);
+        let p = dir.join(format!("exif-{o}.jpg"));
+        fs::write(&p, out).unwrap();
+        p
+    }
+
+    #[test]
+    fn reads_photo_orientation_and_transparency() {
+        assert_eq!(jpeg_orientation(b"pas une image"), 1);
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR\0\0\0\x10\0\0\0\x10\x08\x02".to_vec();
+        png.extend_from_slice(&[0; 8]);
+        assert!(!png_has_alpha(&png));
+        png[25] = 6;
+        assert!(png_has_alpha(&png));
+    }
+
+    /// Avec un ffmpeg sur la machine (Linux de test) : une photo de téléphone
+    /// tournée par son étiquette EXIF arrive à l'endroit, plus petite ; un son
+    /// joint est coupé à son passage.
+    #[test]
+    fn photos_and_sounds_are_shrunk_before_sending() {
+        let Some(bin) = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"].into_iter().map(Path::new).find(|p| p.exists()) else { return };
+        let ff = bin.parent().unwrap();
+        let dir = std::env::temp_dir().join(format!("sb-shrink-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let probe = |p: &Path, what: &str| {
+            let out = std::process::Command::new(ff.join("ffprobe"))
+                .args(["-v", "error", "-show_entries", what, "-of", "default=nw=1"])
+                .arg(p)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).to_string()
+        };
+        // Photo en largeur 3000×2000 marquée « tourner de 90° » (6) : portrait.
+        let src = jpeg_with_orientation(ff, &dir, 3000, 2000, 6);
+        assert_eq!(jpeg_orientation(&fs::read(&src).unwrap()), 6);
+        let out = dir.join("petite.jpg");
+        youtube::run_ffmpeg(ff, youtube::shrink_image_args(&src, "transpose=1", &out), &out).unwrap();
+        let info = probe(&out, "stream=width,height");
+        assert!(info.contains("width=854") && info.contains("height=1280"), "{info}");
+        // Le passage d'un son de 60 s, de 10 à 14 s.
+        let song = dir.join("morceau.wav");
+        let ok = std::process::Command::new(bin)
+            .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=60"])
+            .arg(&song)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let cut = dir.join("passage.m4a");
+        youtube::run_ffmpeg(ff, youtube::cut_sound_args(&song, 10.0, 4.0, &cut), &cut).unwrap();
+        let info = probe(&cut, "stream=codec_name:format=duration");
+        assert!(info.contains("codec_name=aac"), "{info}");
+        let d: f64 = info.lines().find_map(|l| l.strip_prefix("duration=")).unwrap().parse().unwrap();
+        assert!((d - 4.0).abs() < 0.2, "{d}");
+        assert!(fs::metadata(&cut).unwrap().len() * 10 < fs::metadata(&song).unwrap().len());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

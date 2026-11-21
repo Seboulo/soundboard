@@ -8,6 +8,7 @@
 //! Les flux audio ne sont pas `Send` sur toutes les plateformes, donc tout
 //! vit dans un thread dédié piloté par des messages.
 
+use crate::LockExt;
 use crate::config::Settings;
 use crate::denoise::{self, MicFilters, MicLevel, MicMeter, MicProcessor, Recording};
 use crate::dynamics::LookaheadLimiter;
@@ -95,7 +96,7 @@ pub enum AudioEvent {
 pub const PREVIEW_ID: &str = "__preview";
 
 enum Command {
-    Configure(Settings, Reply),
+    Configure(Box<Settings>, Reply),
     /// Joue le son, ou l'arrête s'il est déjà en cours.
     Toggle(PlayRequest, Option<PlayReply>),
     Preview(PlayRequest, Reply),
@@ -158,7 +159,7 @@ impl AudioHandle {
 
     pub fn configure(&self, settings: Settings) -> Result<(), String> {
         let (reply, rx) = mpsc::channel();
-        self.send(Command::Configure(settings, reply))?;
+        self.send(Command::Configure(Box::new(settings), reply))?;
         wait(rx)
     }
 
@@ -480,6 +481,8 @@ struct Engine {
     mic_take: Option<MicTake>,
     /// Derniers sons avec effets déjà calculés.
     fx_cache: VecDeque<(FxKey, Rendered)>,
+    /// Dernier son joué ou arrêté (voir `FX_CACHE_IDLE`).
+    last_activity: Option<Instant>,
 }
 
 /// Voix enregistrée pour en faire un son, partagée avec le fil du micro.
@@ -499,6 +502,10 @@ struct FxKey {
 
 const FX_CACHE: usize = 12;
 const FX_CACHE_SAMPLES: usize = 16 << 20;
+/// Sans aucun son pendant 10 min (appli laissée près de l'horloge), les sons
+/// avec effets gardés en mémoire (jusqu'à 64 Mo) sont rendus à Windows. Le
+/// prochain se recalcule, comme la première fois.
+const FX_CACHE_IDLE: Duration = Duration::from_secs(600);
 
 fn run(rx: Receiver<Command>, meter_on: Arc<AtomicBool>, on_event: impl Fn(AudioEvent)) {
     let mut engine = Engine::default();
@@ -521,6 +528,11 @@ fn run(rx: Receiver<Command>, meter_on: Arc<AtomicBool>, on_event: impl Fn(Audio
         let status = engine.status();
         if !(status.is_empty() && last_status.is_empty()) {
             on_event(AudioEvent::Playing(status.clone()));
+        }
+        if !status.is_empty() {
+            engine.last_activity = Some(Instant::now());
+        } else if !engine.fx_cache.is_empty() && engine.last_activity.is_none_or(|t| t.elapsed() > FX_CACHE_IDLE) {
+            engine.fx_cache = VecDeque::new();
         }
         last_status = status;
         if meter_on.load(Ordering::Relaxed) && engine.mic_stream.is_some() {
@@ -789,7 +801,7 @@ impl Engine {
     fn handle(&mut self, cmd: Command) {
         match cmd {
             Command::Configure(settings, reply) => {
-                let _ = reply.send(self.configure(settings));
+                let _ = reply.send(self.configure(*settings));
             }
             Command::Toggle(req, reply) => {
                 let res = self.toggle(req);
@@ -839,7 +851,7 @@ impl Engine {
                 let res = match &self.mic_take {
                     None => Err("ta voix n'est pas envoyée : active « Envoyer ma voix dans Discord » et choisis ton micro dans les réglages".to_string()),
                     Some(take) => {
-                        let mut t = take.lock().unwrap();
+                        let mut t = take.lock_ok();
                         if start {
                             *t = Some(Vec::with_capacity(10 * denoise::RATE as usize));
                             Ok(Vec::new())

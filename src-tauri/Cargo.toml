@@ -1,6 +1,6 @@
 [package]
 name = "soundboard"
-version = "3.2.0"
+version = "3.3.0"
 description = "Soundboard pour Discord : joue des sons dans ton micro via un câble audio virtuel"
 authors = ["Sébastien"]
 license = "MIT"
@@ -45,6 +45,8 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 wasapi = "0.26"
 # Fenêtre cachée dans la barre des tâches : WebView2 libère sa mémoire.
 webview2-com = "0.39"
+# « Lancer avec Windows » coupé dans le Gestionnaire des tâches : on suit ce choix.
+windows-registry = "0.6"
 windows = { version = "0.62", features = [
     "Foundation",
     "Foundation_Collections",

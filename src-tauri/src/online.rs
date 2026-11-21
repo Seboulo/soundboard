@@ -27,12 +27,18 @@ pub struct OnlineSound {
     pub url: String,
 }
 
+/// Un seul client, qui garde ses connexions ouvertes (GIPHY, myinstants…).
 pub(crate) fn client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    static SHARED: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    if let Some(c) = SHARED.get() {
+        return Ok(c.clone());
+    }
+    let c = reqwest::Client::builder()
         .user_agent(concat!("Soundboard/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20))
         .build()
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(SHARED.get_or_init(|| c).clone())
 }
 
 pub async fn search(query: &str, page: u32) -> Result<Vec<OnlineSound>, String> {
@@ -183,7 +189,7 @@ pub async fn download_link(url: &str) -> Result<(Vec<u8>, String, String), Strin
     let file_name = parsed
         .path_segments()
         .and_then(|mut s| s.next_back())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .unwrap_or_default();
     let mut res = client()?
         .get(parsed.clone())
@@ -191,7 +197,7 @@ pub async fn download_link(url: &str) -> Result<(Vec<u8>, String, String), Strin
         .timeout(DOWNLOAD_TIMEOUT)
         .send()
         .await
-        .and_then(|r| r.error_for_status())
+        .and_then(reqwest::Response::error_for_status)
         .map_err(|e| format!("téléchargement impossible : {e}"))?;
     let content_type = res
         .headers()
@@ -273,7 +279,7 @@ pub async fn check_update() -> Result<Option<UpdateInfo>, String> {
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
-        .and_then(|r| r.error_for_status())
+        .and_then(reqwest::Response::error_for_status)
         .map_err(|e| e.to_string())?
         .text()
         .await
@@ -305,7 +311,7 @@ pub async fn download(url: &str) -> Result<Vec<u8>, String> {
         .timeout(DOWNLOAD_TIMEOUT)
         .send()
         .await
-        .and_then(|r| r.error_for_status())
+        .and_then(reqwest::Response::error_for_status)
         .map_err(|e| format!("téléchargement impossible : {e}"))?;
     let mut data = Vec::new();
     while let Some(chunk) = res.chunk().await.map_err(|e| e.to_string())? {

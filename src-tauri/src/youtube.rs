@@ -8,6 +8,7 @@
 //! On demande la piste audio M4A (AAC) que YouTube propose presque toujours :
 //! elle se lit sans ffmpeg.
 
+use crate::LockExt;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -47,7 +48,7 @@ async fn fetch(url: &str, max: usize) -> Result<Vec<u8>, String> {
         .get(url)
         .send()
         .await
-        .and_then(|r| r.error_for_status())
+        .and_then(reqwest::Response::error_for_status)
         .map_err(|e| format!("téléchargement impossible ({url}) : {e}"))?;
     let mut data = Vec::new();
     while let Some(chunk) = res.chunk().await.map_err(|e| e.to_string())? {
@@ -80,7 +81,7 @@ static DENO_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 
 /// Empreinte du fichier « .sha256sum » de Deno (« Hash : ABCD… »).
 fn deno_hash(text: &str) -> Option<String> {
-    text.split(|c: char| !c.is_ascii_hexdigit()).find(|w| w.len() == 64).map(|h| h.to_lowercase())
+    text.split(|c: char| !c.is_ascii_hexdigit()).find(|w| w.len() == 64).map(str::to_lowercase)
 }
 
 /// Installe Deno à côté de yt-dlp, en arrière-plan (une seule fois) : la
@@ -147,7 +148,7 @@ fn ffmpeg_installed(tools_dir: &Path) -> Option<PathBuf> {
 /// Lance `ffmpeg -version` une fois par session pour savoir s'il démarre
 /// vraiment (une DLL abîmée ou bloquée ne se voit qu'au lancement).
 fn ffmpeg_starts(dir: &Path) -> bool {
-    if let Some(ok) = *FFMPEG_WORKS.lock().unwrap() {
+    if let Some(ok) = *FFMPEG_WORKS.lock_ok() {
         return ok;
     }
     let exe = dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
@@ -159,7 +160,7 @@ fn ffmpeg_starts(dir: &Path) -> bool {
     if !ok {
         crate::journal::write("ffmpeg ne démarre pas (DLL abîmée ou bloquée par Windows)");
     }
-    *FFMPEG_WORKS.lock().unwrap() = Some(ok);
+    *FFMPEG_WORKS.lock_ok() = Some(ok);
     ok
 }
 
@@ -169,13 +170,16 @@ pub fn ffmpeg_ready(tools_dir: &Path) -> Option<PathBuf> {
     ffmpeg_starts(&dir).then_some(dir)
 }
 
-/// Plus grand côté d'un extrait converti (720p, en large ou en hauteur).
-const NORMALIZE_LONG_SIDE: u32 = 1280;
+/// Plus grand côté d'un extrait converti (480p, en large ou en hauteur).
+/// La carte chez le pote fait 480 points de large au plus : en 720p, la
+/// moitié de l'image ne se voyait pas et le fichier pesait deux fois plus
+/// sur la place limitée du relais.
+const NORMALIZE_LONG_SIDE: u32 = 854;
 
 /// Réglages de ffmpeg pour un extrait « propre », que tout PC lit sans
 /// à-coup : H.264 (couleurs yuv420p) + AAC dans un MP4, une image clé par
-/// seconde, index au début du fichier (`+faststart`), 720p au plus et débit
-/// plafonné (30 s tiennent dans le relais). Le passage choisi est coupé ici :
+/// seconde, index au début du fichier (`+faststart`), 480p et 30 images/s au
+/// plus, débit plafonné (30 s font 5 Mo au plus, souvent bien moins). Le passage choisi est coupé ici :
 /// chez le pote, la vidéo commence à 0, sans saut à faire.
 pub fn normalize_args(video: &Path, audio: Option<&Path>, start_s: f64, dur_s: f64, with_sound: bool, out: &Path) -> Vec<std::ffi::OsString> {
     let n = NORMALIZE_LONG_SIDE;
@@ -203,13 +207,13 @@ pub fn normalize_args(video: &Path, audio: Option<&Path>, start_s: f64, dur_s: f
         push(if sidecar.is_some() { "1:a:0" } else { "0:a:0?" });
     }
     for x in [
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-maxrate", "2M", "-bufsize", "4M", "-pix_fmt", "yuv420p", "-vf", &scale,
-        "-force_key_frames", "expr:gte(t,n_forced*1)",
+        "-c:v", "libx264", "-preset", "faster", "-crf", "26", "-maxrate", "1200k", "-bufsize", "2400k", "-pix_fmt", "yuv420p", "-vf", &scale,
+        "-fpsmax", "30", "-force_key_frames", "expr:gte(t,n_forced*1)",
     ] {
         push(x);
     }
     if with_sound {
-        for x in ["-c:a", "aac", "-b:a", "128k", "-ac", "2"] {
+        for x in ["-c:a", "aac", "-b:a", "96k", "-ac", "2"] {
             push(x);
         }
     } else {
@@ -225,10 +229,54 @@ pub fn normalize_args(video: &Path, audio: Option<&Path>, start_s: f64, dur_s: f
 /// Convertit le passage d'une vidéo en extrait « propre » (voir
 /// `normalize_args`) dans `out`.
 pub fn normalize_clip(ffmpeg_dir: &Path, video: &Path, audio: Option<&Path>, start_s: f64, dur_s: f64, with_sound: bool, out: &Path) -> Result<(), String> {
+    run_ffmpeg(ffmpeg_dir, normalize_args(video, audio, start_s, dur_s, with_sound, out), out)
+}
+
+/// Plus grand côté d'une photo allégée avant l'envoi (la carte chez le pote
+/// fait 480 points de large au plus : 1280 reste net sur un écran très fin).
+const PHOTO_LONG_SIDE: u32 = 1280;
+
+/// Photo allégée : 1280 px au plus, en JPEG (ou en PNG si elle a de la
+/// transparence). `turn` : filtre qui la remet à l'endroit (photo de
+/// téléphone tournée par son étiquette EXIF, que ffmpeg n'applique pas ici).
+pub fn shrink_image_args(src: &Path, turn: &str, out: &Path) -> Vec<std::ffi::OsString> {
+    let n = PHOTO_LONG_SIDE;
+    let scale = format!("scale=w='if(gt(iw\\,ih)\\,min({n}\\,iw)\\,-2)':h='if(gt(iw\\,ih)\\,-2\\,min({n}\\,ih))'");
+    let vf = if turn.is_empty() { scale } else { format!("{turn},{scale}") };
+    let jpeg = out.extension().is_some_and(|e| e == "jpg");
+    let mut a: Vec<std::ffi::OsString> = ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-noautorotate", "-i"].iter().map(Into::into).collect();
+    a.push(src.into());
+    for x in ["-frames:v", "1", "-vf", &vf] {
+        a.push(x.into());
+    }
+    if jpeg {
+        for x in ["-q:v", "4"] {
+            a.push(x.into());
+        }
+    }
+    a.push(out.into());
+    a
+}
+
+/// Le passage d'un son (30 s au plus) en AAC, pour l'envoyer avec un extrait.
+pub fn cut_sound_args(src: &Path, start_s: f64, dur_s: f64, out: &Path) -> Vec<std::ffi::OsString> {
+    let start = format!("{:.3}", start_s.max(0.0));
+    let dur = format!("{:.3}", dur_s.clamp(0.5, 30.0));
+    let mut a: Vec<std::ffi::OsString> = ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-ss", &start, "-t", &dur, "-i"].iter().map(Into::into).collect();
+    a.push(src.into());
+    for x in ["-vn", "-map", "0:a:0", "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-movflags", "+faststart", "-f", "mp4"] {
+        a.push(x.into());
+    }
+    a.push(out.into());
+    a
+}
+
+/// Lance ffmpeg ; `out` doit exister et ne pas être vide ensuite.
+pub fn run_ffmpeg(ffmpeg_dir: &Path, args: Vec<std::ffi::OsString>, out: &Path) -> Result<(), String> {
     let exe = ffmpeg_dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
     let _ = fs::remove_file(out);
     let res = command(&exe)
-        .args(normalize_args(video, audio, start_s, dur_s, with_sound, out))
+        .args(args)
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| format!("ffmpeg ne démarre pas ({e})"))?;
@@ -275,7 +323,7 @@ pub async fn ensure_ffmpeg(tools_dir: &Path, on_status: impl Fn(&str)) -> Result
         Err(e) => format!("ffmpeg non installé ({e})"),
     });
     res?;
-    *FFMPEG_WORKS.lock().unwrap() = None;
+    *FFMPEG_WORKS.lock_ok() = None;
     let installed = ffmpeg_installed(tools_dir).ok_or("ffmpeg introuvable après l'installation")?;
     ffmpeg_ready(tools_dir).ok_or_else(|| {
         // Même neuf, il ne démarre pas : Windows le bloque. On le note dans
@@ -509,6 +557,7 @@ pub struct WebVideo {
 ///    en deux fichiers, que l'appli rejoue ensemble ;
 /// 3. vidéo plus longue : la plus petite image en H.264 (240p au moins) ;
 /// 4. pareil sans exiger le H.264.
+///
 /// Vérifié avec yt-dlp sur des fiches de Short, de vidéo et de longue vidéo.
 const VIDEO_FORMATS: &str = "b[ext=mp4][filesize<8M]/b[ext=mp4][filesize_approx<8M]\
 /bv[ext=mp4][vcodec^=avc1][height<=854][width<=854][filesize<7M]+ba[ext=m4a]\
@@ -725,7 +774,7 @@ mod tests {
     /// Avec un ffmpeg sur la machine (Linux de test), la conversion donne
     /// bien un MP4 H.264 + AAC, à la bonne taille et coupé au passage.
     #[test]
-    fn normalized_clip_is_h264_aac_720p() {
+    fn normalized_clip_is_h264_aac_480p() {
         let Some(bin) = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"].into_iter().map(Path::new).find(|p| p.exists()) else { return };
         let ff = bin.parent().unwrap();
         let dir = std::env::temp_dir().join(format!("sb-norm-{}", std::process::id()));
@@ -733,7 +782,7 @@ mod tests {
         let src = dir.join("haute.webm");
         let ok = Command::new(bin)
             .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=1080x1920:rate=30", "-f", "lavfi", "-i", "sine=frequency=440"])
-            .args(["-t", "8", "-c:v", "libvpx-vp9", "-deadline", "realtime", "-c:a", "libopus"])
+            .args(["-t", "8", "-r", "60", "-c:v", "libvpx-vp9", "-deadline", "realtime", "-c:a", "libopus"])
             .arg(&src)
             .status()
             .unwrap();
@@ -741,13 +790,15 @@ mod tests {
         let out = dir.join("pret.mp4");
         normalize_clip(ff, &src, None, 2.0, 4.0, true, &out).unwrap();
         let probe = Command::new(ff.join("ffprobe"))
-            .args(["-v", "error", "-show_entries", "stream=codec_name,width,height,pix_fmt:format=duration", "-of", "default=nw=1"])
+            .args(["-v", "error", "-show_entries", "stream=codec_name,width,height,pix_fmt,avg_frame_rate:format=duration", "-of", "default=nw=1"])
             .arg(&out)
             .output()
             .unwrap();
         let info = String::from_utf8_lossy(&probe.stdout).to_string();
         assert!(info.contains("codec_name=h264") && info.contains("codec_name=aac"), "{info}");
-        assert!(info.contains("width=720") && info.contains("height=1280") && info.contains("pix_fmt=yuv420p"), "{info}");
+        assert!(info.contains("width=480") && info.contains("height=854") && info.contains("pix_fmt=yuv420p"), "{info}");
+        // Une vidéo à 60 images/s repart à 30 : deux fois moins lourde.
+        assert!(info.contains("avg_frame_rate=30/1"), "{info}");
         let d: f64 = info.lines().find_map(|l| l.strip_prefix("duration=")).unwrap().parse().unwrap();
         assert!((d - 4.0).abs() < 0.2, "{d}");
         // Début après la fin : erreur claire, pas de fichier vide.

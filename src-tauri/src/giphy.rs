@@ -107,7 +107,7 @@ pub async fn download(url: &str) -> Result<(Vec<u8>, &'static str), String> {
         .get(url)
         .send()
         .await
-        .and_then(|r| r.error_for_status())
+        .and_then(reqwest::Response::error_for_status)
         .map_err(|e| format!("téléchargement de l'image impossible : {e}"))?;
     let mut data = Vec::new();
     while let Some(chunk) = res.chunk().await.map_err(|e| e.to_string())? {

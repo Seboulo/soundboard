@@ -117,6 +117,11 @@ struct Snapshot {
 }
 
 impl AppState {
+    /// Dossier de données de l'app, celui qui contient `sounds`.
+    fn data_dir(&self) -> PathBuf {
+        self.sounds_dir.parent().map_or_else(|| self.sounds_dir.clone(), Path::to_path_buf)
+    }
+
     /// À appeler en tenant le verrou de la config.
     fn save(&self, config: &Config) -> Result<(), String> {
         self.rev.fetch_add(1, Ordering::AcqRel);
@@ -128,7 +133,7 @@ impl AppState {
     /// Écrit les compteurs de lecture en attente (toutes les quelques
     /// secondes, et en quittant l'appli).
     fn flush_plays(&self) {
-        let config = self.config.lock().unwrap();
+        let config = self.config.lock_ok();
         if self.plays_dirty.load(Ordering::Acquire) {
             let _ = self.save(&config);
         }
@@ -136,15 +141,15 @@ impl AppState {
 
     fn snapshot(&self) -> Snapshot {
         let (config, rev) = {
-            let c = self.config.lock().unwrap();
+            let c = self.config.lock_ok();
             (c.clone(), self.rev.load(Ordering::Acquire))
         };
         let mut snap = Snapshot {
             missing: Vec::new(),
             rev,
             config,
-            devices: self.devices.lock().unwrap().clone(),
-            warnings: self.warnings.lock().unwrap().clone(),
+            devices: self.devices.lock_ok().clone(),
+            warnings: self.warnings.lock_ok().clone(),
             vb_cable_url: VB_CABLE_URL,
             mic_muted: self.mic_muted.load(Ordering::Relaxed),
             version: env!("CARGO_PKG_VERSION"),
@@ -156,7 +161,7 @@ impl AppState {
     }
 
     fn set_warnings(&self, kind: &str, items: Vec<String>) {
-        let mut w = self.warnings.lock().unwrap();
+        let mut w = self.warnings.lock_ok();
         let fresh: Vec<String> = items.into_iter().map(|m| format!("{kind}{m}")).collect();
         for m in fresh.iter().filter(|m| !w.contains(m)) {
             journal::write(m);
@@ -176,8 +181,8 @@ const WARN_SOUNDS: &str = "Sons : ";
 fn apply_phone(app: &AppHandle) {
     let state = app.state::<AppState>();
     // Arrête l'ancien serveur avant d'en relancer un sur le même port.
-    *state.phone.lock().unwrap() = None;
-    let settings = state.config.lock().unwrap().settings.clone();
+    *state.phone.lock_ok() = None;
+    let settings = state.config.lock_ok().settings.clone();
     if !settings.phone_enabled {
         state.set_warnings(WARN_PHONE, vec![]);
         return;
@@ -193,7 +198,7 @@ fn apply_phone(app: &AppHandle) {
         port += 1;
         if let Ok(server) = phone::PhoneServer::start(port, settings.phone_token.clone(), handler.clone()) {
             journal::write(&format!("Téléphone : port {first} pris, page servie sur le port {port}"));
-            let mut config = state.config.lock().unwrap();
+            let mut config = state.config.lock_ok();
             config.settings.phone_port = port;
             let _ = state.save(&config);
             res = Ok(server);
@@ -201,7 +206,7 @@ fn apply_phone(app: &AppHandle) {
     }
     match res {
         Ok(server) => {
-            *state.phone.lock().unwrap() = Some(server);
+            *state.phone.lock_ok() = Some(server);
             state.set_warnings(WARN_PHONE, vec![]);
         }
         Err(e) => state.set_warnings(WARN_PHONE, vec![e]),
@@ -212,7 +217,7 @@ fn phone_request(app: &AppHandle, req: phone::Request) -> Result<serde_json::Val
     let state = app.state::<AppState>();
     match req {
         phone::Request::State => {
-            let config = state.config.lock().unwrap();
+            let config = state.config.lock_ok();
             let sounds: Vec<_> = config
                 .sounds
                 .iter()
@@ -223,7 +228,7 @@ fn phone_request(app: &AppHandle, req: phone::Request) -> Result<serde_json::Val
                     })
                 })
                 .collect();
-            let playing = state.playing_ids.lock().unwrap().clone();
+            let playing = state.playing_ids.lock_ok().clone();
             let in_room = !config.settings.room_code.trim().is_empty();
             let giphy = config.settings.giphy_key.as_deref().is_some_and(|k| !k.trim().is_empty());
             drop(config);
@@ -279,20 +284,42 @@ fn phone_request(app: &AppHandle, req: phone::Request) -> Result<serde_json::Val
         }
         phone::Request::Random(category) => {
             let sound = pick_random(&state, category.as_deref()).ok_or("aucun son")?;
-            note_play(&state, &sound);
-            state.audio.toggle(play_request(&state, &sound))?;
-            let _ = app.emit("sound-triggered", &sound.id);
-            Ok(serde_json::json!({ "id": sound.id }))
+            let id = sound.id.clone();
+            // Comme « Jouer » : chez le pote choisi dans le salon, sinon ici.
+            extras::play_or_send(app, sound);
+            Ok(serde_json::json!({ "id": id }))
         }
     }
 }
 const MINIMIZED_ARG: &str = "--minimized";
 
+/// Verrou qui survit à un plantage. Si un fil plante en tenant un verrou,
+/// Rust le marque « empoisonné » et tous les `lock().unwrap()` suivants
+/// plantaient à leur tour : une seule erreur pouvait bloquer les sons, les
+/// raccourcis et les réglages jusqu'au redémarrage. On reprend la donnée
+/// telle qu'elle est et l'appli continue.
+/// Lance `f` en attrapant un plantage (`None` s'il a planté) : un fil de
+/// fond qui plante une fois continue son travail au lieu de s'arrêter pour
+/// toute la session.
+pub(crate) fn survive<T>(f: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
+}
+
+pub(crate) trait LockExt<T: ?Sized> {
+    fn lock_ok(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T: ?Sized> LockExt<T> for Mutex<T> {
+    fn lock_ok(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 fn find_sound(state: &AppState, id: &str) -> Result<Sound, String> {
     state
         .config
-        .lock()
-        .unwrap()
+        
+        .lock_ok()
         .sounds
         .iter()
         .find(|s| s.id == id)
@@ -309,10 +336,10 @@ fn now_secs() -> u64 {
 
 /// Compte une lecture pour les statistiques (pas quand le clic arrête le son).
 fn note_play(state: &AppState, sound: &Sound) {
-    if state.playing_ids.lock().unwrap().contains(&sound.id) {
+    if state.playing_ids.lock_ok().contains(&sound.id) {
         return;
     }
-    let mut config = state.config.lock().unwrap();
+    let mut config = state.config.lock_ok();
     if let Some(s) = config.sounds.iter_mut().find(|s| s.id == sound.id) {
         s.plays += 1;
         s.played_ms += sound.play_duration_ms().unwrap_or(0);
@@ -325,7 +352,7 @@ fn note_play(state: &AppState, sound: &Sound) {
 
 fn play_request(state: &AppState, sound: &Sound) -> PlayRequest {
     let (normalize, target) = {
-        let config = state.config.lock().unwrap();
+        let config = state.config.lock_ok();
         (config.settings.normalize, config.settings.loudness_target)
     };
     let gain = if normalize { sound.normalize_gain(target) } else { 1.0 };
@@ -356,7 +383,12 @@ fn webview_low_memory(window: &tauri::WebviewWindow, low: bool) {
     };
     use windows::core::Interface;
     let _ = window.with_webview(move |wv| unsafe {
-        let Ok(core) = wv.controller().CoreWebView2() else { return };
+        let controller = wv.controller();
+        // Cacher la fenêtre ne prévient pas WebView2 : la page continuait de
+        // se dessiner (animations, barre de lecture) derrière une fenêtre
+        // invisible. Page « cachée » = plus de dessin, minuteries ralenties.
+        let _ = controller.SetIsVisible(!low);
+        let Ok(core) = controller.CoreWebView2() else { return };
         let Ok(core) = core.cast::<ICoreWebView2_19>() else { return };
         let level = if low {
             COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
@@ -389,13 +421,79 @@ fn quiet_error_boxes() {
 fn quiet_error_boxes() {}
 
 fn show_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        webview_low_memory(&window, false);
-        let _ = window.show();
-        let _ = window.unminimize();
-        winpos::after_show(&window);
-        let _ = window.set_focus();
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+        reveal(&window);
+        return;
     }
+    // Lancé avec Windows, la fenêtre n'a pas encore été créée : on la crée
+    // maintenant. Sur un fil à part : WebView2 se bloque si on la crée
+    // depuis un clic sur l'icône ou un menu (fil principal).
+    static CREATING: AtomicBool = AtomicBool::new(false);
+    if CREATING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        match create_main_window(&app) {
+            Ok(window) => reveal(&window),
+            Err(e) => journal::write(&format!("Fenêtre : {e}")),
+        }
+        CREATING.store(false, Ordering::Release);
+    });
+}
+
+fn reveal(window: &tauri::WebviewWindow) {
+    SHOWN.fetch_add(1, Ordering::SeqCst);
+    webview_low_memory(window, false);
+    let _ = window.show();
+    let _ = window.unminimize();
+    winpos::after_show(window);
+    let _ = window.set_focus();
+}
+
+const MAIN_WINDOW: &str = "main";
+
+/// Fenêtre cachée près de l'horloge depuis 30 min : on la ferme pour de bon,
+/// et WebView2 rend toute sa mémoire (cachée, elle en gardait encore
+/// plusieurs dizaines de Mo). Elle se recrée au prochain clic, comme après
+/// un lancement avec Windows ; l'onglet, le tri et l'affichage sont gardés.
+const RELEASE_HIDDEN_AFTER: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// Augmente à chaque affichage : une fenêtre rouverte entre-temps reste.
+static SHOWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn release_window_later(app: &AppHandle) {
+    let shown = SHOWN.load(Ordering::SeqCst);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(RELEASE_HIDDEN_AFTER);
+        if SHOWN.load(Ordering::SeqCst) != shown {
+            return;
+        }
+        if let Some(w) = app.get_webview_window(MAIN_WINDOW) {
+            if !w.is_visible().unwrap_or(true) {
+                let _ = w.destroy();
+            }
+        }
+    });
+}
+
+/// La fenêtre principale (décrite dans tauri.conf.json, qui ne la crée pas
+/// d'office). Lancée avec Windows, l'app reste près de l'horloge sans
+/// charger la page : WebView2 (plusieurs processus, 100 Mo et plus) ne
+/// démarre qu'à la première ouverture. Les sons, raccourcis, le micro et le
+/// salon tournent sans elle.
+fn create_main_window(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == MAIN_WINDOW)
+        .cloned()
+        .ok_or_else(|| tauri::Error::WindowNotFound)?;
+    let window = tauri::WebviewWindowBuilder::from_config(app, &config)?.build()?;
+    winpos::restore(&window);
+    Ok(window)
 }
 
 fn apply_autostart(app: &AppHandle, enabled: bool) {
@@ -409,7 +507,64 @@ fn apply_autostart(app: &AppHandle, enabled: bool) {
     };
     let warnings = res.err().map(|e| vec![e.to_string()]).unwrap_or_default();
     app.state::<AppState>().set_warnings(WARN_STARTUP, warnings);
+    if let Some(item) = app.try_state::<TrayAutostart>() {
+        let _ = item.0.set_checked(enabled);
+    }
 }
+
+/// Au lancement. Coupée par toi dans le Gestionnaire des tâches (onglet
+/// « Applications de démarrage ») : l'app suit ce choix. Avant, elle se
+/// réactivait en douce au lancement suivant.
+fn sync_autostart(app: &AppHandle, enabled: bool) {
+    if enabled && startup_turned_off_in_windows(app) {
+        let state = app.state::<AppState>();
+        let mut config = state.config.lock_ok();
+        config.settings.launch_at_startup = false;
+        let _ = state.save(&config);
+        drop(config);
+        if let Some(item) = app.try_state::<TrayAutostart>() {
+            let _ = item.0.set_checked(false);
+        }
+        return;
+    }
+    apply_autostart(app, enabled);
+}
+
+#[cfg(windows)]
+fn startup_turned_off_in_windows(app: &AppHandle) -> bool {
+    const KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+    windows_registry::CURRENT_USER
+        .open(KEY)
+        .and_then(|k| k.get_value(&app.package_info().name))
+        .is_ok_and(|v| approval_says_off(&v))
+}
+#[cfg(not(windows))]
+fn startup_turned_off_in_windows(_app: &AppHandle) -> bool {
+    false
+}
+
+/// Valeur de Windows pour une app de démarrage : 12 octets, les 8 derniers
+/// sont la date à laquelle tu l'as désactivée (zéro si elle est active).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn approval_says_off(value: &[u8]) -> bool {
+    value.len() >= 8 && value[value.len() - 8..].iter().any(|&b| b != 0)
+}
+
+/// Lancer avec Windows, depuis le menu de l'icône près de l'horloge.
+fn toggle_autostart(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let enabled = {
+        let mut config = state.config.lock_ok();
+        config.settings.launch_at_startup = !config.settings.launch_at_startup;
+        let _ = state.save(&config);
+        config.settings.launch_at_startup
+    };
+    apply_autostart(app, enabled);
+    let _ = app.emit("snapshot", state.snapshot());
+}
+
+/// Case « Lancer avec Windows » du menu de l'icône.
+struct TrayAutostart(CheckMenuItem<tauri::Wry>);
 
 /// Mesure en arrière-plan le volume des passages découpés ou avec effets,
 /// pour que l'égalisation porte sur ce qui est vraiment joué.
@@ -427,8 +582,8 @@ fn measure_segments(app: AppHandle) {
             PENDING.store(false, Ordering::Release);
             let todo: Vec<(String, PathBuf, config::SegmentKey)> = state
                 .config
-                .lock()
-                .unwrap()
+                
+                .lock_ok()
                 .sounds
                 .iter()
                 .filter(|s| s.needs_segment())
@@ -436,7 +591,7 @@ fn measure_segments(app: AppHandle) {
                 .collect();
             for (id, path, key) in todo {
                 let Ok(analysis) = analysis::analyze_segment(&path, &key) else { continue };
-                let mut config = state.config.lock().unwrap();
+                let mut config = state.config.lock_ok();
                 // La découpe a pu changer pendant la mesure.
                 if let Some(s) = config.sounds.iter_mut().find(|s| s.id == id && s.segment_key() == Some(key)) {
                     s.segment = Some(config::SegmentLevel { key, analysis });
@@ -465,8 +620,8 @@ fn analyze_missing(app: &AppHandle) {
     let state = app.state::<AppState>();
     let todo: Vec<(String, PathBuf)> = state
         .config
-        .lock()
-        .unwrap()
+        
+        .lock_ok()
         .sounds
         .iter()
         .filter(|s| s.analysis.is_none_or(|a| a.loudness <= 0.0 || a.lufs >= 0.0 || !a.mono_fold))
@@ -477,7 +632,7 @@ fn analyze_missing(app: &AppHandle) {
     }
     for (id, path) in todo {
         let result = analysis::analyze(&path);
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         // Fichier remplacé pendant la mesure : celle-ci ne vaut plus.
         let Some(s) = config.sounds.iter_mut().find(|s| s.id == id && s.path == path) else { continue };
         match result {
@@ -522,29 +677,34 @@ fn audio_route(settings: &Settings, d: &DeviceList) -> [Option<String>; 3] {
 /// Surveille les casques et micros : quand l'un est débranché, rebranché ou
 /// que Windows change le périphérique par défaut, l'audio se reconnecte seul.
 fn watch_devices(app: AppHandle) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_secs(3));
+    let check = move || {
         let state = app.state::<AppState>();
         // Au passage : les compteurs de lecture en attente partent sur le disque.
         state.flush_plays();
         let devices = audio::list_devices();
-        let before = state.devices.lock().unwrap().clone();
+        let before = state.devices.lock_ok().clone();
         if devices == before {
-            continue;
+            return;
         }
-        let settings = state.config.lock().unwrap().settings.clone();
+        let settings = state.config.lock_ok().settings.clone();
         let changed = audio_route(&settings, &devices) != audio_route(&settings, &before);
-        *state.devices.lock().unwrap() = devices;
+        *state.devices.lock_ok() = devices;
         if changed {
             apply_audio(&state, settings);
         }
         let _ = app.emit("snapshot", state.snapshot());
+    };
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        // Un plantage une fois (pilote audio capricieux…) n'arrête pas la
+        // surveillance pour de bon : le casque rebranché revenait plus.
+        let _ = survive(&check);
     });
 }
 
 fn register_hotkeys(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let config = state.config.lock().unwrap().clone();
+    let config = state.config.lock_ok().clone();
     let gs = app.global_shortcut();
     let _ = gs.unregister_all();
 
@@ -591,25 +751,21 @@ fn register_hotkeys(app: &AppHandle) {
             Err(e) => errors.push(format!("« {hotkey} » ({label}) indisponible : {e}")),
         }
     }
-    *state.hotkeys.lock().unwrap() = map;
+    *state.hotkeys.lock_ok() = map;
     keyhook::set_bindings(bindings);
     state.set_warnings(WARN_HOTKEY, errors);
 }
 
-/// Appelé par les deux voies (raccourci Windows et crochet clavier en jeu) :
-/// une même pression n'est jouée qu'une fois.
+/// Appelé par les deux voies (raccourci Windows et crochet clavier en jeu).
 fn on_hotkey(app: &AppHandle, id: u32) {
-    if !keyhook::first_press(id) {
-        return;
-    }
     let state = app.state::<AppState>();
-    let action = state.hotkeys.lock().unwrap().get(&id).cloned();
+    let action = state.hotkeys.lock_ok().get(&id).cloned();
     match action {
         Some(HotkeyAction::Play(id)) => {
             let sound = state
                 .config
-                .lock()
-                .unwrap()
+                
+                .lock_ok()
                 .sounds
                 .iter()
                 .find(|s| s.id == id)
@@ -661,8 +817,8 @@ fn pick_random(state: &AppState, category: Option<&str>) -> Option<Sound> {
 }
 
 fn pick_random_where(state: &AppState, keep: impl Fn(&Sound) -> bool) -> Option<Sound> {
-    let config = state.config.lock().unwrap();
-    let mut last = state.last_random.lock().unwrap();
+    let config = state.config.lock_ok();
+    let mut last = state.last_random.lock_ok();
     let pool: Vec<&Sound> = config.sounds.iter().filter(|s| keep(s)).collect();
     let candidates: Vec<&Sound> = if pool.len() > 1 {
         pool.iter().copied().filter(|s| Some(&s.id) != last.as_ref()).collect()
@@ -701,7 +857,7 @@ fn start_surprise(app: &AppHandle) {
     std::thread::spawn(move || loop {
         let state = app.state::<AppState>();
         let delay = {
-            let s = &state.config.lock().unwrap().settings;
+            let s = &state.config.lock_ok().settings;
             surprise_delay(s.surprise_min_minutes, s.surprise_max_minutes)
         };
         let deadline = std::time::Instant::now() + delay;
@@ -711,8 +867,8 @@ fn start_surprise(app: &AppHandle) {
                 return;
             }
         }
-        let list = state.config.lock().unwrap().settings.surprise_sounds.clone();
-        let playing = state.playing_ids.lock().unwrap().clone();
+        let list = state.config.lock_ok().settings.surprise_sounds.clone();
+        let playing = state.playing_ids.lock_ok().clone();
         let sound = pick_random_where(&state, |s| {
             (list.is_empty() || list.contains(&s.id)) && !playing.contains(&s.id) && s.path.exists()
         });
@@ -730,7 +886,7 @@ fn import_file(src: &Path, sounds_dir: &Path, color_index: usize) -> Result<Soun
     let ext = src
         .extension()
         .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
+        .map(str::to_lowercase)
         .unwrap_or_default();
     if !AUDIO_EXTENSIONS.contains(&ext.as_str()) {
         return Err(format!("{} : format non pris en charge", src.display()));
@@ -771,30 +927,10 @@ fn store_sound(
         }
     };
     Ok(Sound {
-        id,
-        name,
-        path: dest,
-        hotkey: None,
-        volume: 1.0,
         color: COLORS[color_index % COLORS.len()].into(),
-        start_ms: 0,
-        end_ms: None,
-        analysis: Some(analysis),
-        category: None,
-        looping: false,
-        emoji: None,
-        favorite: false,
-        keep_playing: false,
         added_at: now_secs(),
-        image: None,
-        image_still: None,
-        plays: 0,
-        played_ms: 0,
-        last_played: 0,
-        fx: Default::default(),
-        segment: None,
-        pack_link: None,
         pack_key: Some(share::key_of(data)),
+        ..Sound::new(id, name, dest, analysis)
     })
 }
 
@@ -823,7 +959,7 @@ async fn refresh_devices(app: AppHandle) -> Result<Snapshot, String> {
         .await
         .map_err(|e| e.to_string())?;
     let state = app.state::<AppState>();
-    *state.devices.lock().unwrap() = devices;
+    *state.devices.lock_ok() = devices;
     Ok(state.snapshot())
 }
 
@@ -833,7 +969,7 @@ async fn refresh_devices(app: AppHandle) -> Result<Snapshot, String> {
 #[tauri::command]
 async fn add_sounds(app: AppHandle, paths: Vec<String>) -> Result<Snapshot, String> {
     let state = app.state::<AppState>();
-    let first_index = state.config.lock().unwrap().sounds.len();
+    let first_index = state.config.lock_ok().sounds.len();
     let sounds_dir = state.sounds_dir.clone();
     let results = tauri::async_runtime::spawn_blocking(move || {
         paths
@@ -846,7 +982,7 @@ async fn add_sounds(app: AppHandle, paths: Vec<String>) -> Result<Snapshot, Stri
     .map_err(|e| e.to_string())?;
     let mut errors = Vec::new();
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         for res in results {
             match res {
                 Ok(sound) => config.sounds.push(sound),
@@ -905,13 +1041,14 @@ async fn replace_sound_file(app: AppHandle, id: String) -> Result<Option<Snapsho
         return Err("fichier trop gros (200 Mo au plus)".into());
     }
     let file_id = id.clone();
-    let (dest, analysis) = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+    let (dest, analysis, key) = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
         fs::create_dir_all(&sounds_dir).map_err(|e| e.to_string())?;
         // Nom nouveau : l'ancien fichier peut encore être ouvert par le moteur audio.
         let dest = sounds_dir.join(format!("{file_id}-{}.{ext}", now_secs()));
-        fs::copy(&src, &dest).map_err(|e| format!("{} : {e}", src.display()))?;
+        let data = fs::read(&src).map_err(|e| format!("{} : {e}", src.display()))?;
+        fs::write(&dest, &data).map_err(|e| format!("{} : {e}", dest.display()))?;
         match analysis::analyze(&dest) {
-            Ok(a) => Ok((dest, a)),
+            Ok(a) => Ok((dest, a, share::key_of(&data))),
             Err(e) => {
                 let _ = fs::remove_file(&dest);
                 Err(e)
@@ -921,20 +1058,30 @@ async fn replace_sound_file(app: AppHandle, id: String) -> Result<Option<Snapsho
     .await
     .map_err(|e| e.to_string())??;
     state.audio.stop(&id);
-    {
-        let mut config = state.config.lock().unwrap();
+    let old = {
+        let mut config = state.config.lock_ok();
         let sound = config.sounds.iter_mut().find(|s| s.id == id).ok_or("son introuvable")?;
         let old = std::mem::replace(&mut sound.path, dest);
-        if old.starts_with(&state.sounds_dir) {
-            let _ = fs::remove_file(old);
-        }
+        // L'empreinte suit le nouveau fichier : sinon un pote recevait
+        // l'empreinte de l'ancien son (« fichier abîmé », ou l'ancien son
+        // rejoué chez lui). Le son n'est plus celui du pack d'un pote.
+        sound.pack_key = Some(key);
+        sound.pack_link = None;
         sound.analysis = Some(analysis);
         sound.segment = None;
         sound.start_ms = 0;
         sound.end_ms = None;
         state.save(&config)?;
+        old
+    };
+    // Le moteur audio peut lâcher l'ancien fichier un peu après l'arrêt :
+    // resté là, il revenait au lancement suivant comme « son retrouvé ».
+    if old.starts_with(&state.sounds_dir) {
+        std::thread::spawn(move || {
+            let _ = config::patiently(&[30, 100, 250, 500], || fs::remove_file(&old).or_else(|e| if old.exists() { Err(e) } else { Ok(()) }));
+        });
     }
-    state.waveforms.lock().unwrap().remove(&id);
+    state.waveforms.lock_ok().remove(&id);
     measure_segments(app.clone());
     Ok(Some(state.snapshot()))
 }
@@ -942,7 +1089,7 @@ async fn replace_sound_file(app: AppHandle, id: String) -> Result<Option<Snapsho
 #[tauri::command]
 fn update_sound(app: AppHandle, state: State<AppState>, sound: Sound) -> Result<Snapshot, String> {
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         let existing = config
             .sounds
             .iter_mut()
@@ -969,16 +1116,19 @@ fn update_sound(app: AppHandle, state: State<AppState>, sound: Sound) -> Result<
         state.save(&config)?;
     }
     register_hotkeys(&app);
-    measure_segments(app.clone());
+    measure_segments(app);
     Ok(state.snapshot())
 }
 
 /// Fichiers son rangés par l'app mais absents de la soundboard : un
 /// enregistrement de la config raté (fichier bloqué par un antivirus…) ou
 /// l'appli fermée au mauvais moment faisait disparaître le son de la liste.
-fn orphan_files(sounds_dir: &Path, config: &Config) -> Vec<PathBuf> {
+///
+/// Un fichier écrit il y a moins de `min_age` est ignoré : c'est un son en
+/// train d'être ajouté (téléchargement, pack), pas encore dans la liste.
+fn orphan_files(sounds_dir: &Path, config: &Config, min_age: std::time::Duration) -> Vec<PathBuf> {
     let used: std::collections::HashSet<std::ffi::OsString> =
-        config.sounds.iter().filter_map(|s| s.path.file_name().map(|n| n.to_ascii_lowercase())).collect();
+        config.sounds.iter().filter_map(|s| s.path.file_name().map(std::ffi::OsStr::to_ascii_lowercase)).collect();
     let Ok(dir) = fs::read_dir(sounds_dir) else { return Vec::new() };
     let mut files: Vec<PathBuf> = dir
         .flatten()
@@ -986,17 +1136,24 @@ fn orphan_files(sounds_dir: &Path, config: &Config) -> Vec<PathBuf> {
         .filter(|p| p.is_file())
         .filter(|p| p.extension().is_some_and(|e| e != "tmp"))
         .filter(|p| p.file_name().is_some_and(|n| !used.contains(&n.to_ascii_lowercase())))
+        .filter(|p| {
+            fs::metadata(p)
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| t.elapsed().map_or(true, |age| age >= min_age))
+        })
         .collect();
     // Les plus anciens d'abord : l'ordre dans lequel tu les avais ajoutés.
     files.sort_by_key(|p| fs::metadata(p).and_then(|m| m.modified()).ok());
     files
 }
 
+const ORPHAN_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Prévient quand des sons sont dans le dossier de l'app mais plus dans la liste.
 fn check_orphans(state: &AppState) {
     let n = {
-        let config = state.config.lock().unwrap();
-        orphan_files(&state.sounds_dir, &config).len()
+        let config = state.config.lock_ok();
+        orphan_files(&state.sounds_dir, &config, ORPHAN_MIN_AGE).len()
     };
     let msg = match n {
         0 => vec![],
@@ -1013,7 +1170,7 @@ fn old_sound_entries(config_path: &Path) -> HashMap<std::ffi::OsString, Sound> {
     for p in [config_path.with_extension("json.bak"), config_path.with_extension("corrupt.json")] {
         let Some(old) = fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<Config>(&t).ok()) else { continue };
         for s in old.sounds {
-            if let Some(name) = s.path.file_name().map(|n| n.to_ascii_lowercase()) {
+            if let Some(name) = s.path.file_name().map(std::ffi::OsStr::to_ascii_lowercase) {
                 found.entry(name).or_insert(s);
             }
         }
@@ -1027,8 +1184,8 @@ fn old_sound_entries(config_path: &Path) -> HashMap<std::ffi::OsString, Sound> {
 async fn recover_sounds(app: AppHandle, keep: bool) -> Result<(usize, Snapshot), String> {
     let state = app.state::<AppState>();
     let files = {
-        let config = state.config.lock().unwrap();
-        orphan_files(&state.sounds_dir, &config)
+        let config = state.config.lock_ok();
+        orphan_files(&state.sounds_dir, &config, ORPHAN_MIN_AGE)
     };
     if !keep {
         for f in &files {
@@ -1038,17 +1195,17 @@ async fn recover_sounds(app: AppHandle, keep: bool) -> Result<(usize, Snapshot),
         return Ok((0, state.snapshot()));
     }
     let old = old_sound_entries(&state.config_path);
-    let first_index = state.config.lock().unwrap().sounds.len();
+    let first_index = state.config.lock_ok().sounds.len();
     let found: Vec<Sound> = tauri::async_runtime::spawn_blocking(move || {
         let mut n = 0;
         files
             .into_iter()
             .filter_map(|path| {
                 let analysis = analysis::analyze(&path).ok()?;
-                let key = path.file_name().map(|n| n.to_ascii_lowercase());
+                let key = path.file_name().map(std::ffi::OsStr::to_ascii_lowercase);
                 let sound = match key.and_then(|k| old.get(&k)) {
                     // Retrouvé avec son nom, son onglet, sa couleur…
-                    Some(s) => Sound { path: path.clone(), analysis: Some(analysis), segment: None, ..s.clone() },
+                    Some(s) => Sound { path, analysis: Some(analysis), segment: None, ..s.clone() },
                     None => {
                         n += 1;
                         let mut s: Sound = serde_json::from_value(serde_json::json!({
@@ -1074,7 +1231,7 @@ async fn recover_sounds(app: AppHandle, keep: bool) -> Result<(usize, Snapshot),
     .map_err(|e| e.to_string())?;
     let count;
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         let mut ids: std::collections::HashSet<String> = config.sounds.iter().map(|s| s.id.clone()).collect();
         let mut hotkeys: Vec<String> = config.sounds.iter().filter_map(|s| s.hotkey.clone()).collect();
         let before = config.sounds.len();
@@ -1117,10 +1274,20 @@ async fn recover_sounds(app: AppHandle, keep: bool) -> Result<(usize, Snapshot),
     Ok((count, state.snapshot()))
 }
 
+/// Hors du fil de la fenêtre : un son qui jouait garde son fichier ouvert un
+/// instant, et l'attente de la corbeille (jusqu'à 0,4 s) figeait la fenêtre
+/// et les raccourcis.
 #[tauri::command]
-fn remove_sound(app: AppHandle, state: State<AppState>, id: String) -> Result<Snapshot, String> {
+async fn remove_sound(app: AppHandle, id: String) -> Result<Snapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || remove_sound_now(&app, id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn remove_sound_now(app: &AppHandle, id: String) -> Result<Snapshot, String> {
+    let state = app.state::<AppState>();
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         if let Some(pos) = config.sounds.iter().position(|s| s.id == id) {
             let sound = config.sounds.remove(pos);
             // Sous Windows, un fichier en cours de lecture ne peut pas être
@@ -1129,11 +1296,11 @@ fn remove_sound(app: AppHandle, state: State<AppState>, id: String) -> Result<Sn
             // Le son précédent de la corbeille part pour de bon.
             empty_trash(&state);
             let trashed = move_to_trash(&state, sound);
-            *state.trash.lock().unwrap() = Some((trashed, pos));
+            *state.trash.lock_ok() = Some((trashed, pos));
         }
         state.save(&config)?;
     }
-    register_hotkeys(&app);
+    register_hotkeys(app);
     Ok(state.snapshot())
 }
 
@@ -1141,7 +1308,7 @@ fn remove_sound(app: AppHandle, state: State<AppState>, id: String) -> Result<Sn
 #[tauri::command]
 fn restore_sound(app: AppHandle, state: State<AppState>, id: Option<String>) -> Result<Snapshot, String> {
     let (mut sound, pos) = {
-        let mut trash = state.trash.lock().unwrap();
+        let mut trash = state.trash.lock_ok();
         // Le bouton « Annuler » d'un son ne doit jamais en ramener un autre.
         if id.is_some() && trash.as_ref().map(|(s, _)| &s.id) != id.as_ref() {
             return Err("Ce son ne peut plus être restauré : seule la dernière suppression s'annule".into());
@@ -1164,7 +1331,7 @@ fn restore_sound(app: AppHandle, state: State<AppState>, id: Option<String>) -> 
         back(img, images_dir(&state));
     }
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         // Un raccourci repris entre-temps par un autre son reste à celui-ci.
         if let Some(hk) = &sound.hotkey {
             if config.sounds.iter().any(|s| s.hotkey.as_ref() == Some(hk)) {
@@ -1195,11 +1362,7 @@ fn move_to_trash(state: &AppState, mut sound: Sound) -> Sound {
         if let Some(name) = path.file_name() {
             let dest = trash.join(name);
             // Le moteur audio peut lâcher le fichier un peu après l'arrêt.
-            let moved = [0u64, 30, 100, 250].into_iter().any(|ms| {
-                std::thread::sleep(std::time::Duration::from_millis(ms));
-                fs::rename(&*path, &dest).is_ok()
-            });
-            if moved {
+            if config::patiently(&[30, 100, 250], || fs::rename(&*path, &dest)).is_ok() {
                 *path = dest;
             } else {
                 let _ = fs::remove_file(&*path);
@@ -1216,7 +1379,7 @@ fn move_to_trash(state: &AppState, mut sound: Sound) -> Sound {
 
 /// Vide la corbeille (au lancement et à chaque nouvelle suppression).
 fn empty_trash(state: &AppState) {
-    state.trash.lock().unwrap().take();
+    state.trash.lock_ok().take();
     let _ = fs::remove_dir_all(trash_dir(state));
 }
 
@@ -1237,8 +1400,8 @@ fn remove_image_files(state: &AppState, sound: &Sound) {
 fn giphy_key(state: &AppState) -> Option<String> {
     state
         .config
-        .lock()
-        .unwrap()
+        
+        .lock_ok()
         .settings
         .giphy_key
         .as_deref()
@@ -1268,7 +1431,7 @@ fn store_image(
         }
         None => anim_path.clone(),
     };
-    let mut config = state.config.lock().unwrap();
+    let mut config = state.config.lock_ok();
     let Some(sound) = config.sounds.iter_mut().find(|s| s.id == id) else {
         let _ = fs::remove_file(&anim_path);
         let _ = fs::remove_file(&still_path);
@@ -1325,7 +1488,7 @@ async fn pick_sound_image(app: AppHandle, id: String) -> Result<Snapshot, String
 #[tauri::command]
 fn clear_sound_image(state: State<AppState>, id: String) -> Result<Snapshot, String> {
     let old = {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         let sound = config.sounds.iter_mut().find(|s| s.id == id).ok_or("son introuvable")?;
         let old = sound.clone();
         sound.image = None;
@@ -1347,8 +1510,8 @@ async fn auto_images(app: AppHandle, ids: Option<Vec<String>>) -> Result<usize, 
     };
     let todo: Vec<(String, String)> = state
         .config
-        .lock()
-        .unwrap()
+        
+        .lock_ok()
         .sounds
         .iter()
         .filter(|s| s.image.is_none() && ids.as_ref().is_none_or(|ids| ids.contains(&s.id)))
@@ -1383,7 +1546,7 @@ fn open_giphy_key_page(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn import_play_counts(state: State<AppState>, counts: HashMap<String, u32>) -> Result<Snapshot, String> {
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         for s in config.sounds.iter_mut() {
             if let Some(&n) = counts.get(&s.id) {
                 if s.plays == 0 {
@@ -1400,7 +1563,7 @@ fn import_play_counts(state: State<AppState>, counts: HashMap<String, u32>) -> R
 #[tauri::command]
 fn reset_stats(state: State<AppState>) -> Result<Snapshot, String> {
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         for s in config.sounds.iter_mut() {
             s.plays = 0;
             s.played_ms = 0;
@@ -1445,7 +1608,7 @@ async fn calibrate_voice(app: AppHandle) -> Result<calibration::VoiceReport, Str
 
     let state = app.state::<AppState>();
     let settings = {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         config.settings.mic_calibration = Some(cal);
         config.settings.voice_eq = report.eq;
         state.save(&config)?;
@@ -1502,11 +1665,11 @@ fn discord_running() -> Option<bool> {
 #[tauri::command]
 async fn run_diagnostics(app: AppHandle) -> Result<Vec<Check>, String> {
     let state = app.state::<AppState>();
-    *state.devices.lock().unwrap() = audio::list_devices();
-    let devices = state.devices.lock().unwrap().clone();
-    let config = state.config.lock().unwrap().clone();
+    *state.devices.lock_ok() = audio::list_devices();
+    let devices = state.devices.lock_ok().clone();
+    let config = state.config.lock_ok().clone();
     let settings = &config.settings;
-    let warnings = state.warnings.lock().unwrap().clone();
+    let warnings = state.warnings.lock_ok().clone();
     let warned = |kind: &str| -> Vec<String> {
         warnings.iter().filter_map(|w| w.strip_prefix(kind).map(String::from)).collect()
     };
@@ -1595,7 +1758,7 @@ async fn run_diagnostics(app: AppHandle) -> Result<Vec<Check>, String> {
                 None,
             ));
         }
-        if settings.strong_denoise && settings.noise_suppression && std::thread::available_parallelism().map_or(4, |n| n.get()) < 4 {
+        if settings.strong_denoise && settings.noise_suppression && std::thread::available_parallelism().map_or(4, std::num::NonZero::get) < 4 {
             checks.push(check(
                 "info",
                 "Processeur modeste",
@@ -1678,7 +1841,7 @@ async fn run_diagnostics(app: AppHandle) -> Result<Vec<Check>, String> {
 #[tauri::command]
 fn move_sound(state: State<AppState>, id: String, to: usize) -> Result<Snapshot, String> {
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         if let Some(from) = config.sounds.iter().position(|s| s.id == id) {
             let sound = config.sounds.remove(from);
             let to = to.min(config.sounds.len());
@@ -1689,13 +1852,28 @@ fn move_sound(state: State<AppState>, id: String, to: usize) -> Result<Snapshot,
     Ok(state.snapshot())
 }
 
+/// Hors du fil de la fenêtre : rouvrir le casque, le câble et le micro (et
+/// charger le débruiteur) prend jusqu'à quelques secondes, pendant lesquelles
+/// la fenêtre et les raccourcis étaient figés.
 #[tauri::command]
-fn update_settings(app: AppHandle, state: State<AppState>, mut settings: Settings) -> Result<Snapshot, String> {
+async fn update_settings(app: AppHandle, settings: Settings) -> Result<Snapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // Deux enregistrements à la suite passent l'un après l'autre.
+        static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+        let _one = ONE_AT_A_TIME.lock_ok();
+        update_settings_now(&app, settings)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn update_settings_now(app: &AppHandle, mut settings: Settings) -> Result<Snapshot, String> {
+    let state = app.state::<AppState>();
     let phone_changed;
     let audio_changed;
     let room_changed;
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         // Le code du téléphone ne se change que par « Nouveau code ».
         settings.phone_token = config.settings.phone_token.clone();
         // Tenus à jour par l'app elle-même (abonnements, partages, salon).
@@ -1721,22 +1899,22 @@ fn update_settings(app: AppHandle, state: State<AppState>, mut settings: Setting
         state.save(&config)?;
     }
     if phone_changed {
-        apply_phone(&app);
+        apply_phone(app);
     }
     replay::configure(settings.replay_enabled, settings.duck_enabled, settings.duck_level);
     if room_changed {
-        extras::start_room(&app);
+        extras::start_room(app);
     }
     let autostart = settings.launch_at_startup;
     // Relancer l'audio coupe les sons et le micro une seconde : seulement
     // si un réglage du son a changé (pas pour un raccourci ou une clé).
     // (ou pour réessayer quand un périphérique manquait).
-    let audio_failed = state.warnings.lock().unwrap().iter().any(|w| w.starts_with(WARN_AUDIO));
+    let audio_failed = state.warnings.lock_ok().iter().any(|w| w.starts_with(WARN_AUDIO));
     if audio_changed || audio_failed {
         apply_audio(&state, settings);
     }
-    apply_autostart(&app, autostart);
-    register_hotkeys(&app);
+    apply_autostart(app, autostart);
+    register_hotkeys(app);
     Ok(state.snapshot())
 }
 
@@ -1786,9 +1964,9 @@ fn log_ui(message: String) {
 /// Rapport à copier-coller quand quelque chose ne marche pas.
 #[tauri::command]
 fn diagnostic_report(state: State<AppState>) -> String {
-    let config = state.config.lock().unwrap().clone();
-    let devices = state.devices.lock().unwrap().clone();
-    let warnings = state.warnings.lock().unwrap().clone();
+    let config = state.config.lock_ok().clone();
+    let devices = state.devices.lock_ok().clone();
+    let warnings = state.warnings.lock_ok().clone();
     let s = &config.settings;
     let missing = config.sounds.iter().filter(|x| !x.path.exists()).count();
     let opt = |o: &Option<String>| o.clone().unwrap_or_else(|| "par défaut".into());
@@ -1857,14 +2035,14 @@ fn stop_preview(state: State<AppState>) {
 #[tauri::command]
 async fn get_waveform(app: AppHandle, id: String) -> Result<Vec<f32>, String> {
     let state = app.state::<AppState>();
-    if let Some(peaks) = state.waveforms.lock().unwrap().get(&id) {
+    if let Some(peaks) = state.waveforms.lock_ok().get(&id) {
         return Ok(peaks.clone());
     }
     let sound = find_sound(&state, &id)?;
     let peaks = tauri::async_runtime::spawn_blocking(move || analysis::waveform(&sound.path, 2400))
         .await
         .map_err(|e| e.to_string())??;
-    state.waveforms.lock().unwrap().insert(id, peaks.clone());
+    state.waveforms.lock_ok().insert(id, peaks.clone());
     Ok(peaks)
 }
 
@@ -1881,8 +2059,8 @@ async fn search_online(
             let key = app
                 .state::<AppState>()
                 .config
-                .lock()
-                .unwrap()
+                
+                .lock_ok()
                 .settings
                 .freesound_key
                 .clone()
@@ -1898,7 +2076,7 @@ async fn search_online(
 async fn add_online(app: AppHandle, name: String, url: String) -> Result<Snapshot, String> {
     let data = online::download(&url).await?;
     let state = app.state::<AppState>();
-    let index = state.config.lock().unwrap().sounds.len();
+    let index = state.config.lock_ok().sounds.len();
     let sounds_dir = state.sounds_dir.clone();
     let sound = tauri::async_runtime::spawn_blocking(move || {
         store_sound(&data, "mp3", name, &sounds_dir, index)
@@ -1906,7 +2084,7 @@ async fn add_online(app: AppHandle, name: String, url: String) -> Result<Snapsho
     .await
     .map_err(|e| e.to_string())??;
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         config.sounds.push(sound);
         state.save(&config)?;
     }
@@ -1916,7 +2094,7 @@ async fn add_online(app: AppHandle, name: String, url: String) -> Result<Snapsho
 #[tauri::command]
 fn toggle_favorite(state: State<AppState>, id: String) -> Result<Snapshot, String> {
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         let sound = config.sounds.iter_mut().find(|s| s.id == id).ok_or("son introuvable")?;
         sound.favorite = !sound.favorite;
         state.save(&config)?;
@@ -1928,7 +2106,7 @@ fn toggle_favorite(state: State<AppState>, id: String) -> Result<Snapshot, Strin
 #[tauri::command]
 fn set_category(state: State<AppState>, ids: Vec<String>, category: Option<String>) -> Result<Snapshot, String> {
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         let category = clean_category(category);
         for sound in config.sounds.iter_mut().filter(|s| ids.contains(&s.id)) {
             sound.category = category.clone();
@@ -1942,7 +2120,7 @@ fn set_category(state: State<AppState>, ids: Vec<String>, category: Option<Strin
 #[tauri::command]
 fn set_tabs(state: State<AppState>, names: Vec<String>) -> Result<Snapshot, String> {
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         let mut tabs: Vec<String> = Vec::new();
         for name in names.into_iter().filter_map(|n| clean_category(Some(n))) {
             if !tabs.contains(&name) {
@@ -1960,7 +2138,7 @@ fn set_tabs(state: State<AppState>, names: Vec<String>) -> Result<Snapshot, Stri
 #[tauri::command]
 fn rename_tab(state: State<AppState>, old: String, new: Option<String>) -> Result<Snapshot, String> {
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         let new = clean_category(new);
         for sound in config.sounds.iter_mut().filter(|s| s.category.as_deref() == Some(old.as_str())) {
             sound.category = new.clone();
@@ -1991,14 +2169,14 @@ fn rename_tab(state: State<AppState>, old: String, new: Option<String>) -> Resul
 async fn add_from_url(app: AppHandle, url: String) -> Result<Snapshot, String> {
     let (data, ext, name) = online::download_link(url.trim()).await?;
     let state = app.state::<AppState>();
-    let index = state.config.lock().unwrap().sounds.len();
+    let index = state.config.lock_ok().sounds.len();
     let sounds_dir = state.sounds_dir.clone();
     let sound = tauri::async_runtime::spawn_blocking(move || store_sound(&data, &ext, name, &sounds_dir, index))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|_| "ce lien ne mène pas à un fichier audio (il faut un lien direct vers un .mp3, .wav…)".to_string())?;
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         config.sounds.push(sound);
         state.save(&config)?;
     }
@@ -2034,7 +2212,7 @@ async fn youtube_import(app: &AppHandle, url: String) -> Result<AddedSound, Stri
         return Err("ce n'est pas un lien YouTube".into());
     }
     let state = app.state::<AppState>();
-    let data_dir = state.sounds_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| state.sounds_dir.clone());
+    let data_dir = state.data_dir();
     let tools_dir = data_dir.join("tools");
     let status = |msg: &str| {
         let _ = app.emit("youtube-status", msg);
@@ -2048,14 +2226,14 @@ async fn youtube_import(app: &AppHandle, url: String) -> Result<AddedSound, Stri
     })
     .await
     .map_err(|e| e.to_string())??;
-    let index = state.config.lock().unwrap().sounds.len();
+    let index = state.config.lock_ok().sounds.len();
     let sounds_dir = state.sounds_dir.clone();
     let sound = tauri::async_runtime::spawn_blocking(move || store_sound(&data, "m4a", title, &sounds_dir, index))
         .await
         .map_err(|e| e.to_string())??;
     let id = sound.id.clone();
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         config.sounds.push(sound);
         state.save(&config)?;
     }
@@ -2073,7 +2251,7 @@ struct PhoneInfo {
 
 #[tauri::command]
 fn get_phone_info(state: State<AppState>) -> Result<Option<PhoneInfo>, String> {
-    let settings = state.config.lock().unwrap().settings.clone();
+    let settings = state.config.lock_ok().settings.clone();
     if !settings.phone_enabled || settings.phone_token.is_empty() {
         return Ok(None);
     }
@@ -2087,7 +2265,7 @@ fn get_phone_info(state: State<AppState>) -> Result<Option<PhoneInfo>, String> {
 #[tauri::command]
 fn regenerate_phone_token(app: AppHandle, state: State<AppState>) -> Result<Snapshot, String> {
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         config.settings.phone_token = phone::new_token();
         state.save(&config)?;
     }
@@ -2116,13 +2294,23 @@ fn set_mic_muted(app: AppHandle, muted: bool) {
 
 /// Joue un son au hasard de l'onglet affiché et renvoie son id.
 #[tauri::command]
-fn play_random(state: State<AppState>, category: Option<String>) -> Result<Option<String>, String> {
-    let Some(sound) = pick_random(&state, category.as_deref()) else {
-        return Ok(None);
-    };
-    note_play(&state, &sound);
-    state.audio.toggle(play_request(&state, &sound))?;
-    Ok(Some(sound.id))
+async fn play_random(app: AppHandle, category: Option<String>) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let Some(sound) = pick_random(&state, category.as_deref()) else {
+            return Ok(None);
+        };
+        // Comme un son lancé à la main : chez le pote choisi dans le salon.
+        if state.extras.room.target().is_some() {
+            extras::send_to_friend(&app, sound.clone())?;
+            return Ok(Some(sound.id));
+        }
+        note_play(&state, &sound);
+        state.audio.toggle(play_request(&state, &sound))?;
+        Ok(Some(sound.id))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Allume ou éteint le mode Surprise.
@@ -2299,7 +2487,7 @@ fn read_pack(
         let ext = Path::new(&p.file)
             .extension()
             .and_then(|e| e.to_str())
-            .map(|e| e.to_lowercase())
+            .map(str::to_lowercase)
             .unwrap_or_default();
         if !AUDIO_EXTENSIONS.contains(&ext.as_str()) {
             errors.push(format!("{} : format non pris en charge", p.name));
@@ -2382,8 +2570,8 @@ async fn export_pack(app: AppHandle, category: Option<String>, id: Option<String
     let state = app.state::<AppState>();
     let mut sounds: Vec<Sound> = state
         .config
-        .lock()
-        .unwrap()
+        
+        .lock_ok()
         .sounds
         .iter()
         .filter(|s| match &id {
@@ -2444,7 +2632,7 @@ async fn import_pack(app: AppHandle, path: Option<String>) -> Result<Option<Impo
         return Ok(None);
     };
     let state = app.state::<AppState>();
-    let config = state.config.lock().unwrap().clone();
+    let config = state.config.lock_ok().clone();
     let sounds_dir = state.sounds_dir.clone();
     let (added, errors, _) =
         tauri::async_runtime::spawn_blocking(move || read_pack(&src, &config, &sounds_dir, &Default::default()))
@@ -2452,7 +2640,7 @@ async fn import_pack(app: AppHandle, path: Option<String>) -> Result<Option<Impo
         .map_err(|e| e.to_string())??;
     let count = added.len();
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         config.sounds.extend(added);
         state.save(&config)?;
     }
@@ -2478,7 +2666,7 @@ async fn export_backup(app: AppHandle) -> Result<Option<usize>, String> {
     else {
         return Ok(None);
     };
-    let config = app.state::<AppState>().config.lock().unwrap().clone();
+    let config = app.state::<AppState>().config.lock_ok().clone();
     tauri::async_runtime::spawn_blocking(move || backup::write(&dest, &config))
         .await
         .map_err(|e| e.to_string())?
@@ -2509,7 +2697,7 @@ async fn import_backup(app: AppHandle, path: Option<String>) -> Result<Option<Sn
     empty_trash(&state);
     let settings = restored.settings.clone();
     {
-        let mut config = state.config.lock().unwrap();
+        let mut config = state.config.lock_ok();
         // L'identité de ce PC dans le salon reste la sienne (une sauvegarde
         // venue d'un autre PC donnerait sinon deux membres au même nom
         // interne, qui se volent les sons).
@@ -2520,7 +2708,7 @@ async fn import_backup(app: AppHandle, path: Option<String>) -> Result<Option<Sn
         }
         state.save(&config)?;
     }
-    state.waveforms.lock().unwrap().clear();
+    state.waveforms.lock_ok().clear();
     journal::write("Sauvegarde restaurée");
     replay::configure(settings.replay_enabled, settings.duck_enabled, settings.duck_level);
     apply_audio(&state, settings);
@@ -2559,9 +2747,12 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let stop = MenuItem::with_id(app, "stop", "Tout arrêter", true, None::<&str>)?;
     let muted = app.state::<AppState>().mic_muted.load(Ordering::Relaxed);
     let mic = CheckMenuItem::with_id(app, "mic", "Micro coupé", true, muted, None::<&str>)?;
+    let launch = app.state::<AppState>().config.lock_ok().settings.launch_at_startup;
+    let autostart = CheckMenuItem::with_id(app, "autostart", "Lancer avec Windows", true, launch, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quitter", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &stop, &mic, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &stop, &mic, &autostart, &quit])?;
     app.manage(TrayMic(mic));
+    app.manage(TrayAutostart(autostart));
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("Soundboard")
         .menu(&menu)
@@ -2577,8 +2768,9 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 let muted = !app.state::<AppState>().mic_muted.load(Ordering::Relaxed);
                 set_muted(app, muted);
             }
+            "autostart" => toggle_autostart(app),
             "quit" => {
-                if let Some(w) = app.get_webview_window("main") {
+                if let Some(w) = app.get_webview_window(MAIN_WINDOW) {
                     winpos::save(&w);
                 }
                 app.exit(0)
@@ -2619,7 +2811,8 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
-                    if event.state() == ShortcutState::Pressed {
+                    // Déjà vu par le crochet clavier : c'est la même pression.
+                    if event.state() == ShortcutState::Pressed && !keyhook::seen_by_hook(shortcut.id()) {
                         on_hotkey(app, shortcut.id());
                     }
                 })
@@ -2642,7 +2835,7 @@ pub fn run() {
             let audio = AudioHandle::spawn(move |event| match event {
                 AudioEvent::Playing(status) => {
                     if let Some(state) = handle.try_state::<AppState>() {
-                        *state.playing_ids.lock().unwrap() = status
+                        *state.playing_ids.lock_ok() = status
                             .iter()
                             .filter(|s| s.id != audio::PREVIEW_ID)
                             .map(|s| s.id.clone())
@@ -2659,7 +2852,7 @@ pub fn run() {
                     let handle = handle.clone();
                     std::thread::spawn(move || {
                         if let Some(state) = handle.try_state::<AppState>() {
-                            let mut config = state.config.lock().unwrap();
+                            let mut config = state.config.lock_ok();
                             config.settings.mic_learned = Some(config::MicLearned { device, speech_db });
                             let _ = state.save(&config);
                         }
@@ -2668,7 +2861,7 @@ pub fn run() {
             });
 
             let state = AppState {
-                config: Mutex::new(config.clone()),
+                config: Mutex::new(config),
                 config_path,
                 sounds_dir,
                 audio,
@@ -2703,8 +2896,7 @@ pub fn run() {
             std::thread::spawn(move || {
                 let state = handle.state::<AppState>();
                 // Réglages du moment : ils ont pu changer entre-temps.
-                let settings = state.config.lock().unwrap().settings.clone();
-                apply_autostart(&handle, settings.launch_at_startup);
+                let settings = state.config.lock_ok().settings.clone();
                 apply_audio(&state, settings);
                 // Avant la mise à jour des packs, qui range de nouveaux fichiers.
                 check_orphans(&state);
@@ -2716,17 +2908,17 @@ pub fn run() {
                 analyze_missing(&handle);
                 measure_segments(handle.clone());
             });
+            // Avant l'icône, dont le menu montre ce réglage (lecture du
+            // registre : instantané).
+            let launch = app.state::<AppState>().config.lock_ok().settings.launch_at_startup;
+            sync_autostart(app.handle(), launch);
             build_tray(app.handle())?;
             apply_phone(app.handle());
 
-            if let Some(w) = app.get_webview_window("main") {
-                winpos::restore(&w);
-            }
-            // Lancé avec Windows : on reste discret près de l'horloge.
+            // Lancé avec Windows : on reste discret près de l'horloge, sans
+            // même charger la fenêtre (voir `create_main_window`).
             if !std::env::args().any(|a| a == MINIMIZED_ARG) {
-                show_window(app.handle());
-            } else if let Some(w) = app.get_webview_window("main") {
-                webview_low_memory(&w, true);
+                reveal(&create_main_window(app.handle())?);
             }
             Ok(())
         })
@@ -2746,13 +2938,14 @@ pub fn run() {
                     winpos::save(&w);
                 }
                 let state = window.state::<AppState>();
-                let to_tray = state.config.lock().unwrap().settings.close_to_tray;
+                let to_tray = state.config.lock_ok().settings.close_to_tray;
                 if to_tray {
                     api.prevent_close();
                     let _ = window.hide();
                     if let Some(w) = window.app_handle().get_webview_window(window.label()) {
                         webview_low_memory(&w, true);
                     }
+                    release_window_later(window.app_handle());
                 } else {
                     window.app_handle().exit(0);
                 }
@@ -2825,6 +3018,7 @@ pub fn run() {
             extras::subscribe_pack,
             extras::unsubscribe_pack,
             extras::sync_packs,
+            extras::pending_gifts,
             extras::cloud_folders,
             extras::publish_tab,
             extras::unpublish_tab,
@@ -2857,13 +3051,18 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("erreur au lancement de l'application")
-        .run(|app, event| {
+        .run(|app, event| match event {
+            // Dernière fenêtre fermée (un extrait, la fenêtre principale pas
+            // encore ouverte) : l'app reste près de l'horloge. « Quitter » et
+            // la fermeture sans icône passent par `exit`, avec un code.
+            tauri::RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
             // Les derniers compteurs de lecture ne sont pas perdus en quittant.
-            if let tauri::RunEvent::Exit = event {
+            tauri::RunEvent::Exit => {
                 if let Some(state) = app.try_state::<AppState>() {
                     state.flush_plays();
                 }
             }
+            _ => {}
         });
 }
 
@@ -2886,7 +3085,8 @@ mod tests {
         }))
         .unwrap();
         // a.mp3 est dans la liste (casse différente sous Windows), b.wav non.
-        let orphans = orphan_files(&sounds, &config);
+        let orphans = orphan_files(&sounds, &config, std::time::Duration::ZERO);
+        assert!(orphan_files(&sounds, &config, std::time::Duration::from_secs(120)).is_empty());
         assert_eq!(orphans, vec![sounds.join("b.wav")]);
         // L'ancienne config se souvient du nom et de l'onglet de b.wav.
         config.sounds[0].path = sounds.join("b.wav");
@@ -2901,12 +3101,37 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
     #[test]
+    fn a_crash_while_holding_a_lock_does_not_block_the_app() {
+        use super::LockExt;
+        use std::sync::{Arc, Mutex};
+        let m = Arc::new(Mutex::new(vec![1]));
+        let m2 = m.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = m2.lock().unwrap();
+            panic!("plantage pour le test");
+        })
+        .join();
+        assert!(m.is_poisoned());
+        m.lock_ok().push(2);
+        assert_eq!(*m.lock_ok(), vec![1, 2]);
+    }
+
+    #[test]
     fn pack_hotkeys_cannot_steal_typing_keys() {
         assert!(super::blocks_typing("KeyA"));
         assert!(super::blocks_typing("Shift+Digit1"));
         assert!(!super::blocks_typing("Ctrl+KeyA"));
         assert!(!super::blocks_typing("F5"));
         assert!(!super::blocks_typing("Numpad1"));
+    }
+
+    #[test]
+    fn windows_startup_switch_is_read_like_the_task_manager() {
+        let on = [2u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let off = [3u8, 0, 0, 0, 0x5a, 0x1c, 0x7e, 0x3b, 0x41, 0x5d, 0xdb, 0x01];
+        assert!(!super::approval_says_off(&on));
+        assert!(super::approval_says_off(&off));
+        assert!(!super::approval_says_off(&[3u8]), "valeur abîmée : on ne touche à rien");
     }
 
     #[test]

@@ -10,6 +10,7 @@
 //! Un raccourci mélange les deux en un nouveau son. La même capture de
 //! Discord sert à baisser les sons de la soundboard quand un pote parle.
 
+use crate::LockExt;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -104,7 +105,7 @@ pub fn configure(replay: bool, duck: bool, depth: f32) {
     }
     if !replay {
         for ring in [&CABLE, &DISCORD] {
-            if let Some(r) = ring.lock().unwrap().as_ref() {
+            if let Some(r) = ring.lock_ok().as_ref() {
                 r.clear();
             }
         }
@@ -114,14 +115,14 @@ pub fn configure(replay: bool, duck: bool, depth: f32) {
 /// Mémoire pour la sortie vers Discord (une nouvelle à chaque ouverture du câble).
 pub fn cable_ring(rate: u32) -> Option<Arc<Ring>> {
     let ring = Ring::new(rate);
-    *CABLE.lock().unwrap() = Some(ring.clone());
+    *CABLE.lock_ok() = Some(ring.clone());
     Some(ring)
 }
 
 /// Ta voix et tes sons, et ce que Discord t'a fait entendre, mélangés.
 /// None si rien n'a été gardé.
 pub fn snapshot() -> Option<Vec<f32>> {
-    let get = |r: &Mutex<Option<Arc<Ring>>>| r.lock().unwrap().as_ref().map(|r| r.take()).unwrap_or_default();
+    let get = |r: &Mutex<Option<Arc<Ring>>>| r.lock_ok().as_ref().map(|r| r.take()).unwrap_or_default();
     let mine = get(&CABLE);
     let theirs = get(&DISCORD);
     let len = mine.len().max(theirs.len());
@@ -258,7 +259,7 @@ mod win {
         client.start_stream().map_err(|e| e.to_string())?;
 
         let ring = Ring::new(RATE);
-        *DISCORD.lock().unwrap() = Some(ring.clone());
+        *DISCORD.lock_ok() = Some(ring.clone());
         DISCORD_HEARD.store(true, Ordering::Relaxed);
         let mut ducker = Ducker::new();
         let mut bytes: VecDeque<u8> = VecDeque::new();
@@ -311,7 +312,7 @@ mod tests {
         let ring = Ring::new(1000);
         let data: Vec<f32> = (0..40_000).map(|i| i as f32).collect();
         ring.push(&data, 1, 1000);
-        let buf = ring.buf.lock().unwrap();
+        let buf = ring.buf.lock_ok();
         assert_eq!(buf.len(), 30_000);
         assert_eq!(*buf.back().unwrap(), 39_999.0);
     }

@@ -439,7 +439,9 @@
     });
 
     refresh();
-    setInterval(refresh, 1500);
+    // Page en arrière-plan ou écran éteint : on ne demande plus rien au PC.
+    setInterval(() => { if (!document.hidden) refresh(); }, 1500);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
   </script>
 </body>
 </html>
