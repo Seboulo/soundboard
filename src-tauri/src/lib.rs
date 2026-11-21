@@ -2349,11 +2349,48 @@ async fn install_update(app: AppHandle) -> Result<(), String> {
     state.audio.stop_all();
     // L'installeur ferme l'appli sans passer par la sortie normale.
     state.flush_plays();
-    update
-        .download_and_install(|_, _| {}, || {})
+    let bytes = update
+        .download(|_, _| {}, || {})
         .await
         .map_err(|e| format!("mise à jour impossible : {e}"))?;
-    app.restart();
+    // Windows peut refuser de lancer l'installeur tout juste téléchargé
+    // (« os error 5 ») tant que l'antivirus l'analyse : on réessaie un peu.
+    // En cas de succès, `install` ferme l'appli et l'installeur la relance.
+    for wait_ms in [0, 2000, 4000] {
+        std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+        match update.install(&bytes) {
+            Ok(()) => app.restart(),
+            Err(e) if access_denied(&e) => continue,
+            Err(e) => return Err(format!("mise à jour impossible : {e}")),
+        }
+    }
+    // Toujours bloqué : on pose l'installeur dans Téléchargements pour que
+    // la personne le lance elle-même.
+    Err(match save_installer(&app, &update.version, &bytes) {
+        Some(path) => {
+            let _ = app.opener().reveal_item_in_dir(&path);
+            "Windows (sans doute l'antivirus) a bloqué l'installation. L'installeur est dans tes Téléchargements : \
+             quitte Soundboard (clic droit sur l'icône près de l'horloge, Quitter) puis double-clique dessus."
+                .to_string()
+        }
+        None => "Windows (sans doute l'antivirus) a bloqué l'installation. Clique sur « Télécharger » pour l'installer à la main.".to_string(),
+    })
+}
+
+/// « Accès refusé » (os error 5) au lancement de l'installeur.
+fn access_denied(e: &tauri_plugin_updater::Error) -> bool {
+    matches!(e, tauri_plugin_updater::Error::Io(io) if io.raw_os_error() == Some(5))
+}
+
+/// Écrit l'installeur téléchargé dans le dossier Téléchargements.
+fn save_installer(app: &AppHandle, version: &str, bytes: &[u8]) -> Option<PathBuf> {
+    // Seul un installeur .exe (commence par « MZ ») se lance d'un double-clic.
+    if !bytes.starts_with(b"MZ") {
+        return None;
+    }
+    let path = app.path().download_dir().ok()?.join(format!("Soundboard_{version}_x64-setup.exe"));
+    fs::write(&path, bytes).ok()?;
+    Some(path)
 }
 
 #[tauri::command]
