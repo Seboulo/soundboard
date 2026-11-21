@@ -431,6 +431,7 @@ fn show_window(app: &AppHandle) {
 }
 
 fn reveal(window: &tauri::WebviewWindow) {
+    SHOWN.fetch_add(1, Ordering::SeqCst);
     webview_low_memory(window, false);
     let _ = window.show();
     let _ = window.unminimize();
@@ -439,6 +440,30 @@ fn reveal(window: &tauri::WebviewWindow) {
 }
 
 const MAIN_WINDOW: &str = "main";
+
+/// Fenêtre cachée près de l'horloge depuis 30 min : on la ferme pour de bon,
+/// et WebView2 rend toute sa mémoire (cachée, elle en gardait encore
+/// plusieurs dizaines de Mo). Elle se recrée au prochain clic, comme après
+/// un lancement avec Windows ; l'onglet, le tri et l'affichage sont gardés.
+const RELEASE_HIDDEN_AFTER: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// Augmente à chaque affichage : une fenêtre rouverte entre-temps reste.
+static SHOWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn release_window_later(app: &AppHandle) {
+    let shown = SHOWN.load(Ordering::SeqCst);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(RELEASE_HIDDEN_AFTER);
+        if SHOWN.load(Ordering::SeqCst) != shown {
+            return;
+        }
+        if let Some(w) = app.get_webview_window(MAIN_WINDOW) {
+            if !w.is_visible().unwrap_or(true) {
+                let _ = w.destroy();
+            }
+        }
+    });
+}
 
 /// La fenêtre principale (décrite dans tauri.conf.json, qui ne la crée pas
 /// d'office). Lancée avec Windows, l'app reste près de l'horloge sans
@@ -2935,6 +2960,7 @@ pub fn run() {
                     if let Some(w) = window.app_handle().get_webview_window(window.label()) {
                         webview_low_memory(&w, true);
                     }
+                    release_window_later(window.app_handle());
                 } else {
                     window.app_handle().exit(0);
                 }

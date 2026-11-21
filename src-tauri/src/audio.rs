@@ -481,6 +481,8 @@ struct Engine {
     mic_take: Option<MicTake>,
     /// Derniers sons avec effets déjà calculés.
     fx_cache: VecDeque<(FxKey, Rendered)>,
+    /// Dernier son joué ou arrêté (voir `FX_CACHE_IDLE`).
+    last_activity: Option<Instant>,
 }
 
 /// Voix enregistrée pour en faire un son, partagée avec le fil du micro.
@@ -500,6 +502,10 @@ struct FxKey {
 
 const FX_CACHE: usize = 12;
 const FX_CACHE_SAMPLES: usize = 16 << 20;
+/// Sans aucun son pendant 10 min (appli laissée près de l'horloge), les sons
+/// avec effets gardés en mémoire (jusqu'à 64 Mo) sont rendus à Windows. Le
+/// prochain se recalcule, comme la première fois.
+const FX_CACHE_IDLE: Duration = Duration::from_secs(600);
 
 fn run(rx: Receiver<Command>, meter_on: Arc<AtomicBool>, on_event: impl Fn(AudioEvent)) {
     let mut engine = Engine::default();
@@ -522,6 +528,11 @@ fn run(rx: Receiver<Command>, meter_on: Arc<AtomicBool>, on_event: impl Fn(Audio
         let status = engine.status();
         if !(status.is_empty() && last_status.is_empty()) {
             on_event(AudioEvent::Playing(status.clone()));
+        }
+        if !status.is_empty() {
+            engine.last_activity = Some(Instant::now());
+        } else if !engine.fx_cache.is_empty() && engine.last_activity.is_none_or(|t| t.elapsed() > FX_CACHE_IDLE) {
+            engine.fx_cache = VecDeque::new();
         }
         last_status = status;
         if meter_on.load(Ordering::Relaxed) && engine.mic_stream.is_some() {

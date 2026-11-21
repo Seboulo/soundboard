@@ -2278,6 +2278,12 @@ $('[data-action="freesound-key"]', dlgSettings).addEventListener("click", (e) =>
   call("open_freesound_key_page");
 });
 
+// Fenêtre cachée près de l'horloge, réglages ouverts : le niveau du micro
+// n'est plus envoyé dix fois par seconde à une page que personne ne voit.
+document.addEventListener("visibilitychange", () => {
+  if (dlgSettings.open) invoke("set_meter", { on: !document.hidden }).catch(() => {});
+});
+
 dlgSettings.addEventListener("close", () => {
   invoke("set_meter", { on: false });
   if (dlgSettings.returnValue !== "save") return;
