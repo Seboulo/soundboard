@@ -279,10 +279,10 @@ fn phone_request(app: &AppHandle, req: phone::Request) -> Result<serde_json::Val
         }
         phone::Request::Random(category) => {
             let sound = pick_random(&state, category.as_deref()).ok_or("aucun son")?;
-            note_play(&state, &sound);
-            state.audio.toggle(play_request(&state, &sound))?;
-            let _ = app.emit("sound-triggered", &sound.id);
-            Ok(serde_json::json!({ "id": sound.id }))
+            let id = sound.id.clone();
+            // Comme « Jouer » : chez le pote choisi dans le salon, sinon ici.
+            extras::play_or_send(app, sound);
+            Ok(serde_json::json!({ "id": id }))
         }
     }
 }
@@ -2140,13 +2140,23 @@ fn set_mic_muted(app: AppHandle, muted: bool) {
 
 /// Joue un son au hasard de l'onglet affiché et renvoie son id.
 #[tauri::command]
-fn play_random(state: State<AppState>, category: Option<String>) -> Result<Option<String>, String> {
-    let Some(sound) = pick_random(&state, category.as_deref()) else {
-        return Ok(None);
-    };
-    note_play(&state, &sound);
-    state.audio.toggle(play_request(&state, &sound))?;
-    Ok(Some(sound.id))
+async fn play_random(app: AppHandle, category: Option<String>) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let Some(sound) = pick_random(&state, category.as_deref()) else {
+            return Ok(None);
+        };
+        // Comme un son lancé à la main : chez le pote choisi dans le salon.
+        if state.extras.room.target().is_some() {
+            extras::send_to_friend(&app, sound.clone())?;
+            return Ok(Some(sound.id));
+        }
+        note_play(&state, &sound);
+        state.audio.toggle(play_request(&state, &sound))?;
+        Ok(Some(sound.id))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Allume ou éteint le mode Surprise.
