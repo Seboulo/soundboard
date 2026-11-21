@@ -1045,7 +1045,9 @@ try {
 function playDuration(sound) {
   const total = sound.analysis?.duration_ms;
   if (total == null) return null;
-  const ms = Math.max(0, Math.min(sound.end_ms ?? total, total) - sound.start_ms);
+  const end = Math.min(sound.end_ms ?? total, total);
+  const cut = (sound.cuts ?? []).reduce((t, c) => t + Math.max(0, Math.min(c.to_ms, end) - Math.max(c.from_ms, sound.start_ms)), 0);
+  const ms = Math.max(0, end - sound.start_ms - cut);
   return ms / (sound.fx?.speed ?? 1);
 }
 
@@ -1494,7 +1496,10 @@ formSound.emoji.addEventListener("input", () => {
 
 const canvas = $("#wave");
 // view : partie de l'onde affichée (zoom) ; focus : poignée réglée au clavier.
-const trim = { duration: 0, start: 0, end: 0, peaks: [], drag: null, view: [0, 0], focus: "start" };
+// cuts : passages enlevés au milieu ({ from, to } en ms). Poignées : "start",
+// "end", ou "c<n>f" / "c<n>t" (début / fin du passage enlevé n), "c<n>m"
+// (passage enlevé déplacé d'un bloc).
+const trim = { duration: 0, start: 0, end: 0, cuts: [], peaks: [], drag: null, grab: 0, view: [0, 0], focus: "start" };
 const MAX_ZOOM = 32;
 
 function fmtTime(ms) {
@@ -1509,6 +1514,7 @@ async function openTrim(sound) {
   if (!trim.duration) return resetHistory();
   trim.start = sound.start_ms ?? 0;
   trim.end = Math.min(sound.end_ms ?? trim.duration, trim.duration);
+  trim.cuts = (sound.cuts ?? []).map((c) => ({ from: c.from_ms, to: c.to_ms }));
   trim.peaks = [];
   trim.view = [0, trim.duration];
   trim.focus = "start";
@@ -1540,7 +1546,8 @@ function drawTrim() {
   for (let i = i0; i < i1; i++) {
     const px = x((i / n) * trim.duration);
     const bh = Math.max(2, trim.peaks[i] * (h - 10));
-    const inside = px >= xs && px <= xe;
+    const ms = (i / n) * trim.duration;
+    const inside = px >= xs && px <= xe && !trim.cuts.some((c) => ms >= c.from && ms < c.to);
     ctx.fillStyle = inside ? editing?.color ?? "#4f46e5" : css.getPropertyValue("--wave-off");
     ctx.fillRect(px, (h - bh) / 2, bw, bh);
   }
@@ -1554,6 +1561,40 @@ function drawTrim() {
   ctx.fillRect(xe, 0, w - xe, h);
   // La poignée réglée aux flèches est en couleur quand l'onde a le focus.
   const keyboard = document.activeElement === canvas;
+  // Passages enlevés : grisés, barrés et bordés de rouge.
+  const danger = css.getPropertyValue("--danger");
+  trim.cuts.forEach((c, i) => {
+    const a = x(c.from), b = x(c.to);
+    if (b < 0 || a > w) return;
+    ctx.fillStyle = css.getPropertyValue("--wave-mask");
+    ctx.fillRect(a, 0, b - a, h);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(a, 0, b - a, h);
+    ctx.clip();
+    ctx.strokeStyle = danger;
+    ctx.globalAlpha = 0.35;
+    ctx.lineWidth = 2;
+    for (let k = a - h; k < b; k += 14) {
+      ctx.beginPath();
+      ctx.moveTo(k, h);
+      ctx.lineTo(k + h, 0);
+      ctx.stroke();
+    }
+    ctx.restore();
+    for (const [hx, which] of [[a, `c${i}f`], [b, `c${i}t`]]) {
+      ctx.fillStyle = keyboard && trim.focus === which ? css.getPropertyValue("--accent") : danger;
+      ctx.fillRect(hx - 2, 0, 4, h);
+      ctx.fillRect(hx - 7, h / 2 - 9, 14, 18);
+    }
+    if (b - a > 26) {
+      ctx.fillStyle = danger;
+      ctx.font = "bold 26px Segoe UI, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("✂", (a + b) / 2, 30);
+      ctx.textAlign = "start";
+    }
+  });
   for (const [hx, which] of [[xs, "start"], [xe, "end"]]) {
     ctx.fillStyle = css.getPropertyValue(keyboard && trim.focus === which ? "--accent" : "--text");
     ctx.fillRect(hx - 2, 0, 4, h);
@@ -1574,7 +1615,8 @@ function drawTrim() {
   const zoom = trim.duration / (v1 - v0);
   $("#trim-info").textContent =
     (now !== null ? `▶ ${fmtTime(now)}  ·  ` : "") +
-    `${fmtTime(trim.start)} → ${fmtTime(trim.end)}  ·  ${fmtTime(trim.end - trim.start)}` +
+    `${fmtTime(trim.start)} → ${fmtTime(trim.end)}  ·  ${fmtTime(keptMs())}` +
+    (trim.cuts.length ? `  ·  ${trim.cuts.length} passage${trim.cuts.length > 1 ? "s" : ""} enlevé${trim.cuts.length > 1 ? "s" : ""}` : "") +
     (zoom > 1.01 ? `  ·  zoom × ${Math.round(zoom)}` : "");
   zoomOutBtn.disabled = zoom <= 1.01;
   zoomInBtn.disabled = zoom >= MAX_ZOOM - 0.01;
@@ -1586,7 +1628,7 @@ const zoomInBtn = $('[data-action="zoom-in"]', dlgSound);
 const zoomOutBtn = $('[data-action="zoom-out"]', dlgSound);
 
 /** Affiche `span` ms autour de `center` (en restant dans le son). */
-function setView(center, span) {
+function setWaveView(center, span) {
   span = Math.min(trim.duration, Math.max(trim.duration / MAX_ZOOM, span));
   let from = Math.max(0, center - span / 2);
   from = Math.min(from, trim.duration - span);
@@ -1596,18 +1638,18 @@ function setView(center, span) {
 
 function zoomBy(factor, center) {
   const [v0, v1] = trim.view;
-  setView(center ?? (v0 + v1) / 2, (v1 - v0) / factor);
+  setWaveView(center ?? (v0 + v1) / 2, (v1 - v0) / factor);
 }
 
 /** Fait défiler l'onde zoomée pour garder la poignée réglée à l'écran. */
 function keepVisible(ms) {
   const [v0, v1] = trim.view;
   const span = v1 - v0;
-  if (ms < v0) setView(ms + span / 2 - span * 0.1, span);
-  else if (ms > v1) setView(ms - span / 2 + span * 0.1, span);
+  if (ms < v0) setWaveView(ms + span / 2 - span * 0.1, span);
+  else if (ms > v1) setWaveView(ms - span / 2 + span * 0.1, span);
 }
 
-zoomInBtn.addEventListener("click", () => zoomBy(2, trim.focus === "end" ? trim.end : trim.start));
+zoomInBtn.addEventListener("click", () => zoomBy(2, handleMs(trim.focus)));
 zoomOutBtn.addEventListener("click", () => zoomBy(0.5));
 // Ctrl + molette : zoom là où est la souris ; molette de côté ou Maj +
 // molette : défilement de l'onde zoomée. La molette seule fait défiler la
@@ -1624,7 +1666,7 @@ canvas.addEventListener(
       if (v1 - v0 >= trim.duration) return;
       e.preventDefault();
       const d = (e.shiftKey ? e.deltaY : e.deltaX) || e.deltaX;
-      setView((v0 + v1) / 2 + (d / canvas.clientWidth) * (v1 - v0), v1 - v0);
+      setWaveView((v0 + v1) / 2 + (d / canvas.clientWidth) * (v1 - v0), v1 - v0);
     }
   },
   { passive: false },
@@ -1639,33 +1681,134 @@ function msAt(e) {
 
 const MIN_TRIM_MS = 50;
 
+/** Durée gardée : du début à la fin, moins les passages enlevés. */
+function keptMs() {
+  return trim.end - trim.start - trim.cuts.reduce((t, c) => t + Math.max(0, Math.min(c.to, trim.end) - Math.max(c.from, trim.start)), 0);
+}
+
+function handleMs(id) {
+  if (id === "start" || id === "end") return trim[id];
+  const c = trim.cuts[parseInt(id.slice(1), 10)];
+  if (!c) return trim.start;
+  return id.endsWith("f") ? c.from : id.endsWith("t") ? c.to : (c.from + c.to) / 2;
+}
+
+/** Passages enlevés rangés, gardés entre le début et la fin, fusionnés
+ * quand ils se touchent ; trop courts (< 20 ms) : oubliés. */
+function cleanCuts() {
+  const list = trim.cuts
+    .map((c) => ({ from: Math.max(trim.start, Math.min(c.from, c.to)), to: Math.min(trim.end, Math.max(c.from, c.to)) }))
+    .filter((c) => c.to - c.from >= 20)
+    .sort((a, b) => a.from - b.from);
+  const out = [];
+  for (const c of list) {
+    const last = out[out.length - 1];
+    if (last && c.from <= last.to) last.to = Math.max(last.to, c.to);
+    else out.push(c);
+  }
+  trim.cuts = out;
+}
+
 canvas.addEventListener("pointerdown", (e) => {
   if (!trim.duration) return;
   const ms = msAt(e);
-  trim.drag = Math.abs(ms - trim.start) <= Math.abs(ms - trim.end) ? "start" : "end";
-  trim.focus = trim.drag;
+  const [v0, v1] = trim.view;
+  const px = (ms2) => ((ms2 - v0) / (v1 - v0)) * canvas.clientWidth;
+  const at = px(ms);
+  // Un bord de passage enlevé à moins de 8 px ; sinon un clic dedans le
+  // déplace d'un bloc ; sinon la poignée de début ou de fin la plus proche.
+  let pick = null;
+  let best = 8;
+  trim.cuts.forEach((c, i) => {
+    for (const [v, id] of [[c.from, `c${i}f`], [c.to, `c${i}t`]]) {
+      const d = Math.abs(px(v) - at);
+      if (d <= best) [best, pick] = [d, id];
+    }
+  });
+  if (!pick) {
+    const i = trim.cuts.findIndex((c) => ms > c.from && ms < c.to);
+    if (i >= 0) {
+      pick = `c${i}m`;
+      trim.grab = ms - trim.cuts[i].from;
+    }
+  }
+  trim.drag = pick ?? (Math.abs(ms - trim.start) <= Math.abs(ms - trim.end) ? "start" : "end");
+  trim.focus = trim.drag.endsWith("m") ? trim.drag.slice(0, -1) + "f" : trim.drag;
   canvas.focus({ preventScroll: true });
   canvas.setPointerCapture(e.pointerId);
-  moveHandle(ms);
+  if (!pick?.endsWith("m")) moveHandle(ms);
+});
+// Double-clic sur un passage enlevé : il revient.
+canvas.addEventListener("dblclick", (e) => {
+  const ms = msAt(e);
+  const i = trim.cuts.findIndex((c) => ms >= c.from && ms <= c.to);
+  if (i < 0) return;
+  trim.cuts.splice(i, 1);
+  trim.focus = "start";
+  drawTrim();
+  commitEdit();
 });
 canvas.addEventListener("pointermove", (e) => trim.drag && moveHandle(msAt(e)));
 canvas.addEventListener("pointerup", () => {
   if (!trim.drag) return;
   trim.drag = null;
-  commitEdit();
+  finishCutEdit();
 });
 
+/** Après un réglage : passages enlevés remis en ordre, puis une étape d'historique. */
+function finishCutEdit() {
+  const focused = trim.focus.startsWith("c") ? trim.cuts[parseInt(trim.focus.slice(1), 10)] : null;
+  cleanCuts();
+  const i = focused ? trim.cuts.findIndex((c) => c.from <= focused.from && c.to >= focused.to) : -1;
+  if (trim.focus.startsWith("c")) trim.focus = i >= 0 ? `c${i}${trim.focus.endsWith("t") ? "t" : "f"}` : "start";
+  drawTrim();
+  commitEdit();
+}
+
 function moveHandle(ms) {
-  if (trim.drag === "start") trim.start = Math.min(ms, trim.end - MIN_TRIM_MS);
-  else trim.end = Math.max(ms, trim.start + MIN_TRIM_MS);
+  const id = trim.drag;
+  if (id === "start") trim.start = Math.min(ms, trim.end - MIN_TRIM_MS);
+  else if (id === "end") trim.end = Math.max(ms, trim.start + MIN_TRIM_MS);
+  else {
+    const c = trim.cuts[parseInt(id.slice(1), 10)];
+    if (!c) return;
+    if (id.endsWith("f")) c.from = Math.max(trim.start, Math.min(ms, c.to - 20));
+    else if (id.endsWith("t")) c.to = Math.min(trim.end, Math.max(ms, c.from + 20));
+    else {
+      const len = c.to - c.from;
+      c.from = Math.max(trim.start, Math.min(ms - trim.grab, trim.end - len));
+      c.to = c.from + len;
+    }
+  }
   trim.start = Math.max(0, trim.start);
   trim.end = Math.min(trim.duration, trim.end);
   drawTrim();
 }
 
+// Enlève un passage au milieu : posé là où en est l'écoute, sinon au milieu
+// de ce qui est affiché, puis réglé avec ses deux poignées rouges.
+$('[data-action="add-cut"]', dlgSound).addEventListener("click", () => {
+  if (!trim.duration) return;
+  const [v0, v1] = trim.view;
+  const span = Math.max(200, Math.min((v1 - v0) * 0.15, keptMs() / 3));
+  const now = typeof playheadMs === "function" ? playheadMs() : null;
+  const lo = Math.max(trim.start, v0), hi = Math.min(trim.end, v1);
+  let from = Math.round((now ?? (lo + hi) / 2) - span / 2);
+  from = Math.max(trim.start, Math.min(from, trim.end - span));
+  if (keptMs() - span < MIN_TRIM_MS * 2) return toast("Le son est trop court pour en enlever un passage.");
+  trim.cuts.push({ from, to: Math.round(from + span) });
+  trim.focus = `c${trim.cuts.length - 1}f`;
+  finishCutEdit();
+  canvas.focus({ preventScroll: true });
+  drawTrim();
+  toast("Passage enlevé : règle-le avec les poignées rouges (double-clic dessus pour le remettre).");
+});
+
 $('[data-action="reset-trim"]', dlgSound).addEventListener("click", () => {
   trim.start = 0;
   trim.end = trim.duration;
+  trim.cuts = [];
+  trim.focus = "start";
   trim.view = [0, trim.duration];
   drawTrim();
   commitEdit();
@@ -1678,23 +1821,34 @@ canvas.addEventListener("keydown", (e) => {
   if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
     const step = (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 10 : 100);
     trim.drag = trim.focus;
-    moveHandle((trim.focus === "start" ? trim.start : trim.end) + step);
+    moveHandle(handleMs(trim.focus) + step);
     trim.drag = null;
-    keepVisible(trim.focus === "start" ? trim.start : trim.end);
+    keepVisible(handleMs(trim.focus));
   } else if (e.key === "Home" || e.key === "End") {
     trim.focus = e.key === "Home" ? "start" : "end";
     keepVisible(trim[trim.focus]);
     drawTrim();
-  } else if (e.key === "Tab" && trim.focus === (e.shiftKey ? "end" : "start")) {
-    trim.focus = e.shiftKey ? "start" : "end";
-    keepVisible(trim[trim.focus]);
+  } else if (e.key === "Tab" && handleOrder().indexOf(trim.focus) !== (e.shiftKey ? 0 : handleOrder().length - 1)) {
+    // Tab passe d'une poignée à la suivante, dans l'ordre du son.
+    const order = handleOrder();
+    trim.focus = order[Math.max(0, order.indexOf(trim.focus)) + (e.shiftKey ? -1 : 1)];
+    keepVisible(handleMs(trim.focus));
     drawTrim();
+  } else if ((e.key === "Delete" || e.key === "Backspace") && trim.focus.startsWith("c")) {
+    trim.cuts.splice(parseInt(trim.focus.slice(1), 10), 1);
+    trim.focus = "start";
+    drawTrim();
+    commitEdit();
   } else return;
   e.preventDefault();
 });
 canvas.addEventListener("keyup", (e) => {
-  if (e.key === "ArrowLeft" || e.key === "ArrowRight") commitEdit();
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") finishCutEdit();
 });
+
+function handleOrder() {
+  return ["start", ...trim.cuts.flatMap((_, i) => [`c${i}f`, `c${i}t`]), "end"];
+}
 canvas.addEventListener("focus", () => drawTrim());
 canvas.addEventListener("blur", () => drawTrim());
 
@@ -1756,6 +1910,7 @@ function startPreview() {
     id: editing.id,
     startMs: trim.start,
     endMs: trim.end >= trim.duration ? null : trim.end,
+    cuts: trimValues().cuts,
     volume: Number(formSound.volume.value),
     fx: playhead.fx,
   });
@@ -1780,8 +1935,16 @@ function updatePlayhead(status) {
 function playheadMs() {
   if (!playhead.active) return null;
   const fx = playhead.fx ?? FX_DEFAULT;
-  const moved = (playhead.elapsed + (performance.now() - playhead.at)) * fx.speed;
-  const ms = fx.reverse ? trim.end - moved : trim.start + moved;
+  let moved = (playhead.elapsed + (performance.now() - playhead.at)) * fx.speed;
+  // Les passages enlevés sont sautés : le curseur saute avec.
+  let ms;
+  if (fx.reverse) {
+    ms = trim.end - moved;
+    for (const c of [...trim.cuts].reverse()) if (ms < c.to) ms -= c.to - c.from;
+  } else {
+    ms = trim.start + moved;
+    for (const c of trim.cuts) if (ms >= c.from) ms += c.to - c.from;
+  }
   return Math.min(Math.max(ms, trim.start), trim.end);
 }
 
@@ -1791,8 +1954,13 @@ function animatePlayhead() {
 }
 
 function trimValues() {
-  if (!trim.duration) return { start_ms: editing.start_ms ?? 0, end_ms: editing.end_ms ?? null };
-  return { start_ms: trim.start, end_ms: trim.end >= trim.duration ? null : trim.end };
+  if (!trim.duration) return { start_ms: editing.start_ms ?? 0, end_ms: editing.end_ms ?? null, cuts: editing.cuts ?? [] };
+  cleanCuts();
+  return {
+    start_ms: trim.start,
+    end_ms: trim.end >= trim.duration ? null : trim.end,
+    cuts: trim.cuts.map((c) => ({ from_ms: Math.round(c.from), to_ms: Math.round(c.to) })),
+  };
 }
 
 dlgSound.addEventListener("close", () => {
@@ -1997,7 +2165,7 @@ const undoBtn = $('[data-action="undo"]', dlgSound);
 const redoBtn = $('[data-action="redo"]', dlgSound);
 
 function editState() {
-  return JSON.stringify({ start: trim.start, end: trim.end, volume: formSound.volume.value, fx: currentFx() });
+  return JSON.stringify({ start: trim.start, end: trim.end, cuts: trim.cuts, volume: formSound.volume.value, fx: currentFx() });
 }
 
 function resetHistory() {
@@ -2031,6 +2199,8 @@ function stepHistory(delta) {
   const st = JSON.parse(editHistory.stack[at]);
   trim.start = st.start;
   trim.end = st.end;
+  trim.cuts = st.cuts ?? [];
+  if (trim.focus.startsWith("c")) trim.focus = "start";
   formSound.volume.value = st.volume;
   formSound.volume.update();
   setFx(st.fx);

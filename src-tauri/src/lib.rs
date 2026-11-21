@@ -3,6 +3,7 @@ mod backup;
 mod audio;
 mod calibration;
 mod config;
+mod cuts;
 mod decoder;
 mod denoise;
 mod dynamics;
@@ -364,6 +365,7 @@ fn play_request(state: &AppState, sound: &Sound) -> PlayRequest {
         target_lufs: target,
         start_ms: sound.start_ms,
         end_ms: sound.end_ms,
+        cuts: sound.cuts.clone(),
         duration_ms: sound.play_duration_ms(),
         looping: sound.looping,
         keep_playing: sound.keep_playing,
@@ -580,17 +582,17 @@ fn measure_segments(app: AppHandle) {
         let state = app.state::<AppState>();
         loop {
             PENDING.store(false, Ordering::Release);
-            let todo: Vec<(String, PathBuf, config::SegmentKey)> = state
+            let todo: Vec<(String, PathBuf, config::SegmentKey, Vec<cuts::Cut>)> = state
                 .config
                 
                 .lock_ok()
                 .sounds
                 .iter()
                 .filter(|s| s.needs_segment())
-                .filter_map(|s| Some((s.id.clone(), s.path.clone(), s.segment_key()?)))
+                .filter_map(|s| Some((s.id.clone(), s.path.clone(), s.segment_key()?, s.cuts.clone())))
                 .collect();
-            for (id, path, key) in todo {
-                let Ok(analysis) = analysis::analyze_segment(&path, &key) else { continue };
+            for (id, path, key, cuts) in todo {
+                let Ok(analysis) = analysis::analyze_segment(&path, &key, &cuts) else { continue };
                 let mut config = state.config.lock_ok();
                 // La découpe a pu changer pendant la mesure.
                 if let Some(s) = config.sounds.iter_mut().find(|s| s.id == id && s.segment_key() == Some(key)) {
@@ -1071,6 +1073,7 @@ async fn replace_sound_file(app: AppHandle, id: String) -> Result<Option<Snapsho
         sound.segment = None;
         sound.start_ms = 0;
         sound.end_ms = None;
+        sound.cuts.clear();
         state.save(&config)?;
         old
     };
@@ -1113,6 +1116,7 @@ fn update_sound(app: AppHandle, state: State<AppState>, sound: Sound) -> Result<
             .end_ms
             .filter(|&e| e < total)
             .map(|e| e.max(existing.start_ms + 50));
+        existing.cuts = cuts::clean(sound.cuts, existing.start_ms, existing.end_ms.unwrap_or(total));
         state.save(&config)?;
     }
     register_hotkeys(&app);
@@ -2003,6 +2007,7 @@ async fn preview_sound(
     id: String,
     start_ms: u64,
     end_ms: Option<u64>,
+    cuts: Option<Vec<cuts::Cut>>,
     volume: f32,
     fx: Option<sound_fx::SoundFx>,
 ) -> Result<(), String> {
@@ -2011,6 +2016,10 @@ async fn preview_sound(
         let mut sound = find_sound(&state, &id)?;
         sound.start_ms = start_ms;
         sound.end_ms = end_ms;
+        if let Some(c) = cuts {
+            let total = sound.analysis.map_or(u64::MAX, |a| a.duration_ms);
+            sound.cuts = cuts::clean(c, start_ms, end_ms.unwrap_or(total));
+        }
         sound.volume = volume;
         // Pré-écoute jouée une seule fois : pas de boucle dans la durée.
         sound.looping = false;
@@ -2384,6 +2393,8 @@ struct PackSound {
     start_ms: u64,
     #[serde(default)]
     end_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    cuts: Vec<cuts::Cut>,
     #[serde(default)]
     category: Option<String>,
     #[serde(default)]
@@ -2430,6 +2441,7 @@ fn write_pack(dest: &Path, sounds: &[Sound]) -> Result<usize, String> {
             color: Some(s.color.clone()),
             start_ms: s.start_ms,
             end_ms: s.end_ms,
+            cuts: s.cuts.clone(),
             category: s.category.clone(),
             looping: s.looping,
             emoji: s.emoji.clone(),
@@ -2532,6 +2544,7 @@ fn read_pack(
                 let total_ms = sound.analysis.map(|a| a.duration_ms).unwrap_or(u64::MAX);
                 sound.start_ms = p.start_ms.min(total_ms);
                 sound.end_ms = p.end_ms.filter(|&e| e < total_ms && e > sound.start_ms);
+                sound.cuts = cuts::clean(p.cuts, sound.start_ms, sound.end_ms.unwrap_or(total_ms));
                 sound.category = clean_category(p.category);
                 sound.looping = p.looping;
                 sound.emoji = clean_emoji(p.emoji);

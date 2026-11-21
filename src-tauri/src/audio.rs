@@ -49,6 +49,8 @@ pub struct PlayRequest {
     pub target_lufs: f32,
     pub start_ms: u64,
     pub end_ms: Option<u64>,
+    /// Passages enlevés au milieu.
+    pub cuts: Vec<crate::cuts::Cut>,
     /// Durée jouée, pour la barre de progression.
     pub duration_ms: Option<u64>,
     pub looping: bool,
@@ -496,6 +498,7 @@ struct FxKey {
     path: PathBuf,
     start_ms: u64,
     end_ms: Option<u64>,
+    cuts: Vec<crate::cuts::Cut>,
     looping: bool,
     fx: SoundFx,
 }
@@ -979,6 +982,7 @@ impl Engine {
             path: req.path.clone(),
             start_ms: req.start_ms,
             end_ms: req.end_ms,
+            cuts: req.cuts.clone(),
             looping: req.looping,
             fx: req.fx,
         };
@@ -990,7 +994,9 @@ impl Engine {
         }
         let mut decoder = AudioFile::open(&req.path)?;
         decoder.seek_ms(req.start_ms);
-        let r = sound_fx::render(decoder, req.start_ms, req.end_ms, &req.fx, req.looping);
+        let end = req.end_ms.map(|e| e.saturating_sub(crate::cuts::removed_ms(&req.cuts, req.start_ms, Some(e))));
+        let decoder = crate::cuts::SkipCuts::new(decoder, req.start_ms, &req.cuts);
+        let r = sound_fx::render(decoder, req.start_ms, end, &req.fx, req.looping);
         // Au plus ~64 Mo d'échantillons gardés.
         let mut total: usize = self.fx_cache.iter().map(|(_, r)| r.data.len()).sum::<usize>() + r.data.len();
         while total > FX_CACHE_SAMPLES || self.fx_cache.len() >= FX_CACHE {
@@ -1035,11 +1041,14 @@ impl Engine {
 fn open_source(req: &PlayRequest, rate: u32) -> Result<Box<dyn Source<Item = f32> + Send>, String> {
     let decoder = AudioFile::open(&req.path)?;
     let length = match req.end_ms {
-        Some(end) => Duration::from_millis(end.saturating_sub(req.start_ms)),
+        Some(end) => Duration::from_millis(
+            end.saturating_sub(req.start_ms).saturating_sub(crate::cuts::removed_ms(&req.cuts, req.start_ms, Some(end))),
+        ),
         None => Duration::from_secs(24 * 3600),
     };
     let mut decoder = decoder;
     decoder.seek_ms(req.start_ms);
+    let decoder = crate::cuts::SkipCuts::new(decoder, req.start_ms, &req.cuts);
     // Fondu de 5 ms à la fin du passage : une découpe ne claque plus.
     let frames = req.duration_ms.map(|ms| ms * decoder.sample_rate() as u64 / 1000);
     let source = Leveler::new(EndFade::new(decoder.take_duration(length), frames, req.end_fade_ms), Levels::of(req));

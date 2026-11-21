@@ -18,6 +18,9 @@ pub struct Sound {
     pub start_ms: u64,
     #[serde(default)]
     pub end_ms: Option<u64>,
+    /// Passages enlevés au milieu du son.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cuts: Vec<crate::cuts::Cut>,
     /// Durée et niveau, calculés à l'import (sert à égaliser les volumes).
     #[serde(default)]
     pub analysis: Option<Analysis>,
@@ -82,6 +85,7 @@ impl Sound {
             color: String::new(),
             start_ms: 0,
             end_ms: None,
+            cuts: Vec::new(),
             analysis: Some(analysis),
             category: None,
             looping: false,
@@ -131,6 +135,9 @@ pub struct SegmentKey {
     pub start_ms: u64,
     pub end_ms: Option<u64>,
     pub fx: crate::sound_fx::SoundFx,
+    /// Empreinte des passages enlevés (0 : aucun).
+    #[serde(default)]
+    pub cuts: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -143,10 +150,10 @@ impl Sound {
     /// `None` quand le son est joué en entier et sans effet : la mesure du
     /// fichier suffit.
     pub fn segment_key(&self) -> Option<SegmentKey> {
-        if self.start_ms == 0 && self.end_ms.is_none() && self.fx.is_neutral() {
+        if self.start_ms == 0 && self.end_ms.is_none() && self.fx.is_neutral() && self.cuts.is_empty() {
             return None;
         }
-        Some(SegmentKey { start_ms: self.start_ms, end_ms: self.end_ms, fx: self.fx })
+        Some(SegmentKey { start_ms: self.start_ms, end_ms: self.end_ms, fx: self.fx, cuts: crate::cuts::fingerprint(&self.cuts) })
     }
 
     /// Le passage découpé n'a pas encore de mesure à jour.
@@ -167,7 +174,8 @@ impl Sound {
     pub fn play_duration_ms(&self) -> Option<u64> {
         let total = self.analysis?.duration_ms;
         let end = self.end_ms.unwrap_or(total).min(total);
-        Some(self.fx.output_ms(end.saturating_sub(self.start_ms), self.looping))
+        let removed = crate::cuts::removed_ms(&self.cuts, self.start_ms, Some(end));
+        Some(self.fx.output_ms(end.saturating_sub(self.start_ms).saturating_sub(removed), self.looping))
     }
 
     /// Gain qui amène le son à un volume ressenti commun sans saturer.

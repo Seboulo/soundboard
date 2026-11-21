@@ -57,6 +57,9 @@ pub enum Msg {
         volume: f32,
         #[serde(default)]
         fx: crate::sound_fx::SoundFx,
+        /// Passages enlevés au milieu du son.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        cuts: Vec<crate::cuts::Cut>,
         /// Taille du fichier : le pote ne cherche le son que parmi ses
         /// fichiers de cette taille (0 : inconnue).
         #[serde(default, skip_serializing_if = "is_zero")]
@@ -83,6 +86,9 @@ pub enum Msg {
         volume: f32,
         #[serde(default)]
         fx: crate::sound_fx::SoundFx,
+        /// Passages enlevés au milieu du son.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        cuts: Vec<crate::cuts::Cut>,
         #[serde(default, skip_serializing_if = "is_zero")]
         size: u64,
     },
@@ -767,6 +773,7 @@ mod tests {
             end_ms: Some(900),
             volume: 0.8,
             fx: Default::default(),
+            cuts: vec![crate::cuts::Cut { from_ms: 200, to_ms: 300 }],
             size: 1234,
         };
         let json = serde_json::to_string(&msg).unwrap();

@@ -1654,8 +1654,8 @@ fn level_of(state: &AppState, path: &Path, start_ms: u64, end_ms: Option<u64>) -
     if let Some(a) = known {
         return Ok((a, end));
     }
-    let key = crate::config::SegmentKey { start_ms, end_ms: Some(end), fx: Default::default() };
-    let mut a = analysis::analyze_segment(path, &key)?;
+    let key = crate::config::SegmentKey { start_ms, end_ms: Some(end), fx: Default::default(), cuts: 0 };
+    let mut a = analysis::analyze_segment(path, &key, &[])?;
     a.duration_ms += start_ms;
     let mut levels = state.clips.levels.lock_ok();
     if !levels.iter().any(|(k, _)| *k == cache_key) {
