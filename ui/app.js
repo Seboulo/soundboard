@@ -1045,7 +1045,9 @@ try {
 function playDuration(sound) {
   const total = sound.analysis?.duration_ms;
   if (total == null) return null;
-  const ms = Math.max(0, Math.min(sound.end_ms ?? total, total) - sound.start_ms);
+  const end = Math.min(sound.end_ms ?? total, total);
+  const cut = (sound.cuts ?? []).reduce((t, c) => t + Math.max(0, Math.min(c.to_ms, end) - Math.max(c.from_ms, sound.start_ms)), 0);
+  const ms = Math.max(0, end - sound.start_ms - cut);
   return ms / (sound.fx?.speed ?? 1);
 }
 
@@ -1494,12 +1496,16 @@ formSound.emoji.addEventListener("input", () => {
 
 const canvas = $("#wave");
 // view : partie de l'onde affichée (zoom) ; focus : poignée réglée au clavier.
-const trim = { duration: 0, start: 0, end: 0, peaks: [], drag: null, view: [0, 0], focus: "start" };
+// cuts : passages enlevés au milieu ({ from, to } en ms). Poignées : "start",
+// "end", ou "c<n>f" / "c<n>t" (début / fin du passage enlevé n), "c<n>m"
+// (passage enlevé déplacé d'un bloc).
+const trim = { duration: 0, start: 0, end: 0, cuts: [], peaks: [], drag: null, grab: 0, view: [0, 0], focus: "start" };
 const MAX_ZOOM = 32;
 
 function fmtTime(ms) {
   const s = ms / 1000;
-  return s < 60 ? s.toFixed(2) + " s" : `${Math.floor(s / 60)} min ${(s % 60).toFixed(1).padStart(4, "0")} s`;
+  const t = s < 60 ? s.toFixed(2) + " s" : `${Math.floor(s / 60)} min ${(s % 60).toFixed(1).padStart(4, "0")} s`;
+  return t.replace(".", ",");
 }
 
 async function openTrim(sound) {
@@ -1509,6 +1515,7 @@ async function openTrim(sound) {
   if (!trim.duration) return resetHistory();
   trim.start = sound.start_ms ?? 0;
   trim.end = Math.min(sound.end_ms ?? trim.duration, trim.duration);
+  trim.cuts = (sound.cuts ?? []).map((c) => ({ from: c.from_ms, to: c.to_ms }));
   trim.peaks = [];
   trim.view = [0, trim.duration];
   trim.focus = "start";
@@ -1524,57 +1531,144 @@ async function openTrim(sound) {
 
 function drawTrim() {
   const ctx = canvas.getContext("2d");
+  // Dessin net à la taille réelle de l'onde (et de l'écran).
+  const dpr = window.devicePixelRatio || 1;
+  const cw = Math.round(canvas.clientWidth * dpr), chh = Math.round(canvas.clientHeight * dpr);
+  if (cw > 0 && chh > 0 && (canvas.width !== cw || canvas.height !== chh)) {
+    canvas.width = cw;
+    canvas.height = chh;
+  }
   const { width: w, height: h } = canvas;
+  const u = dpr; // 1 px d'écran
   const css = getComputedStyle(document.documentElement);
+  const v = (name) => css.getPropertyValue(name).trim();
   ctx.clearRect(0, 0, w, h);
   const [v0, v1] = trim.view;
   const x = (ms) => ((ms - v0) / (v1 - v0)) * w;
   const xs = x(trim.start);
   const xe = x(trim.end);
+  const color = editing?.color || v("--accent");
+  const pad = 8 * u; // marge en haut et en bas pour le cadre
+  const mid = h / 2;
 
-  // Forme d'onde : une barre par pic visible, plus sombre hors de la zone gardée.
+  // Forme d'onde : des barres arrondies espacées, à la couleur du son dans
+  // la partie gardée, grises ailleurs et dans les passages enlevés.
   const n = trim.peaks.length;
-  const i0 = Math.max(0, Math.floor((v0 / trim.duration) * n));
-  const i1 = Math.min(n, Math.ceil((v1 / trim.duration) * n));
-  const bw = Math.max(1, w / Math.max(1, i1 - i0) - 1);
-  for (let i = i0; i < i1; i++) {
-    const px = x((i / n) * trim.duration);
-    const bh = Math.max(2, trim.peaks[i] * (h - 10));
-    const inside = px >= xs && px <= xe;
-    ctx.fillStyle = inside ? editing?.color ?? "#4f46e5" : css.getPropertyValue("--wave-off");
-    ctx.fillRect(px, (h - bh) / 2, bw, bh);
+  if (n) {
+    const step = 4 * u;
+    const bw = 2.5 * u;
+    for (let px = 0; px < w; px += step) {
+      const ms0 = v0 + (px / w) * (v1 - v0);
+      const ms1 = v0 + ((px + step) / w) * (v1 - v0);
+      const i0 = Math.max(0, Math.floor((ms0 / trim.duration) * n));
+      const i1 = Math.min(n, Math.max(i0 + 1, Math.ceil((ms1 / trim.duration) * n)));
+      let peak = 0;
+      for (let k = i0; k < i1; k++) peak = Math.max(peak, trim.peaks[k] || 0);
+      const bh = Math.max(2 * u, peak * (h - pad * 2 - 6 * u));
+      const ms = (ms0 + ms1) / 2;
+      const kept = ms >= trim.start && ms <= trim.end && !trim.cuts.some((c) => ms >= c.from && ms < c.to);
+      ctx.fillStyle = kept ? color : v("--wave-off");
+      ctx.beginPath();
+      ctx.roundRect(px, mid - bh / 2, bw, bh, bw / 2);
+      ctx.fill();
+    }
+  } else {
+    ctx.fillStyle = v("--muted");
+    ctx.font = `${13 * u}px -apple-system, "Segoe UI", sans-serif`;
+    ctx.textAlign = "center";
+    ctx.fillText("Chargement de la forme d'onde…", w / 2, mid + 4 * u);
+    ctx.textAlign = "start";
   }
-  if (!n) {
-    ctx.fillStyle = css.getPropertyValue("--muted");
-    ctx.font = "26px Segoe UI, sans-serif";
-    ctx.fillText("Chargement de la forme d'onde…", 20, h / 2 + 8);
-  }
-  ctx.fillStyle = css.getPropertyValue("--wave-mask");
-  ctx.fillRect(0, 0, xs, h);
-  ctx.fillRect(xe, 0, w - xe, h);
-  // La poignée réglée aux flèches est en couleur quand l'onde a le focus.
+
   const keyboard = document.activeElement === canvas;
-  for (const [hx, which] of [[xs, "start"], [xe, "end"]]) {
-    ctx.fillStyle = css.getPropertyValue(keyboard && trim.focus === which ? "--accent" : "--text");
-    ctx.fillRect(hx - 2, 0, 4, h);
-    ctx.fillRect(hx - 9, 0, 18, 14);
-    ctx.fillRect(hx - 9, h - 14, 18, 14);
+  const focusRing = (which) => keyboard && trim.focus === which;
+
+  // Passages enlevés : voile rouge léger, coins arrondis, petites poignées.
+  const danger = v("--danger");
+  trim.cuts.forEach((c, i) => {
+    const a = x(c.from), b = x(c.to);
+    if (b < 0 || a > w) return;
+    ctx.save();
+    ctx.globalAlpha = 0.12;
+    ctx.fillStyle = danger;
+    ctx.beginPath();
+    ctx.roundRect(a, pad, b - a, h - pad * 2, 6 * u);
+    ctx.fill();
+    ctx.restore();
+    for (const [hx, which] of [[a, `c${i}f`], [b, `c${i}t`]]) {
+      ctx.fillStyle = danger;
+      ctx.beginPath();
+      ctx.roundRect(hx - 1.5 * u, pad, 3 * u, h - pad * 2, 1.5 * u);
+      ctx.fill();
+      // Pastille ronde au milieu, plus grosse quand elle a le focus clavier.
+      const r = (focusRing(which) ? 7 : 5.5) * u;
+      ctx.beginPath();
+      ctx.arc(hx, mid, r, 0, Math.PI * 2);
+      ctx.fillStyle = danger;
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(hx, mid, r - 2.5 * u, 0, Math.PI * 2);
+      ctx.fillStyle = "#fff";
+      ctx.fill();
+    }
+    if (b - a > 30 * u) {
+      ctx.fillStyle = danger;
+      ctx.font = `600 ${11 * u}px -apple-system, "Segoe UI", sans-serif`;
+      ctx.textAlign = "center";
+      ctx.fillText("enlevé", (a + b) / 2, pad + 14 * u);
+      ctx.textAlign = "start";
+    }
+  });
+
+  // Cadre de la partie gardée, façon découpe de vidéo : un contour à la
+  // couleur d'accent et deux poignées épaisses avec un trait blanc.
+  const accent = v("--accent");
+  const grip = 12 * u;
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 2.5 * u;
+  ctx.beginPath();
+  ctx.roundRect(xs + grip / 2, pad / 2 + u, Math.max(0, xe - xs - grip), h - pad - 2 * u, 2 * u);
+  ctx.stroke();
+  for (const [hx, which, side] of [[xs, "start", 1], [xe, "end", -1]]) {
+    const gx = side > 0 ? hx : hx - grip;
+    ctx.fillStyle = accent;
+    ctx.globalAlpha = focusRing(which) || trim.focus === which && trim.drag ? 1 : 0.92;
+    ctx.beginPath();
+    ctx.roundRect(gx, pad / 2, grip, h - pad, side > 0 ? [6 * u, 0, 0, 6 * u] : [0, 6 * u, 6 * u, 0]);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.roundRect(gx + grip / 2 - 1.25 * u, mid - 9 * u, 2.5 * u, 18 * u, 1.25 * u);
+    ctx.fill();
+    if (focusRing(which)) {
+      ctx.strokeStyle = accent;
+      ctx.globalAlpha = 0.35;
+      ctx.lineWidth = 4 * u;
+      ctx.beginPath();
+      ctx.roundRect(gx - 3 * u, pad / 2 - 3 * u, grip + 6 * u, h - pad + 6 * u, 8 * u);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
   }
+
+  // Curseur de lecture : un trait fin et une pastille.
   const now = typeof playheadMs === "function" ? playheadMs() : null;
   if (now !== null) {
     const px = x(now);
-    ctx.fillStyle = css.getPropertyValue("--accent");
-    ctx.fillRect(px - 2, 0, 4, h);
+    ctx.fillStyle = v("--text");
     ctx.beginPath();
-    ctx.moveTo(px - 10, 0);
-    ctx.lineTo(px + 10, 0);
-    ctx.lineTo(px, 14);
+    ctx.roundRect(px - u, pad, 2 * u, h - pad * 2, u);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(px, pad, 4 * u, 0, Math.PI * 2);
     ctx.fill();
   }
   const zoom = trim.duration / (v1 - v0);
   $("#trim-info").textContent =
     (now !== null ? `▶ ${fmtTime(now)}  ·  ` : "") +
-    `${fmtTime(trim.start)} → ${fmtTime(trim.end)}  ·  ${fmtTime(trim.end - trim.start)}` +
+    `${fmtTime(trim.start)} → ${fmtTime(trim.end)}  ·  ${fmtTime(keptMs())}` +
+    (trim.cuts.length ? `  ·  ${trim.cuts.length} passage${trim.cuts.length > 1 ? "s" : ""} enlevé${trim.cuts.length > 1 ? "s" : ""}` : "") +
     (zoom > 1.01 ? `  ·  zoom × ${Math.round(zoom)}` : "");
   zoomOutBtn.disabled = zoom <= 1.01;
   zoomInBtn.disabled = zoom >= MAX_ZOOM - 0.01;
@@ -1586,7 +1680,7 @@ const zoomInBtn = $('[data-action="zoom-in"]', dlgSound);
 const zoomOutBtn = $('[data-action="zoom-out"]', dlgSound);
 
 /** Affiche `span` ms autour de `center` (en restant dans le son). */
-function setView(center, span) {
+function setWaveView(center, span) {
   span = Math.min(trim.duration, Math.max(trim.duration / MAX_ZOOM, span));
   let from = Math.max(0, center - span / 2);
   from = Math.min(from, trim.duration - span);
@@ -1596,18 +1690,18 @@ function setView(center, span) {
 
 function zoomBy(factor, center) {
   const [v0, v1] = trim.view;
-  setView(center ?? (v0 + v1) / 2, (v1 - v0) / factor);
+  setWaveView(center ?? (v0 + v1) / 2, (v1 - v0) / factor);
 }
 
 /** Fait défiler l'onde zoomée pour garder la poignée réglée à l'écran. */
 function keepVisible(ms) {
   const [v0, v1] = trim.view;
   const span = v1 - v0;
-  if (ms < v0) setView(ms + span / 2 - span * 0.1, span);
-  else if (ms > v1) setView(ms - span / 2 + span * 0.1, span);
+  if (ms < v0) setWaveView(ms + span / 2 - span * 0.1, span);
+  else if (ms > v1) setWaveView(ms - span / 2 + span * 0.1, span);
 }
 
-zoomInBtn.addEventListener("click", () => zoomBy(2, trim.focus === "end" ? trim.end : trim.start));
+zoomInBtn.addEventListener("click", () => zoomBy(2, handleMs(trim.focus)));
 zoomOutBtn.addEventListener("click", () => zoomBy(0.5));
 // Ctrl + molette : zoom là où est la souris ; molette de côté ou Maj +
 // molette : défilement de l'onde zoomée. La molette seule fait défiler la
@@ -1624,7 +1718,7 @@ canvas.addEventListener(
       if (v1 - v0 >= trim.duration) return;
       e.preventDefault();
       const d = (e.shiftKey ? e.deltaY : e.deltaX) || e.deltaX;
-      setView((v0 + v1) / 2 + (d / canvas.clientWidth) * (v1 - v0), v1 - v0);
+      setWaveView((v0 + v1) / 2 + (d / canvas.clientWidth) * (v1 - v0), v1 - v0);
     }
   },
   { passive: false },
@@ -1639,33 +1733,154 @@ function msAt(e) {
 
 const MIN_TRIM_MS = 50;
 
+/** Durée gardée : du début à la fin, moins les passages enlevés. */
+function keptMs() {
+  return trim.end - trim.start - trim.cuts.reduce((t, c) => t + Math.max(0, Math.min(c.to, trim.end) - Math.max(c.from, trim.start)), 0);
+}
+
+function handleMs(id) {
+  if (id === "start" || id === "end") return trim[id];
+  const c = trim.cuts[parseInt(id.slice(1), 10)];
+  if (!c) return trim.start;
+  return id.endsWith("f") ? c.from : id.endsWith("t") ? c.to : (c.from + c.to) / 2;
+}
+
+/** Passages enlevés rangés, gardés entre le début et la fin, fusionnés
+ * quand ils se touchent ; trop courts (< 20 ms) : oubliés. */
+function cleanCuts() {
+  const list = trim.cuts
+    .map((c) => ({ from: Math.max(trim.start, Math.min(c.from, c.to)), to: Math.min(trim.end, Math.max(c.from, c.to)) }))
+    .filter((c) => c.to - c.from >= 20)
+    .sort((a, b) => a.from - b.from);
+  const out = [];
+  for (const c of list) {
+    const last = out[out.length - 1];
+    if (last && c.from <= last.to) last.to = Math.max(last.to, c.to);
+    else out.push(c);
+  }
+  trim.cuts = out;
+}
+
 canvas.addEventListener("pointerdown", (e) => {
   if (!trim.duration) return;
   const ms = msAt(e);
-  trim.drag = Math.abs(ms - trim.start) <= Math.abs(ms - trim.end) ? "start" : "end";
-  trim.focus = trim.drag;
+  const [v0, v1] = trim.view;
+  const px = (ms2) => ((ms2 - v0) / (v1 - v0)) * canvas.clientWidth;
+  const at = px(ms);
+  // Un bord de passage enlevé à moins de 8 px ; sinon un clic dedans le
+  // déplace d'un bloc ; sinon la poignée de début ou de fin la plus proche.
+  let pick = null;
+  let best = 8;
+  trim.cuts.forEach((c, i) => {
+    for (const [v, id] of [[c.from, `c${i}f`], [c.to, `c${i}t`]]) {
+      const d = Math.abs(px(v) - at);
+      if (d <= best) [best, pick] = [d, id];
+    }
+  });
+  if (!pick) {
+    const i = trim.cuts.findIndex((c) => ms > c.from && ms < c.to);
+    if (i >= 0) {
+      pick = `c${i}m`;
+      trim.grab = ms - trim.cuts[i].from;
+    }
+  }
+  // Clic dans la partie gardée, loin des poignées : on écoute à partir de là.
+  const near = (v) => Math.abs(px(v) - at) <= 14;
+  if (!pick && ms > trim.start && ms < trim.end && !near(trim.start) && !near(trim.end)) {
+    canvas.focus({ preventScroll: true });
+    startPreview(ms);
+    return;
+  }
+  trim.drag = pick ?? (Math.abs(ms - trim.start) <= Math.abs(ms - trim.end) ? "start" : "end");
+  trim.focus = trim.drag.endsWith("m") ? trim.drag.slice(0, -1) + "f" : trim.drag;
   canvas.focus({ preventScroll: true });
   canvas.setPointerCapture(e.pointerId);
-  moveHandle(ms);
+  if (!pick?.endsWith("m")) moveHandle(ms);
 });
-canvas.addEventListener("pointermove", (e) => trim.drag && moveHandle(msAt(e)));
+// Double-clic sur un passage enlevé : il revient.
+canvas.addEventListener("dblclick", (e) => {
+  const ms = msAt(e);
+  const i = trim.cuts.findIndex((c) => ms >= c.from && ms <= c.to);
+  if (i < 0) return;
+  trim.cuts.splice(i, 1);
+  trim.focus = "start";
+  drawTrim();
+  commitEdit();
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (trim.drag) return moveHandle(msAt(e));
+  if (!trim.duration) return;
+  // Le curseur dit ce que fera le clic : régler une poignée, déplacer un
+  // passage enlevé, ou écouter d'ici.
+  const ms = msAt(e);
+  const [v0, v1] = trim.view;
+  const px = (v) => ((v - v0) / (v1 - v0)) * canvas.clientWidth;
+  const at = px(ms);
+  const edges = [trim.start, trim.end, ...trim.cuts.flatMap((c) => [c.from, c.to])];
+  canvas.style.cursor = edges.some((v) => Math.abs(px(v) - at) <= 14) || ms <= trim.start || ms >= trim.end
+    ? "ew-resize"
+    : trim.cuts.some((c) => ms > c.from && ms < c.to) ? "grab" : "pointer";
+});
 canvas.addEventListener("pointerup", () => {
   if (!trim.drag) return;
   trim.drag = null;
-  commitEdit();
+  finishCutEdit();
 });
 
+/** Après un réglage : passages enlevés remis en ordre, puis une étape d'historique. */
+function finishCutEdit() {
+  const focused = trim.focus.startsWith("c") ? trim.cuts[parseInt(trim.focus.slice(1), 10)] : null;
+  cleanCuts();
+  const i = focused ? trim.cuts.findIndex((c) => c.from <= focused.from && c.to >= focused.to) : -1;
+  if (trim.focus.startsWith("c")) trim.focus = i >= 0 ? `c${i}${trim.focus.endsWith("t") ? "t" : "f"}` : "start";
+  drawTrim();
+  commitEdit();
+}
+
 function moveHandle(ms) {
-  if (trim.drag === "start") trim.start = Math.min(ms, trim.end - MIN_TRIM_MS);
-  else trim.end = Math.max(ms, trim.start + MIN_TRIM_MS);
+  const id = trim.drag;
+  if (id === "start") trim.start = Math.min(ms, trim.end - MIN_TRIM_MS);
+  else if (id === "end") trim.end = Math.max(ms, trim.start + MIN_TRIM_MS);
+  else {
+    const c = trim.cuts[parseInt(id.slice(1), 10)];
+    if (!c) return;
+    if (id.endsWith("f")) c.from = Math.max(trim.start, Math.min(ms, c.to - 20));
+    else if (id.endsWith("t")) c.to = Math.min(trim.end, Math.max(ms, c.from + 20));
+    else {
+      const len = c.to - c.from;
+      c.from = Math.max(trim.start, Math.min(ms - trim.grab, trim.end - len));
+      c.to = c.from + len;
+    }
+  }
   trim.start = Math.max(0, trim.start);
   trim.end = Math.min(trim.duration, trim.end);
   drawTrim();
 }
 
+// Enlève un passage au milieu : posé là où en est l'écoute, sinon au milieu
+// de ce qui est affiché, puis réglé avec ses deux poignées rouges.
+$('[data-action="add-cut"]', dlgSound).addEventListener("click", () => {
+  if (!trim.duration) return;
+  const [v0, v1] = trim.view;
+  const span = Math.max(200, Math.min((v1 - v0) * 0.15, keptMs() / 3));
+  const now = typeof playheadMs === "function" ? playheadMs() : null;
+  const lo = Math.max(trim.start, v0), hi = Math.min(trim.end, v1);
+  let from = Math.round((now ?? (lo + hi) / 2) - span / 2);
+  from = Math.max(trim.start, Math.min(from, trim.end - span));
+  if (keptMs() - span < MIN_TRIM_MS * 2) return toast("Le son est trop court pour en enlever un passage.");
+  trim.cuts.push({ from, to: Math.round(from + span) });
+  trim.focus = `c${trim.cuts.length - 1}f`;
+  finishCutEdit();
+  canvas.focus({ preventScroll: true });
+  drawTrim();
+  toast("Passage enlevé : règle-le avec les poignées rouges (double-clic dessus pour le remettre).");
+});
+
 $('[data-action="reset-trim"]', dlgSound).addEventListener("click", () => {
   trim.start = 0;
   trim.end = trim.duration;
+  trim.cuts = [];
+  trim.focus = "start";
   trim.view = [0, trim.duration];
   drawTrim();
   commitEdit();
@@ -1678,24 +1893,37 @@ canvas.addEventListener("keydown", (e) => {
   if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
     const step = (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 10 : 100);
     trim.drag = trim.focus;
-    moveHandle((trim.focus === "start" ? trim.start : trim.end) + step);
+    moveHandle(handleMs(trim.focus) + step);
     trim.drag = null;
-    keepVisible(trim.focus === "start" ? trim.start : trim.end);
+    keepVisible(handleMs(trim.focus));
   } else if (e.key === "Home" || e.key === "End") {
     trim.focus = e.key === "Home" ? "start" : "end";
     keepVisible(trim[trim.focus]);
     drawTrim();
-  } else if (e.key === "Tab" && trim.focus === (e.shiftKey ? "end" : "start")) {
-    trim.focus = e.shiftKey ? "start" : "end";
-    keepVisible(trim[trim.focus]);
+  } else if (e.key === "Tab" && handleOrder().indexOf(trim.focus) !== (e.shiftKey ? 0 : handleOrder().length - 1)) {
+    // Tab passe d'une poignée à la suivante, dans l'ordre du son.
+    const order = handleOrder();
+    trim.focus = order[Math.max(0, order.indexOf(trim.focus)) + (e.shiftKey ? -1 : 1)];
+    keepVisible(handleMs(trim.focus));
     drawTrim();
+  } else if ((e.key === "Delete" || e.key === "Backspace") && trim.focus.startsWith("c")) {
+    trim.cuts.splice(parseInt(trim.focus.slice(1), 10), 1);
+    trim.focus = "start";
+    drawTrim();
+    commitEdit();
   } else return;
   e.preventDefault();
 });
 canvas.addEventListener("keyup", (e) => {
-  if (e.key === "ArrowLeft" || e.key === "ArrowRight") commitEdit();
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") finishCutEdit();
 });
+
+function handleOrder() {
+  return ["start", ...trim.cuts.flatMap((_, i) => [`c${i}f`, `c${i}t`]), "end"];
+}
 canvas.addEventListener("focus", () => drawTrim());
+// La fiche change de largeur : l'onde est redessinée à sa nouvelle taille.
+if (window.ResizeObserver) new ResizeObserver(() => trim.duration && drawTrim()).observe(canvas);
 canvas.addEventListener("blur", () => drawTrim());
 
 // Coupe le silence au début et à la fin du passage gardé (marge de 30 ms
@@ -1748,14 +1976,18 @@ previewBtn.addEventListener("click", () => {
   startPreview();
 });
 
-function startPreview() {
+/** Pré-écoute du passage gardé, depuis `from` (ms dans le fichier) si donné. */
+function startPreview(from) {
   playhead.fx = currentFx();
   playhead.elapsed = 0;
   playhead.at = performance.now();
+  // À l'envers, le son part toujours de la fin du passage.
+  playhead.from = typeof from === "number" && !playhead.fx.reverse ? Math.round(from) : trim.start;
   call("preview_sound", {
     id: editing.id,
-    startMs: trim.start,
+    startMs: playhead.from,
     endMs: trim.end >= trim.duration ? null : trim.end,
+    cuts: trimValues().cuts,
     volume: Number(formSound.volume.value),
     fx: playhead.fx,
   });
@@ -1780,8 +2012,16 @@ function updatePlayhead(status) {
 function playheadMs() {
   if (!playhead.active) return null;
   const fx = playhead.fx ?? FX_DEFAULT;
-  const moved = (playhead.elapsed + (performance.now() - playhead.at)) * fx.speed;
-  const ms = fx.reverse ? trim.end - moved : trim.start + moved;
+  let moved = (playhead.elapsed + (performance.now() - playhead.at)) * fx.speed;
+  // Les passages enlevés sont sautés : le curseur saute avec.
+  let ms;
+  if (fx.reverse) {
+    ms = trim.end - moved;
+    for (const c of [...trim.cuts].reverse()) if (ms < c.to) ms -= c.to - c.from;
+  } else {
+    ms = (playhead.from ?? trim.start) + moved;
+    for (const c of trim.cuts) if (c.to > (playhead.from ?? trim.start) && ms >= c.from) ms += c.to - Math.max(c.from, playhead.from ?? trim.start);
+  }
   return Math.min(Math.max(ms, trim.start), trim.end);
 }
 
@@ -1791,8 +2031,13 @@ function animatePlayhead() {
 }
 
 function trimValues() {
-  if (!trim.duration) return { start_ms: editing.start_ms ?? 0, end_ms: editing.end_ms ?? null };
-  return { start_ms: trim.start, end_ms: trim.end >= trim.duration ? null : trim.end };
+  if (!trim.duration) return { start_ms: editing.start_ms ?? 0, end_ms: editing.end_ms ?? null, cuts: editing.cuts ?? [] };
+  cleanCuts();
+  return {
+    start_ms: trim.start,
+    end_ms: trim.end >= trim.duration ? null : trim.end,
+    cuts: trim.cuts.map((c) => ({ from_ms: Math.round(c.from), to_ms: Math.round(c.to) })),
+  };
 }
 
 dlgSound.addEventListener("close", () => {
@@ -1925,7 +2170,7 @@ const fxBox = $(".fx", dlgSound);
 const fxInputs = [...fxBox.querySelectorAll("[data-fx]")];
 
 function fmtFx(key, v) {
-  if (key === "speed") return `× ${Number(v).toFixed(2).replace(/0$/, "")}`;
+  if (key === "speed") return `× ${Number(v).toFixed(2).replace(/0$/, "").replace(".", ",")}`;
   if (key === "pitch") return v == 0 ? "normale" : `${v > 0 ? "+" : ""}${v} demi-ton${Math.abs(v) > 1 ? "s" : ""}`;
   if (key === "echo") return v == 0 ? "aucun" : Math.round(v * 100) + " %";
   return v == 0 ? "aucun" : (v / 1000).toFixed(1).replace(".", ",") + " s";
@@ -1997,7 +2242,7 @@ const undoBtn = $('[data-action="undo"]', dlgSound);
 const redoBtn = $('[data-action="redo"]', dlgSound);
 
 function editState() {
-  return JSON.stringify({ start: trim.start, end: trim.end, volume: formSound.volume.value, fx: currentFx() });
+  return JSON.stringify({ start: trim.start, end: trim.end, cuts: trim.cuts, volume: formSound.volume.value, fx: currentFx() });
 }
 
 function resetHistory() {
@@ -2031,6 +2276,8 @@ function stepHistory(delta) {
   const st = JSON.parse(editHistory.stack[at]);
   trim.start = st.start;
   trim.end = st.end;
+  trim.cuts = st.cuts ?? [];
+  if (trim.focus.startsWith("c")) trim.focus = "start";
   formSound.volume.value = st.volume;
   formSound.volume.update();
   setFx(st.fx);
@@ -4604,7 +4851,8 @@ const TL_THUMB = 12; // largeur d'une poignée (px), comme dans style.css
 const TL_RULER = 16; // hauteur de la règle graduée (px)
 let clipTrimFrom = 0;
 let clipTrimEnd = null;
-const fmtS = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`;
+// Temps à la française (virgule), comme dans l'éditeur de son.
+const fmtS = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0").replace(".", ",")}`;
 const tlBox = $(".clip-range", dlgClip);
 const tlCanvas = $(".tl-canvas", dlgClip);
 const tlHead = $(".tl-head", dlgClip);
@@ -4644,54 +4892,93 @@ function tlDraw() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
   const css = getComputedStyle(document.documentElement);
-  const accent = css.getPropertyValue("--accent").trim() || "#4f46e5";
-  const muted = css.getPropertyValue("--muted").trim() || "#888";
+  const v = (name, d) => css.getPropertyValue(name).trim() || d;
+  const accent = v("--accent", "#4f46e5");
+  const muted = v("--muted", "#888");
   const [v0, v1] = tl.view;
   const a = trimA(), b = trimB();
   const xa = tlX(a), xb = tlX(b);
-  // Le passage choisi, en fond.
-  ctx.globalAlpha = 0.14;
-  ctx.fillStyle = accent;
-  ctx.fillRect(xa, TL_RULER, xb - xa, h - TL_RULER);
-  ctx.globalAlpha = 1;
-  // La forme du son (une ligne plate tant qu'elle n'est pas mesurée).
+  // Même dessin que l'onde de l'éditeur de son : fond doux, barres arrondies
+  // à la couleur d'accent dans le passage, grises ailleurs.
+  const top = TL_RULER + 2, bottom = h;
+  const pad = 6, mid = (top + bottom) / 2;
+  ctx.fillStyle = v("--fill", "rgba(0,0,0,.05)");
+  ctx.beginPath();
+  ctx.roundRect(0, top, w, bottom - top, 10);
+  ctx.fill();
   const n = tl.peaks.length;
-  const mid = TL_RULER + (h - TL_RULER) / 2;
-  const maxH = (h - TL_RULER - 6) / 2;
-  for (let x = TL_THUMB / 2; x < w - TL_THUMB / 2; x += 3) {
-    const t0 = tlT(x), t1 = tlT(x + 3);
-    let p = 0;
-    if (n && tl.dur) {
+  if (n && tl.dur) {
+    const step = 4, bw = 2.5;
+    for (let x = TL_THUMB / 2; x < w - TL_THUMB / 2; x += step) {
+      const t0 = tlT(x), t1 = tlT(x + step);
       const i0 = Math.min(n - 1, Math.floor((t0 / tl.dur) * n));
       const i1 = Math.min(n, Math.max(i0 + 1, Math.ceil((t1 / tl.dur) * n)));
+      let p = 0;
       for (let i = i0; i < i1; i++) p = Math.max(p, tl.peaks[i] || 0);
+      const bh = Math.max(2, p * (bottom - top - pad * 2 - 6));
+      const tm = (t0 + t1) / 2;
+      ctx.fillStyle = tm >= a && tm <= b ? accent : v("--wave-off", muted);
+      ctx.beginPath();
+      ctx.roundRect(x, mid - bh / 2, bw, bh, bw / 2);
+      ctx.fill();
     }
-    const bh = Math.max(1, p * maxH);
-    const inside = t0 >= a && t0 < b;
-    ctx.globalAlpha = inside ? 1 : 0.45;
-    ctx.fillStyle = inside ? accent : muted;
-    ctx.fillRect(x, mid - bh, 2, bh * 2);
+  } else if (tl.dur) {
+    ctx.fillStyle = muted;
+    ctx.font = '12px -apple-system, "Segoe UI", sans-serif';
+    ctx.textAlign = "center";
+    ctx.fillText(tl.peaksFailed ? "Forme du son indisponible" : "Chargement de la forme du son…", w / 2, mid + 4);
+    ctx.textAlign = "start";
   }
-  ctx.globalAlpha = 1;
+  // Le passage : un cadre à la couleur d'accent et deux poignées épaisses
+  // avec un trait blanc, comme dans l'éditeur de son.
+  const grip = TL_THUMB;
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.roundRect(xa, top + 1.25, Math.max(0, xb - xa), bottom - top - 2.5, 2);
+  ctx.stroke();
+  const focused = document.activeElement;
+  for (const [hx, input, side] of [[xa, formClip.start, 1], [xb, formClip.end, -1]]) {
+    const gx = hx - grip / 2;
+    ctx.fillStyle = accent;
+    ctx.beginPath();
+    ctx.roundRect(gx, top, grip, bottom - top, side > 0 ? [6, 0, 0, 6] : [0, 6, 6, 0]);
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.roundRect(hx - 1.25, mid - 9, 2.5, 18, 1.25);
+    ctx.fill();
+    if (focused === input && input.matches(":focus-visible")) {
+      ctx.strokeStyle = accent;
+      ctx.globalAlpha = 0.35;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.roundRect(gx - 3, top - 2, grip + 6, bottom - top + 2, 8);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
   // La règle : un trait et l'heure tous les « pas », choisis selon le zoom.
   const pxPerS = (w - TL_THUMB) / Math.max(0.001, v1 - v0);
   const step = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800].find((s) => s * pxPerS >= 56) || 3600;
   ctx.fillStyle = muted;
-  ctx.font = '10px "Segoe UI", system-ui, sans-serif';
+  ctx.font = '10px -apple-system, "Segoe UI", system-ui, sans-serif';
   ctx.textBaseline = "top";
   for (let t = Math.ceil(v0 / step - 1e-6) * step; t <= v1 + 1e-6; t += step) {
     const x = Math.round(tlX(t));
-    ctx.fillRect(x, 0, 1, TL_RULER - 2);
+    ctx.globalAlpha = 0.6;
+    ctx.fillRect(x, TL_RULER - 5, 1, 4);
+    ctx.globalAlpha = 1;
     const label = step < 1 ? fmtS(t) : `${Math.floor(t / 60)}:${String(Math.round(t % 60)).padStart(2, "0")}`;
-    if (x + 4 + ctx.measureText(label).width < w) ctx.fillText(label, x + 4, 1);
+    const lw = ctx.measureText(label).width;
+    const lx = Math.min(w - lw, Math.max(0, x - lw / 2));
+    ctx.fillText(label, lx, 0);
   }
-  ctx.globalAlpha = 0.5;
-  ctx.fillRect(0, TL_RULER - 1, w, 1);
-  ctx.globalAlpha = 1;
+  ctx.textBaseline = "alphabetic";
 }
 function trimUi() {
   const a = trimA(), b = trimB();
-  $("[data-trim-label]", dlgClip).textContent = `${fmtS(a)} → ${fmtS(b)} · ${(b - a).toFixed(1)} s`;
+  $("[data-trim-label]", dlgClip).textContent = `${fmtS(a)} → ${fmtS(b)} · ${(b - a).toFixed(1).replace(".", ",")} s`;
   dlgClip.querySelectorAll("[data-zoom]").forEach((x) => x.classList.toggle("active", x.dataset.zoom === tl.zoom));
   dlgClip.querySelectorAll("[data-len]").forEach((x) => x.classList.toggle("active", Math.abs(b - a - Number(x.dataset.len)) < 0.05));
   tlDraw();
@@ -4844,6 +5131,9 @@ clipVideo.addEventListener("timeupdate", () => {
 });
 
 for (const which of ["start", "end"]) {
+  // Poignée réglée au clavier : un halo la montre (dessiné avec la barre).
+  formClip[which].addEventListener("focus", tlDraw);
+  formClip[which].addEventListener("blur", tlDraw);
   formClip[which].addEventListener("input", () => {
     setTrim(which);
     if (clipMedia?.kind !== "video") return;
@@ -4886,14 +5176,20 @@ clipVideo.addEventListener("loadedmetadata", () => {
 // Forme du son de la vidéo choisie (mesurée en arrière-plan).
 function loadClipWaveform(media) {
   tl.peaks = [];
+  tl.peaksFailed = false;
   tlDraw();
   invoke("clip_waveform", { media: media.path }).then(
     (peaks) => {
-      if (clipMedia !== media || !Array.isArray(peaks)) return;
-      tl.peaks = peaks;
+      if (clipMedia !== media) return;
+      tl.peaks = Array.isArray(peaks) ? peaks : [];
+      tl.peaksFailed = !tl.peaks.length;
       tlDraw();
     },
-    () => {},
+    () => {
+      if (clipMedia !== media) return;
+      tl.peaksFailed = true;
+      tlDraw();
+    },
   );
 }
 // Un clic (ou un glissé) sur la barre, hors des poignées : on va à ce moment.
@@ -4914,9 +5210,10 @@ tlBox.addEventListener("pointermove", (e) => {
   formClip.start.style.zIndex = startCloser ? "3" : "2";
   formClip.end.style.zIndex = startCloser ? "2" : "3";
 });
-// Molette : zoom autour du pointeur.
+// Ctrl + molette : zoom autour du pointeur, comme sur l'onde de l'éditeur
+// de son. La molette seule fait défiler la fenêtre comme d'habitude.
 tlBox.addEventListener("wheel", (e) => {
-  if (!tl.dur) return;
+  if (!tl.dur || !e.ctrlKey) return;
   e.preventDefault();
   const [v0, v1] = tl.view;
   const t = tlT(e.clientX - tlBox.getBoundingClientRect().left);

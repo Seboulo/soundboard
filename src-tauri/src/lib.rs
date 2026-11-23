@@ -3,6 +3,7 @@ mod backup;
 mod audio;
 mod calibration;
 mod config;
+mod cuts;
 mod decoder;
 mod denoise;
 mod dynamics;
@@ -318,7 +319,6 @@ impl<T: ?Sized> LockExt<T> for Mutex<T> {
 fn find_sound(state: &AppState, id: &str) -> Result<Sound, String> {
     state
         .config
-        
         .lock_ok()
         .sounds
         .iter()
@@ -364,6 +364,7 @@ fn play_request(state: &AppState, sound: &Sound) -> PlayRequest {
         target_lufs: target,
         start_ms: sound.start_ms,
         end_ms: sound.end_ms,
+        cuts: sound.cuts.clone(),
         duration_ms: sound.play_duration_ms(),
         looping: sound.looping,
         keep_playing: sound.keep_playing,
@@ -580,17 +581,17 @@ fn measure_segments(app: AppHandle) {
         let state = app.state::<AppState>();
         loop {
             PENDING.store(false, Ordering::Release);
-            let todo: Vec<(String, PathBuf, config::SegmentKey)> = state
+            let todo: Vec<(String, PathBuf, config::SegmentKey, Vec<cuts::Cut>)> = state
                 .config
                 
                 .lock_ok()
                 .sounds
                 .iter()
                 .filter(|s| s.needs_segment())
-                .filter_map(|s| Some((s.id.clone(), s.path.clone(), s.segment_key()?)))
+                .filter_map(|s| Some((s.id.clone(), s.path.clone(), s.segment_key()?, s.cuts.clone())))
                 .collect();
-            for (id, path, key) in todo {
-                let Ok(analysis) = analysis::analyze_segment(&path, &key) else { continue };
+            for (id, path, key, cuts) in todo {
+                let Ok(analysis) = analysis::analyze_segment(&path, &key, &cuts) else { continue };
                 let mut config = state.config.lock_ok();
                 // La découpe a pu changer pendant la mesure.
                 if let Some(s) = config.sounds.iter_mut().find(|s| s.id == id && s.segment_key() == Some(key)) {
@@ -620,7 +621,6 @@ fn analyze_missing(app: &AppHandle) {
     let state = app.state::<AppState>();
     let todo: Vec<(String, PathBuf)> = state
         .config
-        
         .lock_ok()
         .sounds
         .iter()
@@ -1071,6 +1071,7 @@ async fn replace_sound_file(app: AppHandle, id: String) -> Result<Option<Snapsho
         sound.segment = None;
         sound.start_ms = 0;
         sound.end_ms = None;
+        sound.cuts.clear();
         state.save(&config)?;
         old
     };
@@ -1113,6 +1114,7 @@ fn update_sound(app: AppHandle, state: State<AppState>, sound: Sound) -> Result<
             .end_ms
             .filter(|&e| e < total)
             .map(|e| e.max(existing.start_ms + 50));
+        existing.cuts = cuts::clean(sound.cuts, existing.start_ms, existing.end_ms.unwrap_or(total));
         state.save(&config)?;
     }
     register_hotkeys(&app);
@@ -1400,7 +1402,6 @@ fn remove_image_files(state: &AppState, sound: &Sound) {
 fn giphy_key(state: &AppState) -> Option<String> {
     state
         .config
-        
         .lock_ok()
         .settings
         .giphy_key
@@ -1510,7 +1511,6 @@ async fn auto_images(app: AppHandle, ids: Option<Vec<String>>) -> Result<usize, 
     };
     let todo: Vec<(String, String)> = state
         .config
-        
         .lock_ok()
         .sounds
         .iter()
@@ -1518,8 +1518,22 @@ async fn auto_images(app: AppHandle, ids: Option<Vec<String>>) -> Result<usize, 
         .map(|s| (s.id.clone(), s.name.clone()))
         .collect();
     let mut done = 0;
+    let mut searched = false;
+    let mut failed = None;
     for (id, name) in todo {
-        let results = giphy::search(&name, &key, 1).await?;
+        // Une recherche ratée pour un son ne doit pas bloquer les autres ; seuls
+        // les soucis de clé ou de quota valent la peine d'être signalés.
+        let results = match giphy::search(&name, &key, 1).await {
+            Ok(r) => {
+                searched = true;
+                r
+            }
+            Err(e) if e.contains("clé GIPHY") || e.contains("trop de recherches") => return Err(e),
+            Err(e) => {
+                failed.get_or_insert(e);
+                continue;
+            }
+        };
         let Some(first) = results.into_iter().next() else {
             continue;
         };
@@ -1532,7 +1546,12 @@ async fn auto_images(app: AppHandle, ids: Option<Vec<String>>) -> Result<usize, 
             let _ = app.emit("snapshot", state.snapshot());
         }
     }
-    Ok(done)
+    // Aucune recherche n'a abouti (pas d'Internet…) : on le dit au lieu
+    // d'annoncer « aucune image trouvée ».
+    match failed {
+        Some(e) if !searched => Err(e),
+        _ => Ok(done),
+    }
 }
 
 #[tauri::command]
@@ -2003,6 +2022,7 @@ async fn preview_sound(
     id: String,
     start_ms: u64,
     end_ms: Option<u64>,
+    cuts: Option<Vec<cuts::Cut>>,
     volume: f32,
     fx: Option<sound_fx::SoundFx>,
 ) -> Result<(), String> {
@@ -2011,6 +2031,10 @@ async fn preview_sound(
         let mut sound = find_sound(&state, &id)?;
         sound.start_ms = start_ms;
         sound.end_ms = end_ms;
+        if let Some(c) = cuts {
+            let total = sound.analysis.map_or(u64::MAX, |a| a.duration_ms);
+            sound.cuts = cuts::clean(c, start_ms, end_ms.unwrap_or(total));
+        }
         sound.volume = volume;
         // Pré-écoute jouée une seule fois : pas de boucle dans la durée.
         sound.looping = false;
@@ -2349,11 +2373,48 @@ async fn install_update(app: AppHandle) -> Result<(), String> {
     state.audio.stop_all();
     // L'installeur ferme l'appli sans passer par la sortie normale.
     state.flush_plays();
-    update
-        .download_and_install(|_, _| {}, || {})
+    let bytes = update
+        .download(|_, _| {}, || {})
         .await
         .map_err(|e| format!("mise à jour impossible : {e}"))?;
-    app.restart();
+    // Windows peut refuser de lancer l'installeur tout juste téléchargé
+    // (« os error 5 ») tant que l'antivirus l'analyse : on réessaie un peu.
+    // En cas de succès, `install` ferme l'appli et l'installeur la relance.
+    for wait_ms in [0, 2000, 4000] {
+        std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+        match update.install(&bytes) {
+            Ok(()) => app.restart(),
+            Err(e) if access_denied(&e) => continue,
+            Err(e) => return Err(format!("mise à jour impossible : {e}")),
+        }
+    }
+    // Toujours bloqué : on pose l'installeur dans Téléchargements pour que
+    // la personne le lance elle-même.
+    Err(match save_installer(&app, &update.version, &bytes) {
+        Some(path) => {
+            let _ = app.opener().reveal_item_in_dir(&path);
+            "Windows (sans doute l'antivirus) a bloqué l'installation. L'installeur est dans tes Téléchargements : \
+             quitte Soundboard (clic droit sur l'icône près de l'horloge, Quitter) puis double-clique dessus."
+                .to_string()
+        }
+        None => "Windows (sans doute l'antivirus) a bloqué l'installation. Clique sur « Télécharger » pour l'installer à la main.".to_string(),
+    })
+}
+
+/// « Accès refusé » (os error 5) au lancement de l'installeur.
+fn access_denied(e: &tauri_plugin_updater::Error) -> bool {
+    matches!(e, tauri_plugin_updater::Error::Io(io) if io.raw_os_error() == Some(5))
+}
+
+/// Écrit l'installeur téléchargé dans le dossier Téléchargements.
+fn save_installer(app: &AppHandle, version: &str, bytes: &[u8]) -> Option<PathBuf> {
+    // Seul un installeur .exe (commence par « MZ ») se lance d'un double-clic.
+    if !bytes.starts_with(b"MZ") {
+        return None;
+    }
+    let path = app.path().download_dir().ok()?.join(format!("Soundboard_{version}_x64-setup.exe"));
+    fs::write(&path, bytes).ok()?;
+    Some(path)
 }
 
 #[tauri::command]
@@ -2384,6 +2445,8 @@ struct PackSound {
     start_ms: u64,
     #[serde(default)]
     end_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    cuts: Vec<cuts::Cut>,
     #[serde(default)]
     category: Option<String>,
     #[serde(default)]
@@ -2430,6 +2493,7 @@ fn write_pack(dest: &Path, sounds: &[Sound]) -> Result<usize, String> {
             color: Some(s.color.clone()),
             start_ms: s.start_ms,
             end_ms: s.end_ms,
+            cuts: s.cuts.clone(),
             category: s.category.clone(),
             looping: s.looping,
             emoji: s.emoji.clone(),
@@ -2532,6 +2596,7 @@ fn read_pack(
                 let total_ms = sound.analysis.map(|a| a.duration_ms).unwrap_or(u64::MAX);
                 sound.start_ms = p.start_ms.min(total_ms);
                 sound.end_ms = p.end_ms.filter(|&e| e < total_ms && e > sound.start_ms);
+                sound.cuts = cuts::clean(p.cuts, sound.start_ms, sound.end_ms.unwrap_or(total_ms));
                 sound.category = clean_category(p.category);
                 sound.looping = p.looping;
                 sound.emoji = clean_emoji(p.emoji);
@@ -2570,7 +2635,6 @@ async fn export_pack(app: AppHandle, category: Option<String>, id: Option<String
     let state = app.state::<AppState>();
     let mut sounds: Vec<Sound> = state
         .config
-        
         .lock_ok()
         .sounds
         .iter()

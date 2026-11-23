@@ -47,6 +47,7 @@ struct Gift {
     end_ms: Option<u64>,
     volume: f32,
     fx: crate::sound_fx::SoundFx,
+    cuts: Vec<crate::cuts::Cut>,
 }
 
 /// Ce que l'interface affiche d'un son partagé.
@@ -591,8 +592,16 @@ fn signature(sounds: &[Sound]) -> String {
     let parts: Vec<_> = sounds
         .iter()
         .map(|s| {
-            serde_json::json!([s.id, s.name, s.start_ms, s.end_ms, s.volume, s.emoji, s.color, s.looping, s.fx,
-                fs::metadata(&s.path).map(|m| m.len()).unwrap_or(0)])
+            let mut v = serde_json::json!([s.id, s.name, s.start_ms, s.end_ms, s.volume, s.emoji, s.color, s.looping, s.fx,
+                fs::metadata(&s.path).map(|m| m.len()).unwrap_or(0)]);
+            // Ajouté seulement s'il y en a : les packs déjà partagés gardent
+            // leur signature.
+            if !s.cuts.is_empty() {
+                if let Some(a) = v.as_array_mut() {
+                    a.push(serde_json::json!(s.cuts));
+                }
+            }
+            v
         })
         .collect();
     share::key_of(serde_json::to_string(&parts).unwrap_or_default().as_bytes())
@@ -720,6 +729,7 @@ fn play_msg(state: &AppState, sound: &Sound, to: String, hash: String) -> Msg {
         end_ms: sound.end_ms,
         volume: sound.volume,
         fx: sound.fx,
+        cuts: sound.cuts.clone(),
         size: fs::metadata(&sound.path).map_or(0, |m| m.len()),
     }
 }
@@ -794,6 +804,7 @@ pub async fn share_sound(app: AppHandle, id: String, to: String) -> Result<bool,
         end_ms: sound.end_ms,
         volume: sound.volume,
         fx: sound.fx,
+        cuts: sound.cuts.clone(),
         size,
     };
     let path = sound.path.clone();
@@ -841,6 +852,7 @@ pub async fn accept_gift(app: AppHandle, id: String, keep: bool) -> Result<Optio
     sound.end_ms = gift.end_ms.filter(|&e| e < total && e > sound.start_ms);
     sound.volume = gift.volume.clamp(0.0, 2.0);
     sound.fx = gift.fx.sanitized();
+    sound.cuts = crate::cuts::clean(gift.cuts, sound.start_ms, sound.end_ms.unwrap_or(total));
     sound.emoji = clean_emoji(gift.emoji);
     if gift.color.starts_with('#') && gift.color.len() <= 9 {
         sound.color = gift.color;
@@ -885,7 +897,7 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
             // relais, on ne le renvoie pas.
             state.extras.room.send_file(&msg, &hash, &file, || Ok(data)).await
         }
-        Msg::Play { from, name, hash, title, ext, start_ms, end_ms, volume, fx, size, .. } => {
+        Msg::Play { from, name, hash, title, ext, start_ms, end_ms, volume, fx, cuts, size, .. } => {
             journal::write(&format!(
                 "Salon : « {title} » reçu de {name}{}",
                 if inc.attachment.is_some() { " (avec le fichier)" } else { "" }
@@ -969,6 +981,7 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
             sound.end_ms = Some(end_ms.unwrap_or(total).min(total).min(start_ms.saturating_add(30_000)));
             sound.volume = volume.clamp(0.0, 2.0);
             sound.fx = fx.sanitized();
+            sound.cuts = crate::cuts::clean(cuts, start_ms, sound.end_ms.unwrap_or(total));
             // Un pote qui renvoie le même son le rejoue depuis le début (on
             // n'arrête pas celui en cours comme un clic sur un pad).
             state.audio.stop(&sound.id);
@@ -977,7 +990,7 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
             let _ = app.emit("room-played", (name, title));
             Ok(())
         }
-        Msg::Gift { from, name, hash, title, ext, emoji, color, start_ms, end_ms, volume, fx, size, .. } => {
+        Msg::Gift { from, name, hash, title, ext, emoji, color, start_ms, end_ms, volume, fx, cuts, size, .. } => {
             journal::write(&format!("Salon : {name} partage « {title} »"));
             if is_blocked(&state, &from) {
                 journal::write(&format!("Salon : ignoré ({name} est bloqué)"));
@@ -1005,7 +1018,7 @@ async fn handle_room_message(app: &AppHandle, inc: Incoming) -> Result<(), Strin
                 if gifts.len() >= 20 {
                     gifts.clear();
                 }
-                let gift = Gift { from: name.clone(), have, at: now_secs(), url, ext, title: title.clone(), emoji, color, start_ms, end_ms, volume, fx };
+                let gift = Gift { from: name.clone(), have, at: now_secs(), url, ext, title: title.clone(), emoji, color, start_ms, end_ms, volume, fx, cuts };
                 gifts.insert(hash.clone(), gift);
             }
             let _ = app.emit("room-gift", GiftInfo { id: hash, from: name, title, have });

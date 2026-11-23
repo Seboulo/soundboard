@@ -49,12 +49,57 @@ pub fn allowed(url: &str) -> bool {
     host == "giphy.com" || host.ends_with(".giphy.com")
 }
 
+/// GIPHY refuse (414) les recherches de plus de 50 caractères.
+const MAX_QUERY: usize = 50;
+
+/// Raccourcit un nom de son en recherche GIPHY : sans ce qui est entre
+/// parenthèses ou crochets, sans ponctuation, coupé entre deux mots.
+pub fn clean_query(name: &str) -> String {
+    let mut kept = String::new();
+    let mut depth = 0u32;
+    for c in name.chars() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => kept.push(c),
+            _ => {}
+        }
+    }
+    // Tout était entre parenthèses : on garde quand même les mots.
+    if kept.trim().is_empty() {
+        kept = name.to_string();
+    }
+    let words = kept
+        .split(|c: char| !(c.is_alphanumeric() || c == '\'' || c == '’'))
+        .map(|w| w.trim_matches(|c| c == '\'' || c == '’'))
+        .filter(|w| !w.is_empty());
+    let mut out = String::new();
+    for w in words {
+        let len = out.chars().count() + usize::from(!out.is_empty()) + w.chars().count();
+        if len > MAX_QUERY {
+            if out.is_empty() {
+                out = w.chars().take(MAX_QUERY).collect();
+            }
+            break;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(w);
+    }
+    out
+}
+
 pub async fn search(query: &str, key: &str, limit: u32) -> Result<Vec<GifResult>, String> {
+    let query = clean_query(query);
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
     let res = crate::online::client()?
         .get(SEARCH)
         .query(&[
             ("api_key", key),
-            ("q", query),
+            ("q", query.as_str()),
             ("limit", &limit.clamp(1, 24).to_string()),
             ("rating", "pg-13"),
             ("lang", "fr"),
@@ -138,6 +183,18 @@ pub fn image_ext(data: &[u8]) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleans_long_names() {
+        let q = clean_query("Rabbi Jacob (Bande originale du film \"Les aventures de Rabbi Jacob\")");
+        assert_eq!(q, "Rabbi Jacob");
+        let long = clean_query("un deux trois quatre cinq six sept huit neuf dix onze douze treize");
+        assert!(long.chars().count() <= MAX_QUERY && long.starts_with("un deux"));
+        assert_eq!(clean_query("(juste ça !)"), "juste ça");
+        assert_eq!(clean_query("C'est l'heure — \"bruh\" !!"), "C'est l'heure bruh");
+        assert_eq!(clean_query("a".repeat(80).as_str()).len(), MAX_QUERY);
+        assert_eq!(clean_query("!!!"), "");
+    }
 
     #[test]
     fn parses_search() {

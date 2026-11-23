@@ -98,10 +98,12 @@ pub fn analyze(path: &Path) -> Result<Analysis, String> {
 }
 
 /// Mesure le passage tel qu'il est joué : découpé, avec ses effets.
-pub fn analyze_segment(path: &Path, key: &SegmentKey) -> Result<Analysis, String> {
+pub fn analyze_segment(path: &Path, key: &SegmentKey, cuts: &[crate::cuts::Cut]) -> Result<Analysis, String> {
     let mut decoder = decode(path)?;
     decoder.seek_ms(key.start_ms);
-    let r = crate::sound_fx::render(decoder, key.start_ms, key.end_ms, &key.fx, false);
+    let end = key.end_ms.map(|e| e.saturating_sub(crate::cuts::removed_ms(cuts, key.start_ms, Some(e))));
+    let decoder = crate::cuts::SkipCuts::new(decoder, key.start_ms, cuts);
+    let r = crate::sound_fx::render(decoder, key.start_ms, end, &key.fx, false);
     analyze_samples(r.data.iter().copied(), r.channels, r.rate)
 }
 

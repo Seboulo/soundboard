@@ -177,6 +177,12 @@ pub fn write_wav(path: &Path, samples: &[f32]) -> Result<(), String> {
 
 /// Mono 48 kHz en fichier WAV 16 bits (en mémoire).
 pub fn wav_bytes(samples: &[f32]) -> Vec<u8> {
+    wav_bytes_of(samples, 1, RATE)
+}
+
+/// Échantillons entrelacés (`channels` voies à `rate` Hz) en WAV 16 bits.
+pub fn wav_bytes_of(samples: &[f32], channels: u16, rate: u32) -> Vec<u8> {
+    let channels = channels.max(1);
     let data_len = (samples.len() * 2) as u32;
     let mut out = Vec::with_capacity(44 + samples.len() * 2);
     out.extend_from_slice(b"RIFF");
@@ -184,10 +190,10 @@ pub fn wav_bytes(samples: &[f32]) -> Vec<u8> {
     out.extend_from_slice(b"WAVEfmt ");
     out.extend_from_slice(&16u32.to_le_bytes());
     out.extend_from_slice(&1u16.to_le_bytes()); // PCM
-    out.extend_from_slice(&1u16.to_le_bytes()); // mono
-    out.extend_from_slice(&RATE.to_le_bytes());
-    out.extend_from_slice(&(RATE * 2).to_le_bytes());
-    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&channels.to_le_bytes());
+    out.extend_from_slice(&rate.to_le_bytes());
+    out.extend_from_slice(&(rate * 2 * channels as u32).to_le_bytes());
+    out.extend_from_slice(&(2 * channels).to_le_bytes());
     out.extend_from_slice(&16u16.to_le_bytes());
     out.extend_from_slice(b"data");
     out.extend_from_slice(&data_len.to_le_bytes());
