@@ -1,6 +1,14 @@
 Télécharge `Soundboard_..._x64-setup.exe` ci-dessous et lance-le (déjà installée : bouton « Mettre à jour » dans l'app).
 Au premier lancement, l'assistant t'aide à installer VB-Cable et à régler Discord.
 
+Nouveautés de la 3.4.0 :
+- Éditeur de son : « ✂ Enlever un passage » retire un ou plusieurs morceaux au milieu d'un son. Règle-les avec les poignées rouges, double-clic dessus pour les remettre. Ton fichier n'est pas modifié, et tes potes à jour l'entendent pareil (salon, partage, packs). Un son joint à une photo ou un GIF part aussi sans ces passages.
+- Éditeur de son revu : l'onde en grand sur toute la largeur, un clic dedans pour écouter à partir de là, « Écouter » toujours en bas de la fiche, le volume rangé avec les effets. Le zoom de l'onde marche à nouveau.
+- Éditeur d'extrait vidéo : barre de temps dans le même style, Ctrl + molette pour zoomer (la molette seule fait défiler la fenêtre).
+- Mise à jour : si Windows (souvent l'antivirus) bloque l'installeur (« os error 5 »), l'appli réessaie, puis le pose dans tes Téléchargements pour que tu le lances toi-même.
+- Liens Spotify : le titre du morceau est retrouvé même quand Spotify change sa page.
+- Corrigé : la recherche d'images GIPHY échouait (erreur 414) sur les noms de sons très longs ; « Illustrer » sans Internet le dit au lieu d'annoncer « rien n'a été trouvé ».
+
 Nouveautés de la 3.3.0 :
 - Lancer avec Windows : aussi dans le menu de l'icône près de l'horloge (clic droit). Au démarrage de Windows, l'appli se lance sans charger sa fenêtre : une bonne centaine de Mo de mémoire en moins tant que tu ne l'ouvres pas. Désactivée dans le Gestionnaire des tâches, elle respecte ce choix.
 - Moins de mémoire et de processeur en arrière-plan : la fenêtre cachée ne se dessine plus, et se ferme pour de bon au bout de 30 min (elle se rouvre en un clic, sur le même onglet). Les sons avec effets gardés en mémoire sont libérés après 10 min sans son. La page du téléphone n'interroge plus le PC quand elle n'est pas affichée.
