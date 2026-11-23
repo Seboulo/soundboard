@@ -679,19 +679,19 @@ pub async fn clip_listen(
     let media = sendable(&state, &media)?;
     let dir = clips_dir(&state).join("envoi");
     let ext = media.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    let (path, start_ms, end_ms, vol) = match sound_id.filter(|s| !s.is_empty()) {
+    let (path, start_ms, end_ms, vol, cuts) = match sound_id.filter(|s| !s.is_empty()) {
         Some(id) => {
             let s = find_sound(&state, &id)?;
-            (s.path.clone(), s.start_ms, s.end_ms, s.volume)
+            (s.path.clone(), s.start_ms, s.end_ms, s.volume, s.cuts)
         }
         None if kind_of(&ext) == Some("video") => {
             let start_ms = (start_s.unwrap_or(0.0).clamp(0.0, 36_000.0) * 1000.0) as u64;
-            (video_sound(&dir, &media), start_ms, video_end(start_ms, end_s), volume.unwrap_or(1.0))
+            (video_sound(&dir, &media), start_ms, video_end(start_ms, end_s), volume.unwrap_or(1.0), Vec::new())
         }
         None => return Err("pas de son à écouter".into()),
     };
     let at_ms = at_s.map(|s| (s.clamp(0.0, 36_000.0) * 1000.0) as u64);
-    play_audio(app.clone(), path, start_ms, end_ms, vol, false, false, at_ms).await
+    play_audio(app.clone(), path, start_ms, end_ms, vol, false, false, at_ms, cuts).await
 }
 
 /// Extraits convertis gardés (un renvoi du même passage repart tout de suite).
@@ -795,6 +795,11 @@ async fn prepare_image(app: &AppHandle, media: &Path, ext: &str) -> Option<PathB
 /// Mo) dont on ne joue que quelques secondes. `None` : son déjà léger, pas
 /// de ffmpeg ou conversion ratée ; il part alors tel quel.
 async fn prepare_sound(app: &AppHandle, sound: &Sound) -> Option<PathBuf> {
+    if !sound.cuts.is_empty() {
+        if let Some(p) = prepare_cut_sound(app, sound).await {
+            return Some(p);
+        }
+    }
     let state = app.state::<AppState>();
     let size = fs::metadata(&sound.path).ok()?.len();
     if size < 512 * 1024 {
@@ -822,6 +827,50 @@ async fn prepare_sound(app: &AppHandle, sound: &Sound) -> Option<PathBuf> {
     }
     let small = fs::metadata(&out).ok()?.len();
     (small < size * 9 / 10).then_some(out)
+}
+
+/// Son avec des passages enlevés : le pote (même avec une ancienne version)
+/// ne sait pas les sauter, il reçoit donc le passage tel qu'on l'entend, en
+/// AAC (en WAV sans ffmpeg). `None` : rien d'enlevé dans le passage joué, ou
+/// échec ; le son part alors comme avant.
+async fn prepare_cut_sound(app: &AppHandle, sound: &Sound) -> Option<PathBuf> {
+    let state = app.state::<AppState>();
+    let ready_dir = clips_dir(&state).join("pret");
+    fs::create_dir_all(&ready_dir).ok()?;
+    let ff = youtube::ffmpeg_ready(&state.data_dir().join("tools"));
+    let stem = sound.path.file_stem().and_then(|s| s.to_str()).unwrap_or("son");
+    let name = format!("{stem}-{}-{}-{:x}-son", sound.start_ms, sound.end_ms.unwrap_or(0), crate::cuts::fingerprint(&sound.cuts));
+    let (m4a, wav) = (ready_dir.join(format!("{name}.m4a")), ready_dir.join(format!("{name}.wav")));
+    if ff.is_some() && m4a.exists() {
+        return Some(m4a);
+    }
+    if ff.is_none() && wav.exists() {
+        return Some(wav);
+    }
+    let s = sound.clone();
+    let data = match tauri::async_runtime::spawn_blocking(move || crate::cuts::kept_wav(&s)).await.ok()?? {
+        Ok(d) => d,
+        Err(e) => {
+            journal::write(&format!("Extrait : passages enlevés non appliqués ({e})"));
+            return None;
+        }
+    };
+    fs::write(&wav, &data).ok()?;
+    trim_dir(&ready_dir, READY_KEEP);
+    let Some(ff) = ff else { return Some(wav) };
+    let (src, out) = (wav.clone(), m4a.clone());
+    let res = tauri::async_runtime::spawn_blocking(move || youtube::run_ffmpeg(&ff, youtube::cut_sound_args(&src, 0.0, 30.0, &out), &out)).await.ok()?;
+    match res {
+        Ok(()) => {
+            let _ = fs::remove_file(&wav);
+            Some(m4a)
+        }
+        // Pas d'AAC : le WAV part quand même.
+        Err(e) => {
+            journal::write(&format!("Extrait : son envoyé en WAV ({e})"));
+            Some(wav)
+        }
+    }
 }
 
 /// Sens d'une photo JPEG d'après son étiquette EXIF (1 : à l'endroit).
@@ -1036,7 +1085,10 @@ pub async fn send_clip(
             // Seul le passage joué part, s'il pèse lourd (déjà coupé : il
             // commence à 0 et finit au bout du fichier).
             let (path, ext, start_ms, end_ms) = match prepare_sound(&app, s).await {
-                Some(p) => (p, "m4a".to_string(), 0, None),
+                Some(p) => {
+                    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("m4a").to_lowercase();
+                    (p, ext, 0, None)
+                }
                 None => (s.path.clone(), s.path.extension().and_then(|e| e.to_str()).unwrap_or("mp3").to_lowercase(), s.start_ms, s.end_ms),
             };
             let data = fs::read(&path).map_err(|e| e.to_string())?;
@@ -1600,7 +1652,7 @@ pub async fn clip_audio(app: AppHandle, path: String, start_ms: u64, end_ms: Opt
     if !still_shown(&state, &path) {
         return Err("extrait déjà fermé".into());
     }
-    play_audio(app.clone(), path, start_ms, end_ms, volume, false, true, at_ms).await
+    play_audio(app.clone(), path, start_ms, end_ms, volume, false, true, at_ms, Vec::new()).await
 }
 
 /// Le son `path` est-il celui de l'extrait affiché en ce moment ? Un son
@@ -1672,7 +1724,17 @@ fn level_of(state: &AppState, path: &Path, start_ms: u64, end_ms: Option<u64>) -
 /// `at_ms` : reprendre en cours de passage (le niveau reste celui du passage
 /// entier, pour que le volume ne change pas selon l'endroit).
 #[allow(clippy::too_many_arguments)]
-async fn play_audio(app: AppHandle, path: PathBuf, start_ms: u64, end_ms: Option<u64>, volume: f32, discord: bool, for_clip: bool, at_ms: Option<u64>) -> Result<(), String> {
+async fn play_audio(
+    app: AppHandle,
+    path: PathBuf,
+    start_ms: u64,
+    end_ms: Option<u64>,
+    volume: f32,
+    discord: bool,
+    for_clip: bool,
+    at_ms: Option<u64>,
+    cuts: Vec<crate::cuts::Cut>,
+) -> Result<(), String> {
     let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app2.state::<AppState>();
@@ -1685,6 +1747,7 @@ async fn play_audio(app: AppHandle, path: PathBuf, start_ms: u64, end_ms: Option
         let stop = end.min(analysis.duration_ms);
         sound.start_ms = at_ms.map_or(start_ms, |at| at.clamp(start_ms, stop.max(start_ms)));
         sound.end_ms = Some(stop);
+        sound.cuts = cuts;
         sound.volume = volume.clamp(0.0, 2.0);
         // Le passage s'arrête en plein son : fondu de sortie au lieu d'une
         // coupure sèche (sans effet si le fichier finit avant).
@@ -1737,10 +1800,23 @@ pub async fn clip_preview(
             Some(id) => {
                 // Copié à côté : la fenêtre ne lit que le dossier des extraits.
                 let s = find_sound(&state, &id)?;
-                let sext = s.path.extension().and_then(|e| e.to_str()).unwrap_or("mp3").to_lowercase();
+                // Passages enlevés : le passage tel qu'on l'entend, comme le
+                // pote le recevra.
+                let s2 = s.clone();
+                let kept = tauri::async_runtime::spawn_blocking(move || crate::cuts::kept_wav(&s2)).await.ok().flatten().and_then(Result::ok);
+                let sext = if kept.is_some() { "wav".into() } else { s.path.extension().and_then(|e| e.to_str()).unwrap_or("mp3").to_lowercase() };
                 let copy = dir.join(format!("apercu-son.{sext}"));
-                fs::copy(&s.path, &copy).map_err(|e| e.to_string())?;
-                (Some(copy.to_string_lossy().into_owned()), s.start_ms, s.end_ms, s.volume)
+                match &kept {
+                    Some(data) => fs::write(&copy, data).map_err(|e| e.to_string())?,
+                    None => {
+                        fs::copy(&s.path, &copy).map_err(|e| e.to_string())?;
+                    }
+                }
+                // Même nom pour chaque aperçu : le niveau mesuré pour le son
+                // d'avant ne vaut plus.
+                state.clips.levels.lock_ok().retain(|(k, _)| k.0 != copy);
+                let (start_ms, end_ms) = if kept.is_some() { (0, None) } else { (s.start_ms, s.end_ms) };
+                (Some(copy.to_string_lossy().into_owned()), start_ms, end_ms, s.volume)
             }
             None => (None, 0, None, 1.0),
         }

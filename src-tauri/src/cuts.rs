@@ -70,6 +70,27 @@ pub fn fingerprint(cuts: &[Cut]) -> u64 {
     h | 1
 }
 
+/// Le passage joué d'un son en WAV, passages enlevés sautés (30 s au plus),
+/// pour ce qui ne lit qu'un fichier tel quel (son joint à un extrait).
+/// `None` : rien n'est enlevé dans ce passage, le fichier d'origine suffit.
+pub fn kept_wav(sound: &crate::config::Sound) -> Option<Result<Vec<u8>, String>> {
+    let total = sound.analysis.map_or(u64::MAX, |a| a.duration_ms);
+    let end = sound.end_ms.unwrap_or(total).min(total);
+    let removed = removed_ms(&sound.cuts, sound.start_ms, Some(end));
+    if removed == 0 {
+        return None;
+    }
+    Some(crate::decoder::AudioFile::open(&sound.path).map(|mut decoder| {
+        decoder.seek_ms(sound.start_ms);
+        let source = SkipCuts::new(decoder, sound.start_ms, &sound.cuts);
+        let (channels, rate) = (source.channels().max(1), source.sample_rate().max(1));
+        let kept = end.saturating_sub(sound.start_ms).saturating_sub(removed).min(30_000);
+        let samples = (kept * rate as u64 / 1000) as usize * channels as usize;
+        let data: Vec<f32> = source.take(samples).collect();
+        crate::calibration::wav_bytes_of(&data, channels, rate)
+    }))
+}
+
 /// Lit `inner` (déjà placé à `start_ms`) en sautant les passages enlevés.
 pub struct SkipCuts<S> {
     inner: S,
@@ -179,6 +200,26 @@ mod tests {
         assert!(clean(vec![cut(0, 1000)], 0, 1000).is_empty());
         assert_eq!(fingerprint(&[]), 0);
         assert_ne!(fingerprint(&c), 0);
+    }
+
+    #[test]
+    fn kept_wav_leaves_out_the_removed_passage() {
+        // 2 s stéréo à 8 kHz, un passage d'une seconde enlevé au milieu.
+        let dir = std::env::temp_dir().join(format!("sb-cuts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("son.wav");
+        let data: Vec<f32> = (0..32_000).map(|i| ((i / 2) as f32 * 0.05).sin() * 0.5).collect();
+        std::fs::write(&path, crate::calibration::wav_bytes_of(&data, 2, 8000)).unwrap();
+        let analysis = crate::analysis::analyze(&path).unwrap();
+        assert!(analysis.duration_ms.abs_diff(2000) < 5);
+        let mut sound = crate::config::Sound::new("a".into(), "a".into(), path, analysis);
+        assert!(kept_wav(&sound).is_none());
+        sound.cuts = vec![cut(500, 1500)];
+        let wav = kept_wav(&sound).unwrap().unwrap();
+        // En-tête de 44 octets, puis 1 s × 8000 trames × 2 voies × 2 octets.
+        assert_eq!(wav.len(), 44 + 32_000);
+        assert_eq!(u16::from_le_bytes([wav[22], wav[23]]), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
