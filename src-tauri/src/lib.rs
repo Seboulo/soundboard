@@ -1518,13 +1518,21 @@ async fn auto_images(app: AppHandle, ids: Option<Vec<String>>) -> Result<usize, 
         .map(|s| (s.id.clone(), s.name.clone()))
         .collect();
     let mut done = 0;
+    let mut searched = false;
+    let mut failed = None;
     for (id, name) in todo {
         // Une recherche ratée pour un son ne doit pas bloquer les autres ; seuls
         // les soucis de clé ou de quota valent la peine d'être signalés.
         let results = match giphy::search(&name, &key, 1).await {
-            Ok(r) => r,
+            Ok(r) => {
+                searched = true;
+                r
+            }
             Err(e) if e.contains("clé GIPHY") || e.contains("trop de recherches") => return Err(e),
-            Err(_) => continue,
+            Err(e) => {
+                failed.get_or_insert(e);
+                continue;
+            }
         };
         let Some(first) = results.into_iter().next() else {
             continue;
@@ -1538,7 +1546,12 @@ async fn auto_images(app: AppHandle, ids: Option<Vec<String>>) -> Result<usize, 
             let _ = app.emit("snapshot", state.snapshot());
         }
     }
-    Ok(done)
+    // Aucune recherche n'a abouti (pas d'Internet…) : on le dit au lieu
+    // d'annoncer « aucune image trouvée ».
+    match failed {
+        Some(e) if !searched => Err(e),
+        _ => Ok(done),
+    }
 }
 
 #[tauri::command]
