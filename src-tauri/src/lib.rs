@@ -318,7 +318,6 @@ impl<T: ?Sized> LockExt<T> for Mutex<T> {
 fn find_sound(state: &AppState, id: &str) -> Result<Sound, String> {
     state
         .config
-        
         .lock_ok()
         .sounds
         .iter()
@@ -620,7 +619,6 @@ fn analyze_missing(app: &AppHandle) {
     let state = app.state::<AppState>();
     let todo: Vec<(String, PathBuf)> = state
         .config
-        
         .lock_ok()
         .sounds
         .iter()
@@ -1400,7 +1398,6 @@ fn remove_image_files(state: &AppState, sound: &Sound) {
 fn giphy_key(state: &AppState) -> Option<String> {
     state
         .config
-        
         .lock_ok()
         .settings
         .giphy_key
@@ -1510,7 +1507,6 @@ async fn auto_images(app: AppHandle, ids: Option<Vec<String>>) -> Result<usize, 
     };
     let todo: Vec<(String, String)> = state
         .config
-        
         .lock_ok()
         .sounds
         .iter()
@@ -1519,7 +1515,13 @@ async fn auto_images(app: AppHandle, ids: Option<Vec<String>>) -> Result<usize, 
         .collect();
     let mut done = 0;
     for (id, name) in todo {
-        let results = giphy::search(&name, &key, 1).await?;
+        // Une recherche ratée pour un son ne doit pas bloquer les autres ; seuls
+        // les soucis de clé ou de quota valent la peine d'être signalés.
+        let results = match giphy::search(&name, &key, 1).await {
+            Ok(r) => r,
+            Err(e) if e.contains("clé GIPHY") || e.contains("trop de recherches") => return Err(e),
+            Err(_) => continue,
+        };
         let Some(first) = results.into_iter().next() else {
             continue;
         };
@@ -2570,7 +2572,6 @@ async fn export_pack(app: AppHandle, category: Option<String>, id: Option<String
     let state = app.state::<AppState>();
     let mut sounds: Vec<Sound> = state
         .config
-        
         .lock_ok()
         .sounds
         .iter()
