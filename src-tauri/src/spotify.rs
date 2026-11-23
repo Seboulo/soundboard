@@ -82,27 +82,89 @@ async fn get(client: &reqwest::Client, url: &str) -> Result<(String, String), St
     Ok((final_url, html))
 }
 
+/// Identifiant du morceau dans un lien « …/track/<id> ».
+fn track_id(url: &str) -> Option<String> {
+    static ID: OnceLock<Regex> = OnceLock::new();
+    let re = ID.get_or_init(|| Regex::new(r"/track/([A-Za-z0-9]{10,})").unwrap());
+    re.captures(url).map(|c| c[1].to_string())
+}
+
+/// Titre et artiste dans le lecteur intégré (« /embed/track/<id> ») : ses
+/// données sont en JSON dans la page, plus stables que la page normale.
+pub fn parse_embed(html: &str) -> Option<(String, String)> {
+    static DATA: OnceLock<Regex> = OnceLock::new();
+    let re = DATA.get_or_init(|| Regex::new(r#"(?s)<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>"#).unwrap());
+    let json: serde_json::Value = serde_json::from_str(re.captures(html)?.get(1)?.as_str()).ok()?;
+    fn find(v: &serde_json::Value) -> Option<(String, String)> {
+        match v {
+            serde_json::Value::Object(o) => {
+                let name = o.get("name").or(o.get("title")).and_then(|n| n.as_str()).map(str::trim);
+                if let (Some(name), Some(artists)) = (name, o.get("artists").and_then(|a| a.as_array())) {
+                    if !name.is_empty() {
+                        let artist: Vec<_> = artists.iter().filter_map(|a| a.get("name")?.as_str()).collect();
+                        return Some((name.to_string(), artist.join(" ")));
+                    }
+                }
+                o.values().find_map(find)
+            }
+            serde_json::Value::Array(a) => a.iter().find_map(find),
+            _ => None,
+        }
+    }
+    find(&json)
+}
+
+/// Dernier recours : l'API publique « oEmbed » donne au moins le titre.
+async fn oembed_title(client: &reqwest::Client, id: &str) -> Option<String> {
+    let url = format!("https://open.spotify.com/oembed?url=https://open.spotify.com/track/{id}");
+    let body = client.get(url).send().await.ok()?.error_for_status().ok()?.text().await.ok()?;
+    let v: serde_json::Value = serde_json::from_str(&body).ok()?;
+    v.get("title")?.as_str().map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
+}
+
 /// Mots à chercher sur YouTube pour un lien Spotify : « Artiste Titre ».
+/// La page du morceau d'abord, puis le lecteur intégré, puis oEmbed : Spotify
+/// change souvent ses pages, une seule source ne suffit pas.
 pub async fn track_query(url: &str) -> Result<String, String> {
     if !is_spotify(url) {
         return Err("ce n'est pas un lien Spotify".into());
     }
-    // Une page comme un navigateur la reçoit (titre et artiste dedans).
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36")
         .timeout(Duration::from_secs(15))
         .build()
         .map_err(|e| e.to_string())?;
-    let (mut final_url, mut html) = get(&client, url.trim()).await?;
-    if !final_url.contains("/track/") {
-        if let Some(link) = track_link(&html) {
-            (final_url, html) = get(&client, &link).await?;
+    let url = url.trim();
+    let mut id = track_id(url);
+    let mut found = None;
+    match get(&client, url).await {
+        Ok((final_url, html)) => {
+            // Lien court : il redirige (parfois en JS) vers le morceau.
+            if id.is_none() {
+                id = track_id(&final_url).or_else(|| track_link(&html).and_then(|l| track_id(&l)));
+            }
+            if final_url.contains("/track/") {
+                found = parse_track(&html);
+            }
+        }
+        Err(e) if id.is_none() => return Err(e),
+        Err(_) => {}
+    }
+    let Some(id) = id else {
+        return Err("colle le lien d'un morceau (pas d'un album, d'une playlist ou d'un podcast)".into());
+    };
+    if found.is_none() {
+        if let Ok((_, html)) = get(&client, &format!("https://open.spotify.com/embed/track/{id}")).await {
+            found = parse_embed(&html).or_else(|| parse_track(&html));
         }
     }
-    if !final_url.contains("/track/") {
-        return Err("colle le lien d'un morceau (pas d'un album, d'une playlist ou d'un podcast)".into());
-    }
-    let (song, artist) = parse_track(&html).ok_or("titre du morceau illisible sur la page Spotify")?;
+    let (song, artist) = match found {
+        Some(t) => t,
+        None => {
+            let title = oembed_title(&client, &id).await;
+            (title.ok_or("Spotify n'a pas donné le titre du morceau, réessaie dans un moment")?, String::new())
+        }
+    };
     Ok(format!("{artist} {song}").trim().to_string())
 }
 
@@ -133,6 +195,13 @@ mod tests {
         assert_eq!(parse_track(html), Some(("Don't Stop Me Now - Remastered 2011".into(), "Queen".into())));
         let old = r#"<meta content="Listen to Bruh on Spotify. Meme &amp; Co · Song · 2019." property="og:description"><meta property="og:title" content="Bruh">"#;
         assert_eq!(parse_track(old), Some(("Bruh".into(), "Meme & Co".into())));
+    }
+
+    #[test]
+    fn reads_embed_data() {
+        let html = r#"<script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"state":{"data":{"entity":{"type":"track","name":"Bruh","artists":[{"name":"Meme","uri":"x"},{"name":"Co"}]}}}}}}</script>"#;
+        assert_eq!(parse_embed(html), Some(("Bruh".into(), "Meme Co".into())));
+        assert_eq!(track_id("https://open.spotify.com/intl-fr/track/4cOdK2wGLETKBW3PvgPWqT?si=1").as_deref(), Some("4cOdK2wGLETKBW3PvgPWqT"));
     }
 
     #[test]
