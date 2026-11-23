@@ -4851,7 +4851,8 @@ const TL_THUMB = 12; // largeur d'une poignée (px), comme dans style.css
 const TL_RULER = 16; // hauteur de la règle graduée (px)
 let clipTrimFrom = 0;
 let clipTrimEnd = null;
-const fmtS = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`;
+// Temps à la française (virgule), comme dans l'éditeur de son.
+const fmtS = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0").replace(".", ",")}`;
 const tlBox = $(".clip-range", dlgClip);
 const tlCanvas = $(".tl-canvas", dlgClip);
 const tlHead = $(".tl-head", dlgClip);
@@ -4891,54 +4892,93 @@ function tlDraw() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
   const css = getComputedStyle(document.documentElement);
-  const accent = css.getPropertyValue("--accent").trim() || "#4f46e5";
-  const muted = css.getPropertyValue("--muted").trim() || "#888";
+  const v = (name, d) => css.getPropertyValue(name).trim() || d;
+  const accent = v("--accent", "#4f46e5");
+  const muted = v("--muted", "#888");
   const [v0, v1] = tl.view;
   const a = trimA(), b = trimB();
   const xa = tlX(a), xb = tlX(b);
-  // Le passage choisi, en fond.
-  ctx.globalAlpha = 0.14;
-  ctx.fillStyle = accent;
-  ctx.fillRect(xa, TL_RULER, xb - xa, h - TL_RULER);
-  ctx.globalAlpha = 1;
-  // La forme du son (une ligne plate tant qu'elle n'est pas mesurée).
+  // Même dessin que l'onde de l'éditeur de son : fond doux, barres arrondies
+  // à la couleur d'accent dans le passage, grises ailleurs.
+  const top = TL_RULER + 2, bottom = h;
+  const pad = 6, mid = (top + bottom) / 2;
+  ctx.fillStyle = v("--fill", "rgba(0,0,0,.05)");
+  ctx.beginPath();
+  ctx.roundRect(0, top, w, bottom - top, 10);
+  ctx.fill();
   const n = tl.peaks.length;
-  const mid = TL_RULER + (h - TL_RULER) / 2;
-  const maxH = (h - TL_RULER - 6) / 2;
-  for (let x = TL_THUMB / 2; x < w - TL_THUMB / 2; x += 3) {
-    const t0 = tlT(x), t1 = tlT(x + 3);
-    let p = 0;
-    if (n && tl.dur) {
+  if (n && tl.dur) {
+    const step = 4, bw = 2.5;
+    for (let x = TL_THUMB / 2; x < w - TL_THUMB / 2; x += step) {
+      const t0 = tlT(x), t1 = tlT(x + step);
       const i0 = Math.min(n - 1, Math.floor((t0 / tl.dur) * n));
       const i1 = Math.min(n, Math.max(i0 + 1, Math.ceil((t1 / tl.dur) * n)));
+      let p = 0;
       for (let i = i0; i < i1; i++) p = Math.max(p, tl.peaks[i] || 0);
+      const bh = Math.max(2, p * (bottom - top - pad * 2 - 6));
+      const tm = (t0 + t1) / 2;
+      ctx.fillStyle = tm >= a && tm <= b ? accent : v("--wave-off", muted);
+      ctx.beginPath();
+      ctx.roundRect(x, mid - bh / 2, bw, bh, bw / 2);
+      ctx.fill();
     }
-    const bh = Math.max(1, p * maxH);
-    const inside = t0 >= a && t0 < b;
-    ctx.globalAlpha = inside ? 1 : 0.45;
-    ctx.fillStyle = inside ? accent : muted;
-    ctx.fillRect(x, mid - bh, 2, bh * 2);
+  } else if (tl.dur) {
+    ctx.fillStyle = muted;
+    ctx.font = '12px -apple-system, "Segoe UI", sans-serif';
+    ctx.textAlign = "center";
+    ctx.fillText(tl.peaksFailed ? "Forme du son indisponible" : "Chargement de la forme du son…", w / 2, mid + 4);
+    ctx.textAlign = "start";
   }
-  ctx.globalAlpha = 1;
+  // Le passage : un cadre à la couleur d'accent et deux poignées épaisses
+  // avec un trait blanc, comme dans l'éditeur de son.
+  const grip = TL_THUMB;
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.roundRect(xa, top + 1.25, Math.max(0, xb - xa), bottom - top - 2.5, 2);
+  ctx.stroke();
+  const focused = document.activeElement;
+  for (const [hx, input, side] of [[xa, formClip.start, 1], [xb, formClip.end, -1]]) {
+    const gx = hx - grip / 2;
+    ctx.fillStyle = accent;
+    ctx.beginPath();
+    ctx.roundRect(gx, top, grip, bottom - top, side > 0 ? [6, 0, 0, 6] : [0, 6, 6, 0]);
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.roundRect(hx - 1.25, mid - 9, 2.5, 18, 1.25);
+    ctx.fill();
+    if (focused === input && input.matches(":focus-visible")) {
+      ctx.strokeStyle = accent;
+      ctx.globalAlpha = 0.35;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.roundRect(gx - 3, top - 2, grip + 6, bottom - top + 2, 8);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
   // La règle : un trait et l'heure tous les « pas », choisis selon le zoom.
   const pxPerS = (w - TL_THUMB) / Math.max(0.001, v1 - v0);
   const step = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800].find((s) => s * pxPerS >= 56) || 3600;
   ctx.fillStyle = muted;
-  ctx.font = '10px "Segoe UI", system-ui, sans-serif';
+  ctx.font = '10px -apple-system, "Segoe UI", system-ui, sans-serif';
   ctx.textBaseline = "top";
   for (let t = Math.ceil(v0 / step - 1e-6) * step; t <= v1 + 1e-6; t += step) {
     const x = Math.round(tlX(t));
-    ctx.fillRect(x, 0, 1, TL_RULER - 2);
+    ctx.globalAlpha = 0.6;
+    ctx.fillRect(x, TL_RULER - 5, 1, 4);
+    ctx.globalAlpha = 1;
     const label = step < 1 ? fmtS(t) : `${Math.floor(t / 60)}:${String(Math.round(t % 60)).padStart(2, "0")}`;
-    if (x + 4 + ctx.measureText(label).width < w) ctx.fillText(label, x + 4, 1);
+    const lw = ctx.measureText(label).width;
+    const lx = Math.min(w - lw, Math.max(0, x - lw / 2));
+    ctx.fillText(label, lx, 0);
   }
-  ctx.globalAlpha = 0.5;
-  ctx.fillRect(0, TL_RULER - 1, w, 1);
-  ctx.globalAlpha = 1;
+  ctx.textBaseline = "alphabetic";
 }
 function trimUi() {
   const a = trimA(), b = trimB();
-  $("[data-trim-label]", dlgClip).textContent = `${fmtS(a)} → ${fmtS(b)} · ${(b - a).toFixed(1)} s`;
+  $("[data-trim-label]", dlgClip).textContent = `${fmtS(a)} → ${fmtS(b)} · ${(b - a).toFixed(1).replace(".", ",")} s`;
   dlgClip.querySelectorAll("[data-zoom]").forEach((x) => x.classList.toggle("active", x.dataset.zoom === tl.zoom));
   dlgClip.querySelectorAll("[data-len]").forEach((x) => x.classList.toggle("active", Math.abs(b - a - Number(x.dataset.len)) < 0.05));
   tlDraw();
@@ -5091,6 +5131,9 @@ clipVideo.addEventListener("timeupdate", () => {
 });
 
 for (const which of ["start", "end"]) {
+  // Poignée réglée au clavier : un halo la montre (dessiné avec la barre).
+  formClip[which].addEventListener("focus", tlDraw);
+  formClip[which].addEventListener("blur", tlDraw);
   formClip[which].addEventListener("input", () => {
     setTrim(which);
     if (clipMedia?.kind !== "video") return;
@@ -5133,14 +5176,20 @@ clipVideo.addEventListener("loadedmetadata", () => {
 // Forme du son de la vidéo choisie (mesurée en arrière-plan).
 function loadClipWaveform(media) {
   tl.peaks = [];
+  tl.peaksFailed = false;
   tlDraw();
   invoke("clip_waveform", { media: media.path }).then(
     (peaks) => {
-      if (clipMedia !== media || !Array.isArray(peaks)) return;
-      tl.peaks = peaks;
+      if (clipMedia !== media) return;
+      tl.peaks = Array.isArray(peaks) ? peaks : [];
+      tl.peaksFailed = !tl.peaks.length;
       tlDraw();
     },
-    () => {},
+    () => {
+      if (clipMedia !== media) return;
+      tl.peaksFailed = true;
+      tlDraw();
+    },
   );
 }
 // Un clic (ou un glissé) sur la barre, hors des poignées : on va à ce moment.
@@ -5161,9 +5210,10 @@ tlBox.addEventListener("pointermove", (e) => {
   formClip.start.style.zIndex = startCloser ? "3" : "2";
   formClip.end.style.zIndex = startCloser ? "2" : "3";
 });
-// Molette : zoom autour du pointeur.
+// Ctrl + molette : zoom autour du pointeur, comme sur l'onde de l'éditeur
+// de son. La molette seule fait défiler la fenêtre comme d'habitude.
 tlBox.addEventListener("wheel", (e) => {
-  if (!tl.dur) return;
+  if (!tl.dur || !e.ctrlKey) return;
   e.preventDefault();
   const [v0, v1] = tl.view;
   const t = tlT(e.clientX - tlBox.getBoundingClientRect().left);

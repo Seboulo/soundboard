@@ -1589,15 +1589,15 @@ body:has(.grid.list) .tabbar .size { display: none; }
 .tl-tools button { padding: 4px 10px; font-size: 13px; }
 .tl-len { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; font-size: 13px; }
 .tl-len button.active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.clip-range { position: relative; height: 76px; cursor: pointer; touch-action: none; }
+.clip-range { position: relative; height: 104px; cursor: pointer; touch-action: none; }
 .tl-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-.tl-head { position: absolute; top: 12px; bottom: 0; width: 2px; margin-left: -1px; background: var(--text); border-radius: 1px; pointer-events: none; z-index: 1; }
-.tl-head::before { content: ""; position: absolute; top: -4px; left: -4px; width: 10px; height: 10px; border-radius: 50%; background: var(--text); }
-.clip-range input[type="range"] { position: absolute; left: 0; right: 0; top: 16px; bottom: 0; width: 100%; height: auto; margin: 0; padding: 0; background: none; pointer-events: none; -webkit-appearance: none; appearance: none; z-index: 2; }
+.tl-head { position: absolute; top: 18px; bottom: 0; width: 2px; margin-left: -1px; background: var(--text); border-radius: 1px; pointer-events: none; z-index: 1; }
+.tl-head::before { content: ""; position: absolute; top: -3px; left: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--text); }
+.clip-range input[type="range"] { position: absolute; left: 0; right: 0; top: 18px; bottom: 0; width: 100%; height: auto; margin: 0; padding: 0; background: none; pointer-events: none; -webkit-appearance: none; appearance: none; z-index: 2; }
 .clip-range input[type="range"]::-webkit-slider-runnable-track { background: none; height: 100%; }
-.clip-range input[type="range"]::-webkit-slider-thumb { pointer-events: auto; -webkit-appearance: none; width: 12px; height: 60px; border-radius: 4px; background: var(--accent); border: 2px solid var(--panel, #fff); box-shadow: 0 1px 4px rgba(0, 0, 0, .3); cursor: ew-resize; }
+.clip-range input[type="range"]::-webkit-slider-thumb { pointer-events: auto; -webkit-appearance: none; width: 12px; height: 86px; background: transparent; border: 0; cursor: ew-resize; }
 .clip-range input[type="range"]:focus-visible { outline: none; }
-.clip-range input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); }
+/* Les poignées sont dessinées sur la barre (comme l'onde de l'éditeur de son) : le curseur natif reste invisible. */
 /* « Mes extraits » : préférés à renvoyer en un clic. */
 .clip-favs { display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px; }
 .clip-favs .label { font-weight: 600; }
